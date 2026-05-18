@@ -15,6 +15,25 @@ groups:
       - 'elbow pain'
       - 'wrist pain'
       - 'finger pain'
+      - '\bknee pain'
+      - '\bknee injur'
+      - '\bknee problem'
+      - '\bknee pains'
+      - '\bknee no strength'
+      - '\bknee tightness'
+      - '\bgout\b'
+      - 'shoulder injur'
+      - 'frozen shoulder'
+      - 'hip injur'
+      - '\barthrt'
+      - 'heel pain'
+      - '\bacl\b'
+      - 'leg pain'
+      - 'calf pain'
+      - 'calf soren'
+      - 'leg tightness'
+      - 'leg stiffness'
+      - 'stiffness'
   spine_back:
     label: "Spine/Back"
     patterns:
@@ -31,6 +50,10 @@ groups:
       - 'neck pain'
       - 'cervical'
       - 'thoracic'
+      - 'back pain'
+      - 'lower back'
+      - 'upper back'
+      - 'waist pain'
   neurological:
     label: "Neurological"
     patterns:
@@ -46,6 +69,9 @@ groups:
       - 'brain injur'
       - 'spinal cord'
       - 'peripheral neuropath'
+      - 'neurolog'
+      - 'numbness'
+      - 'numb\b'
   post_surgical:
     label: "Post-Surgical/Rehab"
     patterns:
@@ -73,6 +99,13 @@ groups:
       - 'muscle loss'
       - 'deconditioning'
       - 'weakness'
+      - 'muscle ache'
+      - 'muscle weak'
+      - 'body weakness'
+      - 'low stamina'
+      - 'muscle loss'
+      - 'leg weakness'
+      - 'arm weakness'
   balance_falls:
     label: "Balance/Falls"
     patterns:
@@ -81,6 +114,8 @@ groups:
       - 'dizziness'
       - 'vertigo'
       - 'coordination'
+      - 'balance issue'
+      - 'unstable'
   metabolic:
     label: "Metabolic"
     patterns:
@@ -135,6 +170,11 @@ groups:
       - 'sprain'
       - 'contusion'
       - 'bursitis'
+      - '\binjur'
+      - 'tennis elbow'
+      - 'hamstring'
+      - '\btear\b'
+      - 'torn'
   generalised_pain:
     label: "Generalised pain"
     patterns:
@@ -165,6 +205,9 @@ groups:
       - 'general health'
       - 'no condition'
       - 'normal'
+      - 'sports performance'
+      - '\bhealthy\b'
+      - 'fit\b'
 
 regions:
   knee:
