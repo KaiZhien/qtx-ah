@@ -6,6 +6,29 @@ A reproducible, config-driven Python pipeline for analysing rehabilitation outco
 
 ---
 
+## Baseline Results (v0.1.0, complete-case)
+
+> Numbers from a full `make all` run on the 2024 AH dataset. Update this section whenever the pipeline is retrained on new data.
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Patients | 1,716 | 49 legacy (`OLD…`) records included but excluded from primary models |
+| Follow-up rate | 34.7% (596 / 1,716) | Dropout is the primary data-quality challenge |
+| Overall responders | 69.5% of follow-up (414 / 596) | ≥ MCID on 2+ tests |
+| Classified by phenotype | 39.9% (684 / 1,716) | 60.1% Unclassified — most have no comorbidity tags |
+| **Regression** R² (composite improvement) | 0.037 ± 0.127 | RMSE = 0.61, n = 489 complete cases |
+| **Classifier** AUC-ROC (overall responder) | 0.630 ± 0.049 | AUC-PR = 0.854, n = 489 |
+| **Dropout** AUC-ROC (predicts non-completion) | 0.965 ± 0.006 | n = 519; baseline features only |
+
+**Top phenotype groups** (of classified patients): Joint disease 25%, Frailty/Sarcopenia 11%, Spine/Back 8%, Soft-tissue injury 6%, Neurological 4%.
+
+**Interpretation notes:**
+- The low regression R² is expected — the composite z-score target has high noise and feature missingness is 63–68% on key pre-test columns. Complete-case analysis drops 70% of the dataset.
+- The dropout model's high AUC-ROC (0.97) reflects that missing baseline data is itself the strongest predictor of non-completion — not a data-leakage issue, but a real clinical signal worth acting on.
+- All metrics are 5-fold CV. See `reports/modelling.html` for the full sensitivity analysis across four imputation strategies.
+
+---
+
 ## Table of Contents
 
 1. [Background](#background)
