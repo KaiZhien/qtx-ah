@@ -18,30 +18,6 @@ from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Pre/post pairs used for n_pre_post_pairs and has_followup
-# ---------------------------------------------------------------------------
-
-_PRE_POST_PAIRS = [
-    ("pre_vas", "post_vas"),
-    ("pre_tug_s", "post_tug_s"),
-    ("pre_5xsst_s", "post_5xsst_s"),
-    ("pre_normal_gs_ms", "post_normal_gs_ms"),
-    ("pre_fast_gs_ms", "post_fast_gs_ms"),
-    ("baseline_sppb", "post_sppb"),
-]
-
-_POST_COLS = [post for _, post in _PRE_POST_PAIRS]
-
-# Y/N columns to apply yesno_map to
-_YESNO_COLS = ["joined_with_pain", "pain_improved"]
-
-# Frequency columns to apply frequency_map to
-_FREQUENCY_COLS = ["usage_frequency"]
-
-# Gender columns
-_GENDER_COLS = ["gender"]
-
 # Numeric columns (excluding phone) — these will be cast to float64
 _NUMERIC_COLS = [
     "age",
@@ -107,6 +83,16 @@ def normalise(df: pd.DataFrame, audit: AuditLog | None = None) -> pd.DataFrame:
     star_prefix: str = cfg.get("strip_name_flag_prefix", "**")
     legacy_prefix: str = cfg.get("legacy_sn_prefix", "OLD")
 
+    column_roles: dict = cfg.get("column_roles", {})
+    gender_cols: list[str] = column_roles.get("gender_cols", [])
+    yesno_cols: list[str] = column_roles.get("yesno_cols", [])
+    frequency_cols: list[str] = column_roles.get("frequency_cols", [])
+
+    pre_post_pairs: list[tuple[str, str]] = [
+        (pair[0], pair[1]) for pair in cfg.get("pre_post_pairs", [])
+    ]
+    followup_post_cols: list[str] = cfg.get("followup_post_cols", [])
+
     # -------------------------------------------------------------------
     # Step 1: NA harmonisation
     # -------------------------------------------------------------------
@@ -149,11 +135,11 @@ def normalise(df: pd.DataFrame, audit: AuditLog | None = None) -> pd.DataFrame:
                     _audit_log(audit, _record_id(df, idx), "normalise", col, val, mapped, reason)
                     df.at[idx, col] = mapped
 
-    for col in _GENDER_COLS:
+    for col in gender_cols:
         _apply_map(col, gender_map, "gender_map")
-    for col in _YESNO_COLS:
+    for col in yesno_cols:
         _apply_map(col, yesno_map, "yesno_map")
-    for col in _FREQUENCY_COLS:
+    for col in frequency_cols:
         _apply_map(col, frequency_map, "frequency_map")
 
     # -------------------------------------------------------------------
@@ -255,7 +241,7 @@ def normalise(df: pd.DataFrame, audit: AuditLog | None = None) -> pd.DataFrame:
     # 6b. n_pre_post_pairs
     def _n_pairs(row: pd.Series) -> int:
         count = 0
-        for pre, post in _PRE_POST_PAIRS:
+        for pre, post in pre_post_pairs:
             pre_val = row.get(pre, None)
             post_val = row.get(post, None)
             if not _is_null(pre_val) and not _is_null(post_val):
@@ -266,7 +252,7 @@ def normalise(df: pd.DataFrame, audit: AuditLog | None = None) -> pd.DataFrame:
 
     # 6c. has_followup
     def _has_followup(row: pd.Series) -> str:
-        for post_col in _POST_COLS:
+        for post_col in followup_post_cols:
             val = row.get(post_col, None)
             if not _is_null(val):
                 return "Y"
