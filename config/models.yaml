@@ -1,0 +1,73 @@
+regression_composite:
+  features:
+    - age
+    - gender
+    - baseline_sppb
+    - pre_normal_gs_ms
+    - pre_tug_s
+    - pre_5xsst_s
+    - usage_frequency
+    - cohort
+    - has_oa
+    - has_diabetes
+    - has_stroke
+    - has_parkinsons
+    - has_sarcopenia
+    - has_post_surgery
+    - has_balance_issue
+    - has_chronic_pain
+  target: composite_improvement
+  model: gradient_boosting
+  cv:
+    kind: stratified_kfold
+    k: 5
+    stratify_on: cohort
+  metrics: [rmse, mae, r2]
+
+classifier_responder:
+  target: overall_responder
+  features:
+    - age
+    - gender
+    - baseline_sppb
+    - pre_normal_gs_ms
+    - pre_tug_s
+    - pre_5xsst_s
+    - usage_frequency
+    - cohort
+    - has_oa
+    - has_diabetes
+    - has_stroke
+    - has_parkinsons
+    - has_sarcopenia
+    - has_post_surgery
+    - has_balance_issue
+    - has_chronic_pain
+  model: gradient_boosting
+  metrics: [auc_roc, auc_pr, brier, calibration_curve]
+
+dropout:
+  target: is_dropout
+  features:
+    - age
+    - gender
+    - baseline_sppb
+    - pre_normal_gs_ms
+    - pre_tug_s
+    - pre_5xsst_s
+    - usage_frequency
+    - cohort
+    - has_oa
+    - has_diabetes
+    - has_stroke
+    - has_parkinsons
+    - has_sarcopenia
+    - has_post_surgery
+    - has_balance_issue
+    - has_chronic_pain
+  model: gradient_boosting
+  metrics: [auc_roc, auc_pr]
+
+sensitivity:
+  imputation_variants: [complete_case, iterative, knn5, median]
+  feature_set_variants: [baseline_only, baseline_plus_phenotype, full]

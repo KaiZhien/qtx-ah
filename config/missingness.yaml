@@ -1,0 +1,73 @@
+per_feature_policy:
+  age:
+    strategy: missing_indicator
+  gender:
+    strategy: category_missing
+  baseline_sppb:
+    strategy: iterative
+    max_missing_pct: 0.40
+  pre_normal_gs_ms:
+    strategy: iterative
+    max_missing_pct: 0.40
+  pre_tug_s:
+    strategy: iterative
+    max_missing_pct: 0.40
+  pre_5xsst_s:
+    strategy: iterative
+    max_missing_pct: 0.40
+  usage_frequency:
+    strategy: category_missing
+  has_oa:
+    strategy: fill_zero
+  has_diabetes:
+    strategy: fill_zero
+  has_stroke:
+    strategy: fill_zero
+  has_parkinsons:
+    strategy: fill_zero
+  has_sarcopenia:
+    strategy: fill_zero
+  has_frailty:
+    strategy: fill_zero
+  has_balance_issue:
+    strategy: fill_zero
+  has_post_surgery:
+    strategy: fill_zero
+  has_chronic_pain:
+    strategy: fill_zero
+  has_neuropathy:
+    strategy: fill_zero
+  has_cancer:
+    strategy: fill_zero
+  has_cardiovascular:
+    strategy: fill_zero
+  has_hypertension:
+    strategy: fill_zero
+  has_osteoporosis:
+    strategy: fill_zero
+  has_spinal_issue:
+    strategy: fill_zero
+  has_knee_issue:
+    strategy: fill_zero
+  has_hip_issue:
+    strategy: fill_zero
+  has_shoulder_issue:
+    strategy: fill_zero
+  has_neurological:
+    strategy: fill_zero
+  has_fracture:
+    strategy: fill_zero
+  has_autoimmune:
+    strategy: fill_zero
+  has_metabolic:
+    strategy: fill_zero
+  has_wellness_only:
+    strategy: fill_zero
+  has_fall_risk:
+    strategy: fill_zero
+
+outcomes:
+  policy: never_impute
+  treat_as_dropout_when_post_missing: true
+
+report_alongside_complete_case: true

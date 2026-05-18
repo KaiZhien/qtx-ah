@@ -1,0 +1,17 @@
+project:
+  name: quantumtx-ah
+  version: "0.1.0"
+
+paths:
+  raw_excel: "data/inputs/QTX_AX(nov 2025) - Reet & Jun Yi.xlsx"
+  organised_excel: "data/inputs/QTX_AH_2024_organised.xlsx"
+  processed: "data/processed"
+  audit: "data/audit"
+  reports: "reports"
+  models: "models"
+  snapshots: "data/processed/snapshots"
+
+logging:
+  level: "INFO"
+
+random_seed: 42

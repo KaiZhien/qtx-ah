@@ -1,0 +1,90 @@
+na_tokens: ["", " ", "NA", "N/A", "na", "n/a", "nil", "Nil", "-", "none", "None"]
+
+gender_map:
+  m: M
+  male: M
+  f: F
+  female: F
+
+yesno_map:
+  y: Y
+  yes: Y
+  "1": Y
+  n: N
+  no: N
+  "0": N
+
+frequency_map:
+  once: "Once (1x/week, one leg)"
+  twice: "Twice (2x/week, one leg per session)"
+  "l + r 10": "L+R 10 (20-min session, 10 min each leg)"
+  "l+r 10": "L+R 10 (20-min session, 10 min each leg)"
+  "lr10": "L+R 10 (20-min session, 10 min each leg)"
+
+plausibility_ranges:
+  age:
+    min: 10
+    max: 110
+  pre_vas:
+    min: 0
+    max: 10
+  post_vas:
+    min: 0
+    max: 10
+  pre_tug_s:
+    min: 0
+    max: 120
+    dnc_above: 90
+  post_tug_s:
+    min: 0
+    max: 120
+    dnc_above: 90
+  pre_5xsst_s:
+    min: 0
+    max: 90
+    dnc_above: 60
+  post_5xsst_s:
+    min: 0
+    max: 90
+    dnc_above: 60
+  pre_normal_gs_ms:
+    min: 0.05
+    max: 3.0
+  post_normal_gs_ms:
+    min: 0.05
+    max: 3.0
+  pre_fast_gs_ms:
+    min: 0.05
+    max: 4.0
+  post_fast_gs_ms:
+    min: 0.05
+    max: 4.0
+  baseline_sppb:
+    min: 0
+    max: 12
+  post_sppb:
+    min: 0
+    max: 12
+
+age_bands:
+  - label: "Under 50"
+    min: 0
+    max: 49
+  - label: "50-64"
+    min: 50
+    max: 64
+  - label: "65-74"
+    min: 65
+    max: 74
+  - label: "75-84"
+    min: 75
+    max: 84
+  - label: "85+"
+    min: 85
+    max: 999
+
+strip_name_flag_prefix: "**"
+legacy_sn_prefix: "OLD"
+
+include_starred: false
+dedupe_by_name: false

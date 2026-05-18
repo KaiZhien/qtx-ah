@@ -1,0 +1,305 @@
+groups:
+  joint_disease:
+    label: "Joint disease"
+    patterns:
+      - '\boa\b'
+      - '\barthrit'
+      - 'rheumatoid'
+      - 'psoriatic arthritis'
+      - 'knee degenerat'
+      - 'joint pain'
+      - 'joint replace'
+      - 'hip pain'
+      - 'shoulder pain'
+      - 'ankle pain'
+      - 'elbow pain'
+      - 'wrist pain'
+      - 'finger pain'
+  spine_back:
+    label: "Spine/Back"
+    patterns:
+      - '\bback\b'
+      - 'spinal'
+      - 'slip.?disc'
+      - 'sciatic'
+      - 'cervical spondylosis'
+      - 'lumbar'
+      - 'scoliosis'
+      - 'vertebr'
+      - 'disc prolapse'
+      - 'disc herniat'
+      - 'neck pain'
+      - 'cervical'
+      - 'thoracic'
+  neurological:
+    label: "Neurological"
+    patterns:
+      - 'stroke'
+      - 'parkinson'
+      - 'neuropath'
+      - 'multiple sclerosis'
+      - '\bms\b'
+      - 'cerebral palsy'
+      - 'dementia'
+      - 'alzheimer'
+      - 'epilepsy'
+      - 'brain injur'
+      - 'spinal cord'
+      - 'peripheral neuropath'
+  post_surgical:
+    label: "Post-Surgical/Rehab"
+    patterns:
+      - 'post.?op'
+      - 'post.?surg'
+      - '\btkr\b'
+      - '\bthr\b'
+      - 'total knee'
+      - 'total hip'
+      - 'hip replace'
+      - 'knee replace'
+      - 'acl repair'
+      - 'acl reconstruct'
+      - 'fracture'
+      - 'surgery'
+      - 'operation'
+      - 'amputa'
+  frailty_sarcopenia:
+    label: "Frailty/Sarcopenia"
+    patterns:
+      - 'frail'
+      - 'sarcopenia'
+      - 'muscle wasting'
+      - 'muscle weakness'
+      - 'muscle loss'
+      - 'deconditioning'
+      - 'weakness'
+  balance_falls:
+    label: "Balance/Falls"
+    patterns:
+      - 'balance'
+      - 'fall'
+      - 'dizziness'
+      - 'vertigo'
+      - 'coordination'
+  metabolic:
+    label: "Metabolic"
+    patterns:
+      - 'diabetes'
+      - 'obesity'
+      - 'overweight'
+      - 'metabolic'
+      - 'cholesterol'
+      - 'hypertension'
+      - 'blood pressure'
+  cardiovascular:
+    label: "Cardiovascular"
+    patterns:
+      - 'cardiac'
+      - 'heart'
+      - 'cardiovascular'
+      - 'coronary'
+      - 'atrial fibrill'
+      - 'heart failure'
+      - 'bypass'
+  oncology:
+    label: "Oncology"
+    patterns:
+      - 'cancer'
+      - 'oncolog'
+      - 'chemotherapy'
+      - 'radiotherapy'
+      - 'lymphoma'
+      - 'leukemia'
+      - 'tumour'
+      - 'tumor'
+  autoimmune:
+    label: "Autoimmune"
+    patterns:
+      - 'lupus'
+      - 'rheumatoid arthritis'
+      - 'psoriatic arthritis'
+      - 'ankylosing'
+      - 'sjogren'
+      - 'autoimmune'
+      - 'inflammatory arthrit'
+  softtissue_injury:
+    label: "Soft-tissue injury"
+    patterns:
+      - 'tendon'
+      - 'ligament'
+      - 'muscle tear'
+      - 'muscle strain'
+      - 'rotator cuff'
+      - 'plantar fasci'
+      - 'achilles'
+      - 'sprain'
+      - 'contusion'
+      - 'bursitis'
+  generalised_pain:
+    label: "Generalised pain"
+    patterns:
+      - 'chronic pain'
+      - 'fibromyalgia'
+      - 'generalised pain'
+      - 'general pain'
+      - 'body pain'
+      - 'pain management'
+      - 'musculoskeletal pain'
+  osteoporosis:
+    label: "Osteoporosis"
+    patterns:
+      - 'osteoporosis'
+      - 'osteopenia'
+      - 'bone density'
+      - 'bone loss'
+  wellness:
+    label: "Wellness"
+    patterns:
+      - 'wellness'
+      - 'general fitness'
+      - 'fitness'
+      - 'preventive'
+      - 'prevention'
+      - 'maintain'
+      - 'healthy aging'
+      - 'general health'
+      - 'no condition'
+      - 'normal'
+
+regions:
+  knee:
+    patterns:
+      - '\bknee'
+      - '\btkr\b'
+      - 'meniscus'
+      - '\bacl\b'
+      - 'patella'
+      - 'patellar'
+  hip:
+    patterns:
+      - '\bhip\b'
+      - '\bthr\b'
+      - 'hip replace'
+      - 'hip fracture'
+  spine:
+    patterns:
+      - 'spine'
+      - 'spinal'
+      - 'lumbar'
+      - 'cervical'
+      - 'thoracic'
+      - 'vertebr'
+      - 'disc'
+  shoulder:
+    patterns:
+      - '\bshoulder\b'
+      - 'rotator cuff'
+  ankle_foot:
+    patterns:
+      - '\bankle\b'
+      - '\bfoot\b'
+      - '\bfeet\b'
+      - 'plantar'
+      - 'achilles'
+  lower_limb:
+    patterns:
+      - 'lower limb'
+      - 'lower leg'
+      - '\bleg\b'
+      - 'thigh'
+      - 'calf'
+      - 'hamstring'
+      - 'quadricep'
+  upper_limb:
+    patterns:
+      - 'upper limb'
+      - '\barm\b'
+      - 'elbow'
+      - 'wrist'
+      - 'hand'
+  bilateral:
+    patterns:
+      - 'bilateral'
+      - 'both leg'
+      - 'both knee'
+      - 'both hip'
+  trunk:
+    patterns:
+      - 'trunk'
+      - 'core'
+      - 'abdom'
+      - 'pelvi'
+
+flags:
+  has_oa:
+    patterns: ['\boa\b', '\barthrit', 'rheumatoid arthritis', 'psoriatic arthritis', 'osteoarthrit']
+  has_diabetes:
+    patterns: ['diabetes', 'diabetic', 'dm2', 'type 2 diabetes', 'type ii diabetes']
+  has_stroke:
+    patterns: ['stroke', 'cva', 'cerebrovascular']
+  has_parkinsons:
+    patterns: ['parkinson']
+  has_sarcopenia:
+    patterns: ['sarcopenia', 'muscle wasting', 'muscle loss']
+  has_frailty:
+    patterns: ['frail']
+  has_balance_issue:
+    patterns: ['balance', 'fall', 'dizziness', 'vertigo']
+  has_post_surgery:
+    patterns: ['post.?op', 'post.?surg', '\btkr\b', '\bthr\b', 'surgery', 'operation', 'knee replace', 'hip replace']
+  has_chronic_pain:
+    patterns: ['chronic pain', 'fibromyalgia', 'chronic', 'pain management']
+  has_neuropathy:
+    patterns: ['neuropath', 'peripheral neuropath']
+  has_cancer:
+    patterns: ['cancer', 'oncolog', 'chemotherapy', 'radiotherapy', 'lymphoma', 'leukemia']
+  has_cardiovascular:
+    patterns: ['cardiac', 'heart failure', 'coronary', 'atrial fibrill', 'cardiovascular']
+  has_hypertension:
+    patterns: ['hypertension', 'high blood pressure', 'hbp']
+  has_osteoporosis:
+    patterns: ['osteoporosis', 'osteopenia']
+  has_spinal_issue:
+    patterns: ['spinal', 'disc', 'scoliosis', 'lumbar', 'cervical spondylosis']
+  has_knee_issue:
+    patterns: ['\bknee\b', '\btkr\b', 'meniscus', '\bacl\b', 'patella']
+  has_hip_issue:
+    patterns: ['\bhip\b', '\bthr\b', 'hip replace', 'hip fracture']
+  has_shoulder_issue:
+    patterns: ['\bshoulder\b', 'rotator cuff']
+  has_neurological:
+    patterns: ['stroke', 'parkinson', 'neuropath', 'multiple sclerosis', 'cerebral palsy', 'dementia']
+  has_fracture:
+    patterns: ['fracture', 'broken bone']
+  has_autoimmune:
+    patterns: ['lupus', 'rheumatoid arthritis', 'ankylosing', 'sjogren', 'autoimmune', 'psoriatic arthritis']
+  has_metabolic:
+    patterns: ['diabetes', 'obesity', 'metabolic syndrome']
+  has_wellness_only:
+    patterns: ['wellness', 'general fitness', 'no condition', 'healthy aging']
+  has_fall_risk:
+    patterns: ['fall risk', 'fall prevention', 'risk of fall', 'history of fall']
+
+priority:
+  - neurological
+  - post_surgical
+  - oncology
+  - cardiovascular
+  - autoimmune
+  - joint_disease
+  - spine_back
+  - softtissue_injury
+  - frailty_sarcopenia
+  - balance_falls
+  - metabolic
+  - generalised_pain
+  - osteoporosis
+  - wellness
+
+cohort_rollup:
+  Neurological: [neurological]
+  Post-Surgical/Rehab: [post_surgical]
+  Frailty/Sarcopenia: [frailty_sarcopenia, balance_falls]
+  Pain & Musculoskeletal: [joint_disease, spine_back, softtissue_injury, generalised_pain, osteoporosis, autoimmune]
+  Wellness: [wellness]
+  Other-Mixed: [oncology, cardiovascular, metabolic]

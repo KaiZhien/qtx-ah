@@ -1,0 +1,33 @@
+tests:
+  vas:
+    higher_is_better: false
+    mcid_abs: 2
+    mcid_pct: null
+  tug:
+    higher_is_better: false
+    mcid_abs: 3
+    mcid_pct: 0.10
+  sst:
+    higher_is_better: false
+    mcid_abs: null
+    mcid_pct: 0.10
+  normal_gs:
+    higher_is_better: true
+    mcid_abs: 0.05
+    mcid_pct: null
+  fast_gs:
+    higher_is_better: true
+    mcid_abs: 0.10
+    mcid_pct: null
+  sppb:
+    higher_is_better: true
+    mcid_abs: 1
+    mcid_pct: null
+
+composite:
+  method: "z_mean_available_case"
+  weights: null
+  min_tests_required: 1
+
+responder_breadth:
+  threshold_for_overall_responder: 2

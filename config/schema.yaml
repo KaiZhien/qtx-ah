@@ -1,0 +1,65 @@
+# Canonical column names, dtypes, and allowed values
+# Maps from source column positions/names to canonical snake_case names
+
+source_columns:
+  # Identity
+  sn: {canonical: sn, dtype: str}
+  name: {canonical: name, dtype: str}
+  gender: {canonical: gender, dtype: str, allowed: [M, F, null]}
+  age: {canonical: age, dtype: Int64}
+  phone_number: {canonical: phone_number, dtype: str}
+
+  # VAS block
+  joined_with_pain: {canonical: joined_with_pain, dtype: str, allowed: [Y, N, null]}
+  pain_improved: {canonical: pain_improved, dtype: str, allowed: [Y, N, null]}
+  pre_vas: {canonical: pre_vas, dtype: float}
+  post_vas: {canonical: post_vas, dtype: float}
+  vas_change: {canonical: vas_change, dtype: float}
+
+  # Tags
+  tags: {canonical: tags, dtype: str}
+  pain_location: {canonical: pain_location, dtype: str}
+
+  # TUG block
+  pre_tug_s: {canonical: pre_tug_s, dtype: float}
+  post_tug_s: {canonical: post_tug_s, dtype: float}
+  tug_change_s: {canonical: tug_change_s, dtype: float}
+  tug_change_pct: {canonical: tug_change_pct, dtype: float}
+
+  # 5xSST block
+  pre_5xsst_s: {canonical: pre_5xsst_s, dtype: float}
+  post_5xsst_s: {canonical: post_5xsst_s, dtype: float}
+  sst_change_s: {canonical: sst_change_s, dtype: float}
+  sst_change_pct: {canonical: sst_change_pct, dtype: float}
+
+  # Normal gait block
+  pre_normal_time_s: {canonical: pre_normal_time_s, dtype: float}
+  post_normal_time_s: {canonical: post_normal_time_s, dtype: float}
+  pre_normal_gs_ms: {canonical: pre_normal_gs_ms, dtype: float}
+  post_normal_gs_ms: {canonical: post_normal_gs_ms, dtype: float}
+  normal_gs_change_ms: {canonical: normal_gs_change_ms, dtype: float}
+  normal_gs_change_pct: {canonical: normal_gs_change_pct, dtype: float}
+
+  # Fast gait block
+  pre_fast_time_s: {canonical: pre_fast_time_s, dtype: float}
+  post_fast_time_s: {canonical: post_fast_time_s, dtype: float}
+  pre_fast_gs_ms: {canonical: pre_fast_gs_ms, dtype: float}
+  post_fast_gs_ms: {canonical: post_fast_gs_ms, dtype: float}
+  fast_gs_change_ms: {canonical: fast_gs_change_ms, dtype: float}
+  fast_gs_change_pct: {canonical: fast_gs_change_pct, dtype: float}
+
+  # SPPB block
+  baseline_sppb: {canonical: baseline_sppb, dtype: Int64}
+  post_sppb: {canonical: post_sppb, dtype: Int64}
+  sppb_change: {canonical: sppb_change, dtype: Int64}
+  sppb_source: {canonical: sppb_source, dtype: str}
+
+  # Dosing
+  usage_frequency: {canonical: usage_frequency, dtype: str, allowed: ["Once (1x/week, one leg)", "Twice (2x/week, one leg per session)", "L+R 10 (20-min session, 10 min each leg)", null]}
+
+derived_columns:
+  record_type: {dtype: str, allowed: [Active, Legacy]}
+  name_flag: {dtype: str}
+  age_band: {dtype: str}
+  n_pre_post_pairs: {dtype: Int64}
+  has_followup: {dtype: str, allowed: [Y, N]}
