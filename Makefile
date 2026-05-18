@@ -1,36 +1,39 @@
 .PHONY: install ingest clean-data phenotype outcomes features eda model dashboard all test clean
 
+PYTHON := $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
+export PYTHONPATH := src
+
 install:
-	pip install -e .
+	$(PYTHON) -m pip install -e .
 
 ingest:
-	python scripts/01_ingest.py
+	$(PYTHON) scripts/01_ingest.py
 
 clean-data:
-	python scripts/02_clean.py
+	$(PYTHON) scripts/02_clean.py
 
 phenotype:
-	python scripts/03_phenotype.py
+	$(PYTHON) scripts/03_phenotype.py
 
 outcomes:
-	python scripts/04_outcomes.py
+	$(PYTHON) scripts/04_outcomes.py
 
 features: ingest clean-data phenotype outcomes
-	python src/qtx/features/build.py
+	$(PYTHON) scripts/07_export_dashboard_data.py
 
 eda:
-	python scripts/05_eda.py
+	$(PYTHON) scripts/05_eda.py
 
 model:
-	python scripts/06_train_models.py
+	$(PYTHON) scripts/06_train_models.py
 
 dashboard:
-	streamlit run dashboard/app.py
+	PYTHONPATH=src streamlit run dashboard/app.py
 
-all: install ingest clean-data phenotype outcomes eda model
+all: ingest clean-data phenotype outcomes features eda model
 
 test:
-	pytest tests/ -v
+	PYTHONPATH=src $(PYTHON) -m pytest tests/ -v
 
 clean:
 	rm -rf data/processed/ data/audit/ reports/ models/
