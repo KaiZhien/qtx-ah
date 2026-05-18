@@ -8,11 +8,13 @@ gender_map:
 
 yesno_map:
   y: Y
-  yes: Y
+  "yes": Y
   "1": Y
+  "1.0": Y
   n: N
-  no: N
+  "no": N
   "0": N
+  "0.0": N
 
 frequency_map:
   once: "Once (1x/week, one leg)"
