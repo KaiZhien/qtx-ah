@@ -1,0 +1,75 @@
+# config/dosage.yaml
+# Dosage frequency recommender — all tunable parameters in one place.
+#
+# label_map: maps the cleaned_data.xlsx 'frequency' string values to integer class labels.
+# label_names: human-readable names indexed by integer label (label_names[0] = label_map key 0).
+# intake_features_raw: column names from cleaned_data.xlsx before encoding.
+# intake_features_encoded: column names after one-hot/binary encoding — these are the model input.
+# future_features: fields not yet collected but planned; add to intake_features_* once available.
+# categorical_features: subset of intake_features_raw that require binary encoding.
+
+label_map:
+  "once": 0
+  "twice": 1
+  "l + r 10": 2
+
+label_names:
+  - once
+  - twice
+  - lr10
+
+intake_features_raw:
+  - Age
+  - Gender
+  - Joined_with_pain
+  - knee_issue
+  - leg_issue
+  - back_spine_issue
+  - balance_issue
+  - upper_body_issue
+  - foot_ankle_issue
+  - neuro_issue
+  - frailty_issue
+  - metabolic_issue
+  - injury_surgery_issue
+  - general_pain_issue
+
+intake_features_encoded:
+  - age
+  - gender_M
+  - joined_with_pain_Y
+  - hl_knee_issue
+  - hl_leg_issue
+  - hl_back_spine_issue
+  - hl_balance_issue
+  - hl_upper_body_issue
+  - hl_foot_ankle_issue
+  - hl_neuro_issue
+  - hl_frailty_issue
+  - hl_metabolic_issue
+  - hl_injury_surgery_issue
+  - hl_general_pain_issue
+
+future_features:
+  # Collect these at intake to address the external-activity confounder.
+  # Once present in cleaned_data.xlsx, add to intake_features_raw/encoded above
+  # and re-run make dosage — no code changes required.
+  - activity_level          # sedentary / light_active / moderately_active / very_active
+  - exercise_freq_per_week  # 0 / 1-2 / 3-4 / 5+
+  - pain_duration_months    # float
+  - prior_physio            # Y / N
+
+model:
+  n_estimators: 200
+  learning_rate: 0.05
+  max_depth: 3
+  random_state: 42
+
+calibration:
+  method: sigmoid   # Platt scaling
+  cv: 5
+
+cv:
+  k: 5
+
+model_path: "models/dosage_frequency.joblib"
