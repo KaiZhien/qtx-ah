@@ -60,7 +60,8 @@ def build_dosage_matrix(df_raw: pd.DataFrame) -> pd.DataFrame:
     df["frequency_label"] = df["frequency_raw"].map(label_map).astype(int)
 
     # Age
-    df["age"] = pd.to_numeric(df["Age"], errors="coerce").fillna(df["Age"].median())
+    age_numeric = pd.to_numeric(df["Age"], errors="coerce")
+    df["age"] = age_numeric.fillna(age_numeric.median())
 
     # Gender: preserve original for tests, encode M→1 F→0
     df["Gender_orig"] = df["Gender"].astype(str).str.strip().str.upper()
