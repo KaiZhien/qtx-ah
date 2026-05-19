@@ -1,4 +1,4 @@
-.PHONY: install ingest clean-data phenotype outcomes features eda model dashboard all test clean
+.PHONY: install ingest clean-data phenotype outcomes features eda model dosage dashboard all test clean
 
 PYTHON := $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 export PYTHONPATH := src
@@ -27,10 +27,13 @@ eda:
 model:
 	$(PYTHON) scripts/06_train_models.py
 
+dosage:
+	$(PYTHON) scripts/08_train_dosage_model.py
+
 dashboard:
 	PYTHONPATH=src streamlit run dashboard/app.py
 
-all: ingest clean-data phenotype outcomes features eda model
+all: ingest clean-data phenotype outcomes features eda model dosage
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest tests/ -v
