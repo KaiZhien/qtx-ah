@@ -31,14 +31,14 @@ def evaluate_multiclass_cv(
     macro_auc_roc_std, per_class_f1 (list of per-class mean F1), n_folds.
     """
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
-    X_arr = np.array(X)
     y_arr = np.array(y)
 
     f1_scores, auc_scores = [], []
     per_class_f1_folds: list[list[float]] = []
 
-    for train_idx, val_idx in skf.split(X_arr, y_arr):
-        X_train, X_val = X_arr[train_idx], X_arr[val_idx]
+    for train_idx, val_idx in skf.split(X.values, y_arr):
+        X_train = X.iloc[train_idx]
+        X_val = X.iloc[val_idx]
         y_train, y_val = y_arr[train_idx], y_arr[val_idx]
         sw_train = sample_weight[train_idx]
 
