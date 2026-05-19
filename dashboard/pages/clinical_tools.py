@@ -85,7 +85,7 @@ if sn_query.strip():
             st.write(f"Post VAS: {row.get('post_vas', 'N/A')}")
             st.write(f"Post TUG (s): {row.get('post_tug_s', 'N/A')}")
             ci = row.get("composite_improvement", None)
-            st.write(f"Composite Improvement: {f'{ci:.2f}' if ci is not None and not (isinstance(ci, float) and pd.isna(ci)) else 'N/A'}")
+            st.write(f"Composite Improvement: {f'{ci:.2f}' if ci is not None and not pd.isna(ci) else 'N/A'}")
             resp = row.get("overall_responder", None)
             st.write(f"Overall Responder: {'Yes' if resp == 1 else 'No' if resp == 0 else 'N/A'}")
             drop = row.get("is_dropout", None)
