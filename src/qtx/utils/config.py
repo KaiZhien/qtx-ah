@@ -94,6 +94,11 @@ def get_models_config() -> dict[str, Any]:
     return _load_yaml("models.yaml")
 
 
+def get_dosage_config() -> dict[str, Any]:
+    """Load and return config/dosage.yaml."""
+    return _load_yaml("dosage.yaml")
+
+
 def get_path(key: str) -> Path:
     """Resolve a path key from the 'paths' section of settings.yaml.
 
