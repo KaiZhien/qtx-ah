@@ -15,9 +15,8 @@ import joblib
 import streamlit as st
 
 from qtx.dosage.predict import predict_frequency
+from qtx.dosage.prepare import derive_features_for_prediction
 from qtx.utils.config import get_dosage_config, get_project_root
-
-st.set_page_config(page_title="Dosage Recommender", layout="centered")
 
 PROJECT_ROOT = get_project_root()
 cfg = get_dosage_config()
@@ -84,12 +83,13 @@ for i, (key, label) in enumerate(conditions.items()):
 st.markdown("---")
 
 if st.button("Get Recommendation", type="primary"):
-    patient = {
+    patient_base = {
         "age": float(age),
         "gender_M": 1 if gender == "M" else 0,
         "joined_with_pain_Y": 1 if joined_with_pain == "Y" else 0,
         **{k: float(v) for k, v in condition_values.items()},
     }
+    patient = derive_features_for_prediction(patient_base)
 
     result = predict_frequency(
         patient,

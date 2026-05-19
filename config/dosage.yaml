@@ -39,6 +39,7 @@ intake_features_raw:
   - general_pain_issue
 
 intake_features_encoded:
+  # Base intake features
   - age
   - gender_M
   - joined_with_pain_Y
@@ -53,6 +54,30 @@ intake_features_encoded:
   - hl_metabolic_issue
   - hl_injury_surgery_issue
   - hl_general_pain_issue
+  # Clinically-engineered composite features (derived from base features at runtime)
+  # age_above_65 / age_above_75: Venugobal 2023 (Aging) shows 66-75 and 76-91 age cohorts
+  #   are the strongest responders to once-weekly PEMF; age stratification predicts response.
+  - age_above_65
+  - age_above_75
+  # bilateral_lower_limb_load: sum of bilateral lower-limb condition flags (0-4).
+  #   Wang 2024 (Front Med) found bilateral knee OA requires bilateral (L+R) treatment.
+  - bilateral_lower_limb_load
+  # inflammatory_burden: count of inflammatory condition flags (0-4).
+  #   Franco-Obregón 2023 (Biocell): once-weekly PEMF resets systemic inflammatory milieu
+  #   via muscle secretome; multi-inflammatory patients benefit most from once/week.
+  - inflammatory_burden
+  # elderly_frailty: age_above_65 × hl_frailty_issue interaction.
+  #   Venugobal 2023: frail elderly (65+) are the HIGHEST responders to once-weekly PEMF
+  #   (responder rate increases post-65); distinguishes elderly frailty from younger patients.
+  - elderly_frailty
+  # muscle_atrophy_risk: age_above_65 × (frailty + neuro + leg) composite (0-3).
+  #   Kurth 2020 (Adv Biosystems): TRPC1 expression predicts PEMF sensitivity; frail+neuro
+  #   patients in older cohorts have reduced TRPC1 but more room for improvement.
+  - muscle_atrophy_risk
+  # pain_with_knee: hl_knee_issue × joined_with_pain_Y interaction.
+  #   Wang 2024: patients with both active knee OA and pain at intake showed bilateral
+  #   treatment superiority; interaction term separates lr10 from twice.
+  - pain_with_knee
 
 future_features:
   # Collect these at intake to address the external-activity confounder.
@@ -64,9 +89,10 @@ future_features:
   - prior_physio            # Y / N
 
 model:
-  n_estimators: 200
-  learning_rate: 0.05
+  n_estimators: 400
+  learning_rate: 0.03
   max_depth: 3
+  min_samples_leaf: 6
   random_state: 42
 
 calibration:

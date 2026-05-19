@@ -31,6 +31,65 @@ _FLAG_MAP = {
 }
 
 
+def _add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add clinically-grounded composite features to the encoded dosage DataFrame.
+
+    All features derived from base intake columns that must already be present.
+    Scientific rationale in config/dosage.yaml comments.
+    """
+    df = df.copy()
+    df["age_above_65"] = (df["age"] >= 65).astype(float)
+    df["age_above_75"] = (df["age"] >= 75).astype(float)
+    df["bilateral_lower_limb_load"] = (
+        df["hl_knee_issue"] + df["hl_leg_issue"]
+        + df["hl_foot_ankle_issue"] + df["hl_balance_issue"]
+    ).clip(upper=4).astype(float)
+    df["inflammatory_burden"] = (
+        df["hl_knee_issue"] + df["hl_back_spine_issue"]
+        + df["hl_general_pain_issue"] + df["hl_injury_surgery_issue"]
+    ).astype(float)
+    df["elderly_frailty"] = (df["age_above_65"] * df["hl_frailty_issue"]).astype(float)
+    df["muscle_atrophy_risk"] = (
+        df["age_above_65"] * (df["hl_frailty_issue"] + df["hl_neuro_issue"] + df["hl_leg_issue"])
+    ).clip(upper=3).astype(float)
+    df["pain_with_knee"] = (df["hl_knee_issue"] * df["joined_with_pain_Y"]).astype(float)
+    return df
+
+
+def derive_features_for_prediction(patient: dict) -> dict:
+    """Compute clinically-engineered features from a base intake feature dict.
+
+    Call this before predict_frequency() when the patient dict was assembled from
+    raw UI inputs (age, gender_M, joined_with_pain_Y, hl_* flags only).
+    Returns a new dict with all base features plus the seven engineered ones.
+    """
+    age = float(patient.get("age", 0))
+    age_above_65 = float(age >= 65)
+    age_above_75 = float(age >= 75)
+
+    knee   = float(patient.get("hl_knee_issue", 0))
+    leg    = float(patient.get("hl_leg_issue", 0))
+    foot   = float(patient.get("hl_foot_ankle_issue", 0))
+    bal    = float(patient.get("hl_balance_issue", 0))
+    back   = float(patient.get("hl_back_spine_issue", 0))
+    gp     = float(patient.get("hl_general_pain_issue", 0))
+    inj    = float(patient.get("hl_injury_surgery_issue", 0))
+    frail  = float(patient.get("hl_frailty_issue", 0))
+    neuro  = float(patient.get("hl_neuro_issue", 0))
+    pain_y = float(patient.get("joined_with_pain_Y", 0))
+
+    return {
+        **patient,
+        "age_above_65": age_above_65,
+        "age_above_75": age_above_75,
+        "bilateral_lower_limb_load": min(knee + leg + foot + bal, 4.0),
+        "inflammatory_burden": knee + back + gp + inj,
+        "elderly_frailty": age_above_65 * frail,
+        "muscle_atrophy_risk": min(age_above_65 * (frail + neuro + leg), 3.0),
+        "pain_with_knee": knee * pain_y,
+    }
+
+
 def build_dosage_matrix(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Transform a raw supplement DataFrame into a modelling-ready feature matrix.
 
@@ -76,6 +135,8 @@ def build_dosage_matrix(df_raw: pd.DataFrame) -> pd.DataFrame:
     for col in _FLAG_MAP.values():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    df = _add_engineered_features(df)
 
     feature_cols = cfg["intake_features_encoded"]
     missing = [c for c in feature_cols if c not in df.columns]

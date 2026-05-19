@@ -131,8 +131,10 @@ from qtx.dosage.train import train_dosage_model
 
 def _make_dosage_df(n_once: int = 40, n_twice: int = 10, n_lr10: int = 20) -> pd.DataFrame:
     """Synthetic dosage matrix matching build_dosage_matrix() output structure."""
+    from qtx.dosage.prepare import _add_engineered_features
+    from qtx.utils.config import get_dosage_config
     rng = np.random.default_rng(0)
-    feature_cols = [
+    base_cols = [
         "age", "gender_M", "joined_with_pain_Y",
         "hl_knee_issue", "hl_leg_issue", "hl_back_spine_issue",
         "hl_balance_issue", "hl_upper_body_issue", "hl_foot_ankle_issue",
@@ -140,8 +142,9 @@ def _make_dosage_df(n_once: int = 40, n_twice: int = 10, n_lr10: int = 20) -> pd
         "hl_injury_surgery_issue", "hl_general_pain_issue",
     ]
     n = n_once + n_twice + n_lr10
-    X = pd.DataFrame(rng.integers(0, 2, size=(n, len(feature_cols))).astype(float), columns=feature_cols)
+    X = pd.DataFrame(rng.integers(0, 2, size=(n, len(base_cols))).astype(float), columns=base_cols)
     X["age"] = rng.integers(50, 90, size=n).astype(float)
+    X = _add_engineered_features(X)
     labels = [0] * n_once + [1] * n_twice + [2] * n_lr10
     X["frequency_label"] = labels
     X["frequency_raw"] = ["once"] * n_once + ["twice"] * n_twice + ["l + r 10"] * n_lr10

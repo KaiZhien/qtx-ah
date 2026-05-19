@@ -72,6 +72,10 @@ models = load_models()
 # Sidebar filters
 # ---------------------------------------------------------------------------
 
+st.sidebar.title("Navigation")
+st.sidebar.page_link("app.py", label="Clinical Dashboard", icon="🏥")
+st.sidebar.page_link("pages/dosage_recommender.py", label="Dosage Recommender", icon="💊")
+st.sidebar.divider()
 st.sidebar.title("Filters")
 
 # Helper: sorted unique values including NaN replacement

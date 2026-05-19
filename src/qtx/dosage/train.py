@@ -58,6 +58,7 @@ def train_dosage_model(df: pd.DataFrame) -> dict:
         n_estimators=model_cfg["n_estimators"],
         learning_rate=model_cfg["learning_rate"],
         max_depth=model_cfg["max_depth"],
+        min_samples_leaf=model_cfg.get("min_samples_leaf", 1),
         random_state=model_cfg["random_state"],
     )
 
