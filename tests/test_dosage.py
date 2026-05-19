@@ -72,3 +72,55 @@ def test_build_dosage_matrix_gender_encoding():
     # Gender "M" → gender_M = 1; "F" → gender_M = 0
     assert result[result["Gender_orig"] == "M"]["gender_M"].eq(1).all()
     assert result[result["Gender_orig"] == "F"]["gender_M"].eq(0).all()
+
+
+from qtx.dosage.evaluate import evaluate_multiclass_cv, dosage_shap_importances
+
+
+def _make_Xy(n: int = 90) -> tuple:
+    """Synthetic balanced 3-class data for evaluation tests (30 per class)."""
+    rng = np.random.default_rng(42)
+    X = pd.DataFrame(
+        rng.integers(0, 2, size=(n, 14)).astype(float),
+        columns=[
+            "age", "gender_M", "joined_with_pain_Y",
+            "hl_knee_issue", "hl_leg_issue", "hl_back_spine_issue",
+            "hl_balance_issue", "hl_upper_body_issue", "hl_foot_ankle_issue",
+            "hl_neuro_issue", "hl_frailty_issue", "hl_metabolic_issue",
+            "hl_injury_surgery_issue", "hl_general_pain_issue",
+        ],
+    )
+    X["age"] = rng.integers(50, 90, size=n).astype(float)
+    y = pd.Series(np.repeat([0, 1, 2], n // 3))
+    sw = np.ones(n)
+    return X, y, sw
+
+
+def test_evaluate_multiclass_cv_keys():
+    from sklearn.ensemble import GradientBoostingClassifier
+    X, y, sw = _make_Xy()
+    model = GradientBoostingClassifier(n_estimators=10, random_state=42)
+    metrics = evaluate_multiclass_cv(model, X, y, sw, k=3)
+    for key in ["macro_f1_mean", "macro_f1_std", "macro_auc_roc_mean", "macro_auc_roc_std",
+                "per_class_f1", "n_folds"]:
+        assert key in metrics, f"Missing key: {key}"
+
+
+def test_evaluate_multiclass_cv_macro_f1_range():
+    from sklearn.ensemble import GradientBoostingClassifier
+    X, y, sw = _make_Xy()
+    model = GradientBoostingClassifier(n_estimators=10, random_state=42)
+    metrics = evaluate_multiclass_cv(model, X, y, sw, k=3)
+    assert 0.0 <= metrics["macro_f1_mean"] <= 1.0
+    assert 0.0 <= metrics["macro_auc_roc_mean"] <= 1.0
+
+
+def test_dosage_shap_importances_shape():
+    from sklearn.ensemble import GradientBoostingClassifier
+    X, y, sw = _make_Xy()
+    model = GradientBoostingClassifier(n_estimators=10, random_state=42)
+    model.fit(X, y, sample_weight=sw)
+    shap_df = dosage_shap_importances(model, X)
+    assert list(shap_df.columns) == ["feature", "mean_abs_shap"]
+    assert len(shap_df) == X.shape[1]
+    assert shap_df["mean_abs_shap"].notna().all()
