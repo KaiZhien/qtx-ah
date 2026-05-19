@@ -21,6 +21,7 @@ if str(_src) not in sys.path:
 from qtx.clean.audit import AuditLog
 from qtx.clean.normalise import normalise
 from qtx.clean.plausibility import flag_plausibility
+from qtx.io.load_supplement import load_supplement
 from qtx.io.persist import load_parquet, save_parquet
 from qtx.utils.logging import get_logger, setup_logging
 
@@ -53,19 +54,31 @@ def main() -> None:
     log.info("After plausibility: %d rows × %d columns", *clean_df.shape)
 
     # ------------------------------------------------------------------
-    # 4. Save cleaned parquet (versioned)
+    # 4. Merge tags_clean from hand-cleaned supplement
+    # ------------------------------------------------------------------
+    log.info("Merging tags_clean from supplement …")
+    supp = load_supplement()
+    if not supp.empty:
+        clean_df = clean_df.merge(supp[["sn", "tags_clean"]], on="sn", how="left")
+        n_filled = clean_df["tags_clean"].notna().sum()
+        log.info("tags_clean merged: %d rows have a value", n_filled)
+    else:
+        clean_df["tags_clean"] = None
+
+    # ------------------------------------------------------------------
+    # 5. Save cleaned parquet (versioned)
     # ------------------------------------------------------------------
     out_path = save_parquet(clean_df, "cleaned", versioned=True)
     log.info("Saved cleaned data → %s", out_path)
 
     # ------------------------------------------------------------------
-    # 5. Save audit log
+    # 6. Save audit log
     # ------------------------------------------------------------------
     audit_path = audit.save()
     log.info("Audit log → %s  (%d rows)", audit_path, len(audit))
 
     # ------------------------------------------------------------------
-    # 6. Print summary
+    # 7. Print summary
     # ------------------------------------------------------------------
     print()
     print("=" * 60)

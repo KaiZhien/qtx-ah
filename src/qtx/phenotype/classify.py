@@ -12,6 +12,7 @@ import re
 
 import pandas as pd
 
+from qtx.io.load_supplement import load_supplement
 from qtx.phenotype.rules import load_rules
 
 # ---------------------------------------------------------------------------
@@ -21,24 +22,39 @@ from qtx.phenotype.rules import load_rules
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def _make_text_blob(row: pd.Series) -> str:
-    """Combine tags + pain_location into a single normalised string.
+def _val_is_na(val) -> bool:
+    if val is None:
+        return True
+    if isinstance(val, float) and pd.isna(val):
+        return True
+    try:
+        return bool(pd.isna(val))
+    except TypeError:
+        return False
 
-    Handles pd.NA / None / NaN gracefully (treats as empty string).
+
+def _make_text_blob(row: pd.Series) -> str:
+    """Combine text sources into a single normalised string for regex matching.
+
+    Priority:
+    1. tags_clean (hand-cleaned, already lowercase) — preferred when available
+    2. tags (raw free-text)
+    Combined with pain_location in both cases.
     Returns lowercase, stripped, space-collapsed string.
     """
     parts: list[str] = []
-    for col in ("tags", "pain_location"):
-        val = row.get(col, None)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            continue
-        # pandas NA
-        try:
-            if pd.isna(val):
-                continue
-        except TypeError:
-            pass
-        parts.append(str(val).strip())
+
+    # Prefer tags_clean over raw tags
+    tags_val = row.get("tags_clean", None)
+    if _val_is_na(tags_val):
+        tags_val = row.get("tags", None)
+    if not _val_is_na(tags_val):
+        parts.append(str(tags_val).strip())
+
+    loc_val = row.get("pain_location", None)
+    if not _val_is_na(loc_val):
+        parts.append(str(loc_val).strip())
+
     combined = " ".join(parts).lower()
     return _WHITESPACE_RE.sub(" ", combined).strip()
 
@@ -152,5 +168,45 @@ def classify(df: pd.DataFrame) -> pd.DataFrame:
     df["n_groups"] = df[grp_cols].sum(axis=1).astype(int)
     df["n_regions"] = df[rgn_cols].sum(axis=1).astype(int)
     df["n_flags"] = df[flag_cols].sum(axis=1).astype(int)
+
+    # ------------------------------------------------------------------
+    # Merge hand-labeled flags (hl_*) from supplement (skipped if sn absent)
+    # ------------------------------------------------------------------
+    supp = load_supplement()
+    hl_cols = [c for c in supp.columns if c.startswith("hl_")]
+    if "sn" not in df.columns:
+        hl_cols = []  # no join key — skip silently (e.g. in unit tests)
+    if not supp.empty and hl_cols:
+        df = df.merge(supp[["sn"] + hl_cols], on="sn", how="left")
+        # Ensure integer dtype with NA for unmatched rows
+        for col in hl_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+        # ------------------------------------------------------------------
+        # final_* merged flags: hand-label where available, else automated
+        # Maps hl_* → closest automated has_* or grp_* column
+        # ------------------------------------------------------------------
+        _HL_TO_AUTO = {
+            "hl_knee_issue":          "has_knee_issue",
+            "hl_leg_issue":           "rgn_lower_limb",
+            "hl_back_spine_issue":    "has_spinal_issue",
+            "hl_balance_issue":       "has_balance_issue",
+            "hl_upper_body_issue":    "has_shoulder_issue",
+            "hl_foot_ankle_issue":    "rgn_ankle_foot",
+            "hl_neuro_issue":         "has_neurological",
+            "hl_frailty_issue":       "has_frailty",
+            "hl_metabolic_issue":     "has_metabolic",
+            "hl_injury_surgery_issue":"has_post_surgery",
+            "hl_general_pain_issue":  "has_chronic_pain",
+        }
+        for hl_col, auto_col in _HL_TO_AUTO.items():
+            final_col = hl_col.replace("hl_", "final_")
+            if auto_col in df.columns:
+                # Use hand label when it exists (non-NA), else fall back to automated
+                df[final_col] = df[hl_col].combine_first(
+                    df[auto_col].astype("Int64")
+                ).astype("Int64")
+            else:
+                df[final_col] = df[hl_col]
 
     return df
