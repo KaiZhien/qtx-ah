@@ -124,3 +124,59 @@ def test_dosage_shap_importances_shape():
     assert list(shap_df.columns) == ["feature", "mean_abs_shap"]
     assert len(shap_df) == X.shape[1]
     assert shap_df["mean_abs_shap"].notna().all()
+
+
+from qtx.dosage.train import train_dosage_model
+
+
+def _make_dosage_df(n_once: int = 40, n_twice: int = 10, n_lr10: int = 20) -> pd.DataFrame:
+    """Synthetic dosage matrix matching build_dosage_matrix() output structure."""
+    rng = np.random.default_rng(0)
+    feature_cols = [
+        "age", "gender_M", "joined_with_pain_Y",
+        "hl_knee_issue", "hl_leg_issue", "hl_back_spine_issue",
+        "hl_balance_issue", "hl_upper_body_issue", "hl_foot_ankle_issue",
+        "hl_neuro_issue", "hl_frailty_issue", "hl_metabolic_issue",
+        "hl_injury_surgery_issue", "hl_general_pain_issue",
+    ]
+    n = n_once + n_twice + n_lr10
+    X = pd.DataFrame(rng.integers(0, 2, size=(n, len(feature_cols))).astype(float), columns=feature_cols)
+    X["age"] = rng.integers(50, 90, size=n).astype(float)
+    labels = [0] * n_once + [1] * n_twice + [2] * n_lr10
+    X["frequency_label"] = labels
+    X["frequency_raw"] = ["once"] * n_once + ["twice"] * n_twice + ["l + r 10"] * n_lr10
+    X["Gender_orig"] = "F"
+    return X
+
+
+def test_train_dosage_model_returns_required_keys():
+    df = _make_dosage_df()
+    result = train_dosage_model(df)
+    for key in ["model", "cv_metrics", "shap_df", "feature_names", "label_names", "n"]:
+        assert key in result, f"Missing key: {key}"
+
+
+def test_train_dosage_model_n_matches_input():
+    df = _make_dosage_df(40, 10, 20)
+    result = train_dosage_model(df)
+    assert result["n"] == 70
+
+
+def test_train_dosage_model_predict_proba_sums_to_one():
+    df = _make_dosage_df()
+    result = train_dosage_model(df)
+    model = result["model"]
+    feature_names = result["feature_names"]
+    X_test = df[feature_names].head(5).astype(float)
+    proba = model.predict_proba(X_test)
+    np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_train_dosage_model_proba_n_classes():
+    df = _make_dosage_df()
+    result = train_dosage_model(df)
+    model = result["model"]
+    feature_names = result["feature_names"]
+    X_test = df[feature_names].head(3).astype(float)
+    proba = model.predict_proba(X_test)
+    assert proba.shape[1] == 3
