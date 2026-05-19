@@ -11,6 +11,10 @@
 label_map:
   "once": 0
   "twice": 1
+  # "l + r 10" is the exact string that appears in cleaned_data.xlsx after .strip().lower()
+  # normalization — spaces and trailing number are intentional. The asymmetry with
+  # label_names[2] = "lr10" is deliberate: label_map keys must match raw data verbatim,
+  # while label_names uses compact slugs for code use (array indexing, reports, etc.).
   "l + r 10": 2
 
 label_names:
@@ -69,6 +73,8 @@ calibration:
   method: sigmoid   # Platt scaling
   cv: 5
 
+# Training / evaluation cross-validation loop — distinct from calibration.cv above,
+# which controls folds only for Platt scaling (CalibratedClassifierCV).
 cv:
   k: 5
 
