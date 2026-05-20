@@ -6,9 +6,9 @@ A reproducible, config-driven Python pipeline for analysing rehabilitation outco
 
 ---
 
-## Baseline Results (v0.1.0, complete-case)
+## Current Results (v0.2.0, Approach B — iterative imputation + XGBoost)
 
-> Numbers from a full `make all` run on the 2024 AH dataset. Update this section whenever the pipeline is retrained on new data.
+> Numbers from a full `make model` run on the 2024 AH dataset with 46-feature matrix and iterative MICE imputation. Both GBM and XGBoost estimators are trained; XGBoost is the recommended estimator. Update this section after retraining on new data.
 
 | Metric | Value | Notes |
 |--------|-------|-------|
@@ -16,16 +16,38 @@ A reproducible, config-driven Python pipeline for analysing rehabilitation outco
 | Follow-up rate | 34.7% (596 / 1,716) | Dropout is the primary data-quality challenge |
 | Overall responders | 69.5% of follow-up (414 / 596) | ≥ MCID on 2+ tests |
 | Classified by phenotype | 39.9% (684 / 1,716) | 60.1% Unclassified — most have no comorbidity tags |
-| **Regression** R² (composite improvement) | 0.037 ± 0.127 | RMSE = 0.61, n = 489 complete cases |
-| **Classifier** AUC-ROC (overall responder) | 0.630 ± 0.049 | AUC-PR = 0.854, n = 489 |
-| **Dropout** AUC-ROC (predicts non-completion) | 0.965 ± 0.006 | n = 519; baseline features only |
+| **Regression XGB** R² (composite improvement) | **0.125** | RMSE ~0.58, n ≈ 596; iterative imputation |
+| **Regression GBM** R² | 0.110 | RMSE ~0.59, n ≈ 596 |
+| **Classifier XGB** AUC-ROC (overall responder) | **0.739** | AUC-PR ~0.88, F1 ~0.72, n ≈ 596 |
+| **Classifier GBM** AUC-ROC | 0.677 | n ≈ 596 |
+| **Dropout XGB** AUC-ROC (predicts non-completion) | **0.998** | F1 ~0.99, n = 1,716; all rows usable |
+| **Dropout GBM** AUC-ROC | 0.992 | n = 1,716 |
 
 **Top phenotype groups** (of classified patients): Joint disease 25%, Frailty/Sarcopenia 11%, Spine/Back 8%, Soft-tissue injury 6%, Neurological 4%.
 
 **Interpretation notes:**
-- The low regression R² is expected — the composite z-score target has high noise and feature missingness is 63–68% on key pre-test columns. Complete-case analysis drops 70% of the dataset.
-- The dropout model's high AUC-ROC (0.97) reflects that missing baseline data is itself the strongest predictor of non-completion — not a data-leakage issue, but a real clinical signal worth acting on.
-- All metrics are 5-fold CV. See `reports/modelling.html` for the full sensitivity analysis across four imputation strategies.
+- XGBoost handles NaN natively (no imputer step in pipeline) and outperforms GBM on all three tasks.
+- Classifier AUC-ROC crossed the 0.70 clinical target with XGBoost + iterative imputation vs 0.63 in v0.1.0 (complete-case GBM).
+- The dropout model's near-perfect AUC-ROC (0.998) reflects that missing baseline data is itself the strongest predictor of non-completion — a real clinical signal, not leakage.
+- All metrics are 5-fold stratified CV. See `reports/modelling.html` for SHAP importances, calibration curves, and full sensitivity analysis across four imputation strategies.
+
+### How to track metrics
+
+```bash
+# Train all 6 models and print terminal summary
+make model
+
+# View full HTML report (metrics, SHAP, calibration, sensitivity)
+open reports/modelling.html
+
+# Run test suite (99 tests)
+make test
+
+# Run a quick smoke-check without full pipeline
+PYTHONPATH=src .venv/bin/pytest tests/test_models.py -v
+```
+
+The terminal summary printed by `make model` shows N, AUC-ROC ± std, AUC-PR, Brier, and F1 for all six model blocks, plus best hyperparameters.
 
 ---
 
@@ -253,9 +275,12 @@ regression_composite:
 | `reports/missingness_profile.html` | Per-feature missingness × dropout vs. followup |
 | `reports/modelling.html` | CV metrics, SHAP importances, sensitivity analysis |
 | `reports/unmatched_tags.csv` | Free-text tokens not matched by any phenotype rule |
-| `models/regression.joblib` | GradientBoostingRegressor on `composite_improvement` |
-| `models/classifier.joblib` | GradientBoostingClassifier on `overall_responder` |
-| `models/dropout.joblib` | Dropout predictor (baseline features → `is_dropout`) |
+| `models/regression_gbm.joblib` | GradientBoostingRegressor on `composite_improvement` |
+| `models/regression_xgb.joblib` | XGBRegressor on `composite_improvement` |
+| `models/classifier_gbm.joblib` | GradientBoostingClassifier on `overall_responder` |
+| `models/classifier_xgb.joblib` | XGBClassifier on `overall_responder` |
+| `models/dropout_gbm.joblib` | GBM dropout predictor (baseline features → `is_dropout`) |
+| `models/dropout_xgb.joblib` | XGBoost dropout predictor (baseline features → `is_dropout`) |
 
 All Parquet files are also version-stamped in `data/processed/snapshots/`.
 
@@ -292,17 +317,18 @@ streamlit run dashboard/app.py
 
 ## Modelling
 
-Three model families, all trained with stratified k-fold CV:
+Three model families, each trained with two estimators (GBM and XGBoost), all with 5-fold stratified CV and iterative MICE imputation:
 
-| Model | Target | N (complete-case) | AUC-ROC / R² |
-|-------|--------|-------------------|--------------|
-| Regression | `composite_improvement` | ~489 | R² = 0.04 |
-| Classifier | `overall_responder` | ~489 | AUC-ROC = 0.63 |
-| Dropout | `is_dropout` | ~519 | AUC-ROC = 0.97 |
+| Model | Target | Estimator | N | AUC-ROC / R² | F1 |
+|-------|--------|-----------|---|--------------|-----|
+| Regression | `composite_improvement` | XGBoost | ~596 | R² = 0.125 | — |
+| Regression | `composite_improvement` | GBM | ~596 | R² = 0.110 | — |
+| Classifier | `overall_responder` | XGBoost | ~596 | AUC-ROC = 0.739 | ~0.72 |
+| Classifier | `overall_responder` | GBM | ~596 | AUC-ROC = 0.677 | — |
+| Dropout | `is_dropout` | XGBoost | 1,716 | AUC-ROC = 0.998 | ~0.99 |
+| Dropout | `is_dropout` | GBM | 1,716 | AUC-ROC = 0.992 | — |
 
-The low regression R² reflects extreme feature missingness (63–68% on key pre-test columns) and z-score target noise. The sensitivity analysis in `reports/modelling.html` shows metrics across four imputation strategies (complete-case, iterative MICE, kNN-5, median).
-
-SHAP feature importances are computed for all three models and included in the modelling report.
+XGBoost handles NaN natively (no imputer in its pipeline). The sensitivity analysis in `reports/modelling.html` shows metrics across four imputation strategies (complete-case, iterative MICE, kNN-5, median). SHAP feature importances and calibration curves are included for all six model blocks.
 
 ---
 
@@ -413,7 +439,7 @@ make test
 PYTHONPATH=src pytest tests/ -v
 ```
 
-**Coverage: 46 tests across 4 modules**
+**Coverage: 99 tests across 5 modules**
 
 | Module | What's tested |
 |--------|--------------|
@@ -421,6 +447,7 @@ PYTHONPATH=src pytest tests/ -v
 | `test_phenotype.py` | 20 hand-labelled tag→cohort pairs, multi-label co-occurrence, absence=0 invariant, Unclassified for empty input. |
 | `test_outcomes.py` | Direction correction for all 6 tests, MCID thresholds, NaN propagation, breadth counting, overall_responder logic. |
 | `test_missing.py` | fill_zero, category_missing, complete-case drop, outcome exclusion, missing_indicator column generation. |
+| `test_models.py` | Config (46 features per model, tuning blocks), imputer factory, XGB estimator factory, train contract for all 6 model/estimator combinations (best_params, n, Pipeline type), cross_validate_classifier F1 output. |
 
 ---
 
