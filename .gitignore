@@ -6,7 +6,12 @@ reports/
 __pycache__/
 *.pyc
 .env
+.env.*
 .venv/
 dist/
 *.egg-info/
 .DS_Store
+
+# AI tooling artifacts
+.superpowers/
+docs/superpowers/
