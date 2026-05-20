@@ -64,6 +64,7 @@ regression_composite:
 classifier_responder:
   target: overall_responder
   features:
+    # baseline demographics & measurements (original 16)
     - age
     - gender
     - baseline_sppb
@@ -80,11 +81,14 @@ classifier_responder:
     - has_post_surgery
     - has_balance_issue
     - has_chronic_pain
+    # additional baseline scores
     - pre_vas
     - pre_fast_gs_ms
+    # condition complexity
     - n_flags
     - n_regions
     - n_groups
+    # additional comorbidity flags
     - has_hypertension
     - has_frailty
     - has_fall_risk
@@ -92,6 +96,7 @@ classifier_responder:
     - has_metabolic
     - has_knee_issue
     - has_spinal_issue
+    # clinical group flags
     - grp_joint_disease
     - grp_spine_back
     - grp_neurological
@@ -101,6 +106,7 @@ classifier_responder:
     - grp_metabolic
     - grp_softtissue_injury
     - grp_osteoporosis
+    # body region flags
     - rgn_spine
     - rgn_knee
     - rgn_ankle_foot
@@ -109,6 +115,7 @@ classifier_responder:
     - rgn_shoulder
     - rgn_upper_limb
     - rgn_trunk
+    # categorical
     - primary_indication
   model: gradient_boosting
   metrics: [auc_roc, auc_pr, brier, calibration_curve]
@@ -116,6 +123,7 @@ classifier_responder:
 dropout:
   target: is_dropout
   features:
+    # baseline demographics & measurements (original 16)
     - age
     - gender
     - baseline_sppb
@@ -132,11 +140,14 @@ dropout:
     - has_post_surgery
     - has_balance_issue
     - has_chronic_pain
+    # additional baseline scores
     - pre_vas
     - pre_fast_gs_ms
+    # condition complexity
     - n_flags
     - n_regions
     - n_groups
+    # additional comorbidity flags
     - has_hypertension
     - has_frailty
     - has_fall_risk
@@ -144,6 +155,7 @@ dropout:
     - has_metabolic
     - has_knee_issue
     - has_spinal_issue
+    # clinical group flags
     - grp_joint_disease
     - grp_spine_back
     - grp_neurological
@@ -153,6 +165,7 @@ dropout:
     - grp_metabolic
     - grp_softtissue_injury
     - grp_osteoporosis
+    # body region flags
     - rgn_spine
     - rgn_knee
     - rgn_ankle_foot
@@ -161,6 +174,7 @@ dropout:
     - rgn_shoulder
     - rgn_upper_limb
     - rgn_trunk
+    # categorical
     - primary_indication
   model: gradient_boosting
   metrics: [auc_roc, auc_pr]
