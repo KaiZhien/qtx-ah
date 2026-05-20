@@ -13,6 +13,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     auc,
     brier_score_loss,
+    f1_score,
     mean_absolute_error,
     mean_squared_error,
     precision_recall_curve,
@@ -115,7 +116,7 @@ def cross_validate_classifier(model, X: pd.DataFrame, y: pd.Series, cv_config: d
     seed = 42
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=seed)
 
-    auc_roc_scores, auc_pr_scores, brier_scores = [], [], []
+    auc_roc_scores, auc_pr_scores, brier_scores, f1_scores = [], [], [], []
 
     X_arr = np.array(X)
     y_arr = np.array(y)
@@ -133,6 +134,7 @@ def cross_validate_classifier(model, X: pd.DataFrame, y: pd.Series, cv_config: d
         precision, recall, _ = precision_recall_curve(y_val, proba)
         auc_pr_scores.append(auc(recall, precision))
         brier_scores.append(brier_score_loss(y_val, proba))
+        f1_scores.append(f1_score(y_val, (proba >= 0.5).astype(int), average="weighted"))
 
     return {
         "auc_roc_mean": float(np.mean(auc_roc_scores)),
@@ -141,6 +143,8 @@ def cross_validate_classifier(model, X: pd.DataFrame, y: pd.Series, cv_config: d
         "auc_pr_std": float(np.std(auc_pr_scores)),
         "brier_mean": float(np.mean(brier_scores)),
         "brier_std": float(np.std(brier_scores)),
+        "f1_mean": float(np.mean(f1_scores)),
+        "f1_std": float(np.std(f1_scores)),
         "n_folds": k,
     }
 

@@ -238,6 +238,23 @@ def test_train_dropout_uses_all_rows(featured_df):
 
 
 # ---------------------------------------------------------------------------
+# F1 score in cross_validate_classifier
+# ---------------------------------------------------------------------------
+
+def test_cross_validate_classifier_returns_f1():
+    from sklearn.pipeline import Pipeline
+    from sklearn.ensemble import GradientBoostingClassifier
+    from qtx.models.evaluate import cross_validate_classifier
+    X = pd.DataFrame({"a": [1.0] * 40 + [0.0] * 40})
+    y = pd.Series([1] * 40 + [0] * 40)
+    model = Pipeline([("model", GradientBoostingClassifier(n_estimators=5, random_state=0))])
+    result = cross_validate_classifier(model, X, y, {"kind": "stratified_kfold", "k": 2})
+    assert "f1_mean" in result
+    assert "f1_std" in result
+    assert 0.0 <= result["f1_mean"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
 # tuning_xgb config test
 # ---------------------------------------------------------------------------
 
