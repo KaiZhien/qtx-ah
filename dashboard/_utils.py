@@ -30,7 +30,7 @@ COHORT_COLORS: dict[str, str] = {
     "Wellness": "#fc8181",
 }
 
-_FALLBACK_COLORS = ["#2b6cb0", "#4fd1c7", "#b794f4", "#68d391", "#f6ad55", "#fc8181"]
+_FALLBACK_COLORS = list(COHORT_COLORS.values())
 
 # Applied to every Plotly figure via apply_chart_style()
 CHART_LAYOUT = dict(

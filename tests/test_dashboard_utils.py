@@ -100,8 +100,5 @@ def test_cohort_color_known_cohort():
 
 def test_cohort_color_unknown_falls_back_by_index():
     from _utils import cohort_color
-    c0 = cohort_color("Unknown Cohort XYZ", index=0)
-    c1 = cohort_color("Unknown Cohort XYZ", index=1)
-    assert c0.startswith("#")
-    assert c1.startswith("#")
-    assert c0 != c1
+    assert cohort_color("Unknown Cohort XYZ", index=0) == "#2b6cb0"
+    assert cohort_color("Unknown Cohort XYZ", index=1) == "#4fd1c7"
