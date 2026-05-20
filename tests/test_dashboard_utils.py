@@ -71,3 +71,37 @@ def test_apply_filters_empty_selection_passes_all():
     })
     result = apply_filters(df, {"cohort": [], "usage_frequency": [], "age_band": [], "gender": []})
     assert len(result) == 2
+
+
+# plotly is a real dep — import it directly in tests that need it
+
+def test_apply_chart_style_sets_transparent_backgrounds():
+    import plotly.graph_objects as go
+    from _utils import apply_chart_style
+    fig = go.Figure()
+    result = apply_chart_style(fig)
+    assert result.layout.paper_bgcolor == "rgba(0,0,0,0)"
+    assert result.layout.plot_bgcolor == "rgba(0,0,0,0)"
+
+
+def test_apply_chart_style_returns_same_figure():
+    import plotly.graph_objects as go
+    from _utils import apply_chart_style
+    fig = go.Figure()
+    result = apply_chart_style(fig)
+    assert result is fig
+
+
+def test_cohort_color_known_cohort():
+    from _utils import cohort_color
+    assert cohort_color("Pain & Musculoskeletal", 0) == "#2b6cb0"
+    assert cohort_color("Neurological", 0) == "#b794f4"
+
+
+def test_cohort_color_unknown_falls_back_by_index():
+    from _utils import cohort_color
+    c0 = cohort_color("Unknown Cohort XYZ", index=0)
+    c1 = cohort_color("Unknown Cohort XYZ", index=1)
+    assert c0.startswith("#")
+    assert c1.startswith("#")
+    assert c0 != c1
