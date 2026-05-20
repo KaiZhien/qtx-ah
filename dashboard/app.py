@@ -7,6 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # dashboard/ for _utils
 
+import datetime
+
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -14,6 +16,18 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from _utils import apply_chart_style, apply_filters, inject_css, load_data, render_sidebar_filters
+
+
+def _kpi_card(label: str, value: str, sub: str, grad: str) -> str:
+    return f"""
+<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+  <div style="height:3px;background:{grad};"></div>
+  <div style="padding:18px 22px;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:10px;">{label}</div>
+    <div style="font-size:30px;font-weight:700;color:#0f2744;line-height:1;letter-spacing:-0.02em;">{value}</div>
+    <div style="font-size:11px;color:#a0aec0;margin-top:6px;">{sub}</div>
+  </div>
+</div>"""
 
 st.set_page_config(
     page_title="QuantumTX AH — Clinical Analytics",
@@ -55,7 +69,7 @@ st.markdown(f"""
     <div style="font-size:20px;font-weight:700;color:#0f2744;line-height:1.2;">QuantumTX AH — Clinical Analytics</div>
     <div style="font-size:12px;color:#94a3b8;margin-top:3px;">Alexandra Hospital 2024 · {len(df_full):,} patients total</div>
   </div>
-  <div style="background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;white-space:nowrap;">Last updated: 2026-05-20</div>
+  <div style="background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;white-space:nowrap;">Last updated: {datetime.date.today()}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -85,17 +99,6 @@ pct_responders = (
 )
 
 st.markdown('<div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px;">Programme Summary</div>', unsafe_allow_html=True)
-
-def _kpi_card(label: str, value: str, sub: str, grad: str) -> str:
-    return f"""
-<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
-  <div style="height:3px;background:{grad};"></div>
-  <div style="padding:18px 22px;">
-    <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:10px;">{label}</div>
-    <div style="font-size:30px;font-weight:700;color:#0f2744;line-height:1;letter-spacing:-0.02em;">{value}</div>
-    <div style="font-size:11px;color:#a0aec0;margin-top:6px;">{sub}</div>
-  </div>
-</div>"""
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
@@ -151,8 +154,8 @@ if "cohort" in df.columns:
         font=dict(size=20, color="#0f2744"),
         xref="paper", yref="paper",
     )
-    fig_donut.update_layout(height=380, title_text="")
     apply_chart_style(fig_donut)
+    fig_donut.update_layout(height=380, title_text="")
     st.plotly_chart(fig_donut, use_container_width=True)
 
 st.divider()
@@ -246,12 +249,12 @@ if has_cols and "composite_improvement" in df.columns:
             text=[f"n={r['n']}" for _, r in flag_df.iterrows()],
             textposition="outside",
         ))
+        apply_chart_style(fig_flags)
         fig_flags.update_layout(
             xaxis_title="Mean Composite Improvement",
             height=max(400, 40 * len(flag_df)),
             margin=dict(l=180, r=0, t=40, b=0),
         )
-        apply_chart_style(fig_flags)
         st.plotly_chart(fig_flags, use_container_width=True)
     else:
         st.info("No comorbidity flags have >= 10 patients with composite improvement data.")
