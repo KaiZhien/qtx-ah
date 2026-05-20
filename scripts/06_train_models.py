@@ -144,6 +144,10 @@ def build_report(
         f'MAE = {cv.get("mae_mean", float("nan")):.4f} | '
         f'R² = {cv.get("r2_mean", float("nan")):.4f}</span></p>'
     )
+    reg_params = reg_result.get("best_params", {})
+    if reg_params:
+        params_str = " | ".join(f"{k}={v}" for k, v in sorted(reg_params.items()))
+        sections.append(f"<p><strong>Best hyperparameters:</strong> {params_str}</p>")
 
     shap_df_reg = reg_result.get("shap_df", pd.DataFrame())
     if not shap_df_reg.empty:
@@ -167,6 +171,10 @@ def build_report(
         f'AUC-PR = {cv.get("auc_pr_mean", float("nan")):.4f} | '
         f'Brier = {cv.get("brier_mean", float("nan")):.4f}</span></p>'
     )
+    clf_params = clf_result.get("best_params", {})
+    if clf_params:
+        params_str = " | ".join(f"{k}={v}" for k, v in sorted(clf_params.items()))
+        sections.append(f"<p><strong>Best hyperparameters:</strong> {params_str}</p>")
 
     shap_df_clf = clf_result.get("shap_df", pd.DataFrame())
     cal_data = clf_result.get("calibration", (np.array([]), np.array([])))
@@ -203,6 +211,10 @@ def build_report(
         f'AUC-PR = {cv.get("auc_pr_mean", float("nan")):.4f} | '
         f'Brier = {cv.get("brier_mean", float("nan")):.4f}</span></p>'
     )
+    drop_params = drop_result.get("best_params", {})
+    if drop_params:
+        params_str = " | ".join(f"{k}={v}" for k, v in sorted(drop_params.items()))
+        sections.append(f"<p><strong>Best hyperparameters:</strong> {params_str}</p>")
 
     shap_df_drop = drop_result.get("shap_df", pd.DataFrame())
     if not shap_df_drop.empty:
@@ -242,14 +254,14 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Train with default strategy
     # -------------------------------------------------------------------------
-    log.info("=== Training Regression (complete_case) ===")
-    reg_result = train_regression(df, imputation_strategy="complete_case")
+    log.info("=== Training Regression (iterative) ===")
+    reg_result = train_regression(df, imputation_strategy="iterative")
 
-    log.info("=== Training Classifier (complete_case) ===")
-    clf_result = train_classifier(df, imputation_strategy="complete_case")
+    log.info("=== Training Classifier (iterative) ===")
+    clf_result = train_classifier(df, imputation_strategy="iterative")
 
-    log.info("=== Training Dropout (complete_case) ===")
-    drop_result = train_dropout(df, imputation_strategy="complete_case")
+    log.info("=== Training Dropout (iterative) ===")
+    drop_result = train_dropout(df, imputation_strategy="iterative")
 
     # -------------------------------------------------------------------------
     # Save model artefacts
@@ -326,6 +338,8 @@ def main() -> None:
     print(f"  RMSE = {reg_cv.get('rmse_mean', float('nan')):.4f} ± {reg_cv.get('rmse_std', float('nan')):.4f}")
     print(f"  MAE  = {reg_cv.get('mae_mean', float('nan')):.4f} ± {reg_cv.get('mae_std', float('nan')):.4f}")
     print(f"  R²   = {reg_cv.get('r2_mean', float('nan')):.4f} ± {reg_cv.get('r2_std', float('nan')):.4f}")
+    if reg_result.get("best_params"):
+        print(f"  Best params: {reg_result['best_params']}")
 
     clf_cv = clf_result.get("cv_metrics", {})
     print(f"\n[CLASSIFIER] overall_responder")
@@ -333,6 +347,8 @@ def main() -> None:
     print(f"  AUC-ROC = {clf_cv.get('auc_roc_mean', float('nan')):.4f} ± {clf_cv.get('auc_roc_std', float('nan')):.4f}")
     print(f"  AUC-PR  = {clf_cv.get('auc_pr_mean', float('nan')):.4f} ± {clf_cv.get('auc_pr_std', float('nan')):.4f}")
     print(f"  Brier   = {clf_cv.get('brier_mean', float('nan')):.4f} ± {clf_cv.get('brier_std', float('nan')):.4f}")
+    if clf_result.get("best_params"):
+        print(f"  Best params: {clf_result['best_params']}")
 
     drop_cv = drop_result.get("cv_metrics", {})
     print(f"\n[DROPOUT] is_dropout")
@@ -340,6 +356,8 @@ def main() -> None:
     print(f"  AUC-ROC = {drop_cv.get('auc_roc_mean', float('nan')):.4f} ± {drop_cv.get('auc_roc_std', float('nan')):.4f}")
     print(f"  AUC-PR  = {drop_cv.get('auc_pr_mean', float('nan')):.4f} ± {drop_cv.get('auc_pr_std', float('nan')):.4f}")
     print(f"  Brier   = {drop_cv.get('brier_mean', float('nan')):.4f} ± {drop_cv.get('brier_std', float('nan')):.4f}")
+    if drop_result.get("best_params"):
+        print(f"  Best params: {drop_result['best_params']}")
 
     print(f"\n[OUTPUT] models/regression.joblib")
     print(f"[OUTPUT] models/classifier.joblib")
