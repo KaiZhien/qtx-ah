@@ -19,11 +19,33 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
+from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
 from sklearn.model_selection import KFold, StratifiedKFold
 
 from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _build_sklearn_imputer(strategy: str, seed: int):
+    """Return an unfitted sklearn imputer for use inside a Pipeline.
+
+    For complete_case, returns SimpleImputer(median) — the caller is expected
+    to have already dropped NaN rows before building X.
+    """
+    from sklearn.ensemble import RandomForestRegressor
+
+    if strategy == "iterative":
+        return IterativeImputer(
+            estimator=RandomForestRegressor(n_estimators=50, random_state=seed, n_jobs=-1),
+            max_iter=10,
+            random_state=seed,
+            skip_complete=True,
+        )
+    if strategy == "knn5":
+        return KNNImputer(n_neighbors=5)
+    return SimpleImputer(strategy="median")
 
 
 # ---------------------------------------------------------------------------
