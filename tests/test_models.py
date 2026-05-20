@@ -82,7 +82,7 @@ def _make_featured_df(n: int = 80, seed: int = 0) -> pd.DataFrame:
         "rgn_upper_limb": rng.integers(0, 2, n).astype(float),
         "rgn_trunk": rng.integers(0, 2, n).astype(float),
         # outcome columns (first 60 rows have outcomes, rest are dropout)
-        "overall_responder": np.where(np.arange(n) < 60, rng.integers(0, 2, n).astype(float), np.nan),
+        "overall_responder": [float(i % 2) for i in range(60)] + [np.nan] * (n - 60),
         "composite_improvement": np.where(np.arange(n) < 60, rng.uniform(-1, 1, n), np.nan),
         "is_dropout": np.where(np.arange(n) >= 60, 1, 0).astype(int),
         "has_followup": np.where(np.arange(n) < 60, "Y", "N"),
@@ -128,6 +128,12 @@ def test_config_primary_indication_in_features():
     assert "primary_indication" in cfg["dropout"]["features"]
 
 
+def test_fixture_covers_all_config_features(featured_df):
+    cfg = get_models_config()
+    missing = set(cfg["classifier_responder"]["features"]) - set(featured_df.columns)
+    assert not missing, f"Fixture missing feature columns: {missing}"
+
+
 # ---------------------------------------------------------------------------
 # _build_sklearn_imputer tests
 # ---------------------------------------------------------------------------
@@ -156,6 +162,7 @@ def test_build_sklearn_imputer_complete_case_returns_median():
     from qtx.models.evaluate import _build_sklearn_imputer
     imp = _build_sklearn_imputer("complete_case", seed=42)
     assert isinstance(imp, SimpleImputer)
+    assert imp.strategy == "median"
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +172,7 @@ def test_build_sklearn_imputer_complete_case_returns_median():
 def test_train_classifier_returns_best_params(featured_df):
     from qtx.models.classifier import train_classifier
     result = train_classifier(featured_df, imputation_strategy="median")
+    assert result, "train_classifier returned empty dict"
     assert "best_params" in result
     assert "n_estimators" in result["best_params"]
 
@@ -197,6 +205,7 @@ def test_train_classifier_model_is_pipeline(featured_df):
 def test_train_regression_returns_best_params(featured_df):
     from qtx.models.regression import train_regression
     result = train_regression(featured_df, imputation_strategy="median")
+    assert result, "train_regression returned empty dict"
     assert "best_params" in result
     assert "n_estimators" in result["best_params"]
 
@@ -206,6 +215,7 @@ def test_train_regression_model_is_pipeline(featured_df):
     from qtx.models.regression import train_regression
     result = train_regression(featured_df, imputation_strategy="median")
     assert isinstance(result["model"], Pipeline)
+    assert result["n"] == 60
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +225,7 @@ def test_train_regression_model_is_pipeline(featured_df):
 def test_train_dropout_returns_best_params(featured_df):
     from qtx.models.dropout import train_dropout
     result = train_dropout(featured_df, imputation_strategy="median")
+    assert result, "train_dropout returned empty dict"
     assert "best_params" in result
     assert "n_estimators" in result["best_params"]
 
