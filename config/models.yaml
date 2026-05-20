@@ -1,5 +1,6 @@
 regression_composite:
   features:
+    # baseline demographics & measurements (original 16)
     - age
     - gender
     - baseline_sppb
@@ -16,6 +17,42 @@ regression_composite:
     - has_post_surgery
     - has_balance_issue
     - has_chronic_pain
+    # additional baseline scores
+    - pre_vas
+    - pre_fast_gs_ms
+    # condition complexity
+    - n_flags
+    - n_regions
+    - n_groups
+    # additional comorbidity flags
+    - has_hypertension
+    - has_frailty
+    - has_fall_risk
+    - has_neurological
+    - has_metabolic
+    - has_knee_issue
+    - has_spinal_issue
+    # clinical group flags
+    - grp_joint_disease
+    - grp_spine_back
+    - grp_neurological
+    - grp_post_surgical
+    - grp_frailty_sarcopenia
+    - grp_balance_falls
+    - grp_metabolic
+    - grp_softtissue_injury
+    - grp_osteoporosis
+    # body region flags
+    - rgn_spine
+    - rgn_knee
+    - rgn_ankle_foot
+    - rgn_hip
+    - rgn_lower_limb
+    - rgn_shoulder
+    - rgn_upper_limb
+    - rgn_trunk
+    # categorical
+    - primary_indication
   target: composite_improvement
   model: gradient_boosting
   cv:
@@ -43,6 +80,36 @@ classifier_responder:
     - has_post_surgery
     - has_balance_issue
     - has_chronic_pain
+    - pre_vas
+    - pre_fast_gs_ms
+    - n_flags
+    - n_regions
+    - n_groups
+    - has_hypertension
+    - has_frailty
+    - has_fall_risk
+    - has_neurological
+    - has_metabolic
+    - has_knee_issue
+    - has_spinal_issue
+    - grp_joint_disease
+    - grp_spine_back
+    - grp_neurological
+    - grp_post_surgical
+    - grp_frailty_sarcopenia
+    - grp_balance_falls
+    - grp_metabolic
+    - grp_softtissue_injury
+    - grp_osteoporosis
+    - rgn_spine
+    - rgn_knee
+    - rgn_ankle_foot
+    - rgn_hip
+    - rgn_lower_limb
+    - rgn_shoulder
+    - rgn_upper_limb
+    - rgn_trunk
+    - primary_indication
   model: gradient_boosting
   metrics: [auc_roc, auc_pr, brier, calibration_curve]
 
@@ -65,9 +132,49 @@ dropout:
     - has_post_surgery
     - has_balance_issue
     - has_chronic_pain
+    - pre_vas
+    - pre_fast_gs_ms
+    - n_flags
+    - n_regions
+    - n_groups
+    - has_hypertension
+    - has_frailty
+    - has_fall_risk
+    - has_neurological
+    - has_metabolic
+    - has_knee_issue
+    - has_spinal_issue
+    - grp_joint_disease
+    - grp_spine_back
+    - grp_neurological
+    - grp_post_surgical
+    - grp_frailty_sarcopenia
+    - grp_balance_falls
+    - grp_metabolic
+    - grp_softtissue_injury
+    - grp_osteoporosis
+    - rgn_spine
+    - rgn_knee
+    - rgn_ankle_foot
+    - rgn_hip
+    - rgn_lower_limb
+    - rgn_shoulder
+    - rgn_upper_limb
+    - rgn_trunk
+    - primary_indication
   model: gradient_boosting
   metrics: [auc_roc, auc_pr]
 
 sensitivity:
   imputation_variants: [complete_case, iterative, knn5, median]
   feature_set_variants: [baseline_only, baseline_plus_phenotype, full]
+
+tuning:
+  n_iter: 30
+  cv: 5
+  param_distributions:
+    n_estimators: [100, 200, 300, 500]
+    learning_rate: [0.01, 0.05, 0.1, 0.2]
+    max_depth: [2, 3, 4, 5]
+    subsample: [0.7, 0.8, 1.0]
+    min_samples_leaf: [1, 5, 10, 20]
