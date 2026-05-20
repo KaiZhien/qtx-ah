@@ -32,6 +32,15 @@ _DEFAULT_PARAM_GRID = {
     "min_samples_leaf": [1, 5, 10, 20],
 }
 
+_DEFAULT_XGB_PARAM_GRID = {
+    "n_estimators": [100, 200, 300, 500],
+    "learning_rate": [0.01, 0.05, 0.1, 0.2],
+    "max_depth": [2, 3, 4, 6],
+    "subsample": [0.7, 0.8, 1.0],
+    "min_child_weight": [1, 3, 5, 10],
+    "colsample_bytree": [0.6, 0.8, 1.0],
+}
+
 
 def _get_feature_cols() -> list[str]:
     cfg = get_models_config()
@@ -54,18 +63,23 @@ def _encode_categoricals(df: pd.DataFrame, cat_cols: list[str]) -> tuple[pd.Data
     return df_enc, dummy_cols
 
 
-def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative") -> dict:
+def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", estimator_type: str = "gbm") -> dict:
     """Train composite_improvement regression model.
 
     Returns: {model, cv_metrics, shap_df, feature_names, n, strategy, best_params}
-    model is a fitted sklearn Pipeline(imputer, GradientBoostingRegressor).
+    model is a fitted sklearn Pipeline. estimator_type: "gbm" (default) or "xgb".
     """
     seed = int(get_settings().get("random_seed", 42))
     feature_cols = _get_feature_cols()
     cv_config = _get_cv_config()
-    tuning_cfg = _get_tuning_cfg()
+    tuning_key = "tuning_xgb" if estimator_type == "xgb" else "tuning"
+    tuning_cfg = get_models_config().get(tuning_key, {})
+    default_grid = _DEFAULT_XGB_PARAM_GRID if estimator_type == "xgb" else _DEFAULT_PARAM_GRID
 
-    log.info("train_regression: strategy=%s, features=%d", imputation_strategy, len(feature_cols))
+    log.info(
+        "train_regression: strategy=%s, estimator=%s, features=%d",
+        imputation_strategy, estimator_type, len(feature_cols),
+    )
 
     df_out = df[df["composite_improvement"].notna()].copy()
     log.info("train_regression: %d rows with composite_improvement", len(df_out))
@@ -99,14 +113,18 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative") -
             log.error("train_regression: complete_case yielded too few samples (%d); skipping", n_samples)
             return {}
 
-    sklearn_imputer = _build_sklearn_imputer(imputation_strategy, seed)
-
-    base_model = GradientBoostingRegressor(random_state=seed)
-    pipeline = Pipeline([("imputer", sklearn_imputer), ("model", base_model)])
+    if estimator_type == "xgb":
+        from xgboost import XGBRegressor
+        base_model = XGBRegressor(random_state=seed, n_jobs=-1, verbosity=0, tree_method="hist")
+        pipeline = Pipeline([("model", base_model)])
+    else:
+        sklearn_imputer = _build_sklearn_imputer(imputation_strategy, seed)
+        base_model = GradientBoostingRegressor(random_state=seed)
+        pipeline = Pipeline([("imputer", sklearn_imputer), ("model", base_model)])
 
     param_distributions = {
         "model__" + k: v
-        for k, v in tuning_cfg.get("param_distributions", _DEFAULT_PARAM_GRID).items()
+        for k, v in tuning_cfg.get("param_distributions", default_grid).items()
     }
 
     search = RandomizedSearchCV(
@@ -128,12 +146,16 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative") -
     cv_metrics = cross_validate_regression(best_pipeline, X_raw, y, cv_config)
     cv_metrics["n"] = n_samples
 
-    X_imputed = pd.DataFrame(
-        best_pipeline.named_steps["imputer"].transform(X_raw.values),
-        columns=final_feature_cols,
-    )
+    if estimator_type == "xgb":
+        X_for_shap = X_raw
+    else:
+        X_for_shap = pd.DataFrame(
+            best_pipeline.named_steps["imputer"].transform(X_raw.values),
+            columns=final_feature_cols,
+        )
+
     try:
-        shap_df = shap_importances(best_pipeline.named_steps["model"], X_imputed)
+        shap_df = shap_importances(best_pipeline.named_steps["model"], X_for_shap)
     except Exception as e:
         log.warning("SHAP failed for regression: %s", e)
         shap_df = pd.DataFrame(
