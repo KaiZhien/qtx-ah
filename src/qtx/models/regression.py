@@ -6,7 +6,6 @@ RMSE/MAE/R² metrics, SHAP importances, and best hyperparameters.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
@@ -96,6 +95,9 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative") -
         y = y[mask]
         n_samples = len(X_raw)
         log.info("train_regression: complete_case n=%d after NaN drop", n_samples)
+        if n_samples < 10:
+            log.error("train_regression: complete_case yielded too few samples (%d); skipping", n_samples)
+            return {}
 
     sklearn_imputer = _build_sklearn_imputer(imputation_strategy, seed)
 
