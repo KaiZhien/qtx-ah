@@ -118,7 +118,7 @@ classifier_responder:
     # categorical
     - primary_indication
   model: gradient_boosting
-  metrics: [auc_roc, auc_pr, brier, calibration_curve]
+  metrics: [auc_roc, auc_pr, brier, f1, calibration_curve]
 
 dropout:
   target: is_dropout
@@ -177,7 +177,7 @@ dropout:
     # categorical
     - primary_indication
   model: gradient_boosting
-  metrics: [auc_roc, auc_pr]
+  metrics: [auc_roc, auc_pr, f1]
 
 sensitivity:
   imputation_variants: [complete_case, iterative, knn5, median]

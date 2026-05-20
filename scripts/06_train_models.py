@@ -136,7 +136,8 @@ def _render_model_subsection(result: dict, label: str, task: str) -> list[str]:
             f'<p><span class="metric-highlight">N = {cv.get("n", "?")} | '
             f'AUC-ROC = {cv.get("auc_roc_mean", float("nan")):.4f} ± {cv.get("auc_roc_std", float("nan")):.4f} | '
             f'AUC-PR = {cv.get("auc_pr_mean", float("nan")):.4f} | '
-            f'Brier = {cv.get("brier_mean", float("nan")):.4f}</span></p>'
+            f'Brier = {cv.get("brier_mean", float("nan")):.4f} | '
+            f'F1 = {cv.get("f1_mean", float("nan")):.4f}</span></p>'
         )
     bp = result.get("best_params", {})
     if bp:
@@ -326,13 +327,13 @@ def main() -> None:
         ("[REGRESSION XGB]  composite_improvement", reg_result_xgb,
          [("RMSE", "rmse_mean", "rmse_std"), ("MAE", "mae_mean", "mae_std"), ("R²", "r2_mean", "r2_std")]),
         ("[CLASSIFIER GBM]  overall_responder", clf_result_gbm,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std")]),
+         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std"), ("F1", "f1_mean", "f1_std")]),
         ("[CLASSIFIER XGB]  overall_responder", clf_result_xgb,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std")]),
+         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std"), ("F1", "f1_mean", "f1_std")]),
         ("[DROPOUT GBM]     is_dropout", drop_result_gbm,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std")]),
+         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("F1", "f1_mean", "f1_std")]),
         ("[DROPOUT XGB]     is_dropout", drop_result_xgb,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std")]),
+         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("F1", "f1_mean", "f1_std")]),
     ]:
         cv = result.get("cv_metrics", {})
         print(f"\n{label}")
