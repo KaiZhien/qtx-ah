@@ -16,3 +16,4 @@ dist/
 # AI tooling artifacts
 .superpowers/
 docs/superpowers/
+HANDOFF.md
