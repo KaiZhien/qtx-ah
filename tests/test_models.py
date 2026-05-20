@@ -246,3 +246,64 @@ def test_config_has_tuning_xgb_block():
     assert "tuning_xgb" in cfg, "Expected tuning_xgb block in models.yaml"
     assert "colsample_bytree" in cfg["tuning_xgb"]["param_distributions"]
     assert cfg["tuning_xgb"]["n_iter"] == 30
+
+
+# ---------------------------------------------------------------------------
+# _build_xgb_estimator tests
+# ---------------------------------------------------------------------------
+
+def test_build_xgb_estimator_classifier():
+    from xgboost import XGBClassifier
+    from qtx.models.evaluate import _build_xgb_estimator
+    est = _build_xgb_estimator("classifier", seed=42)
+    assert isinstance(est, XGBClassifier)
+
+
+def test_build_xgb_estimator_regressor():
+    from xgboost import XGBRegressor
+    from qtx.models.evaluate import _build_xgb_estimator
+    est = _build_xgb_estimator("regressor", seed=42)
+    assert isinstance(est, XGBRegressor)
+
+
+# ---------------------------------------------------------------------------
+# train_classifier XGB contract
+# ---------------------------------------------------------------------------
+
+def test_train_classifier_xgb_returns_best_params(featured_df):
+    from qtx.models.classifier import train_classifier
+    result = train_classifier(featured_df, estimator_type="xgb")
+    assert result, "train_classifier(xgb) returned empty dict"
+    assert "best_params" in result
+    assert "n_estimators" in result["best_params"]
+
+
+def test_train_classifier_xgb_model_is_pipeline(featured_df):
+    from sklearn.pipeline import Pipeline
+    from qtx.models.classifier import train_classifier
+    result = train_classifier(featured_df, estimator_type="xgb")
+    assert isinstance(result["model"], Pipeline)
+
+
+# ---------------------------------------------------------------------------
+# train_regression XGB contract
+# ---------------------------------------------------------------------------
+
+def test_train_regression_xgb_returns_best_params(featured_df):
+    from qtx.models.regression import train_regression
+    result = train_regression(featured_df, estimator_type="xgb")
+    assert result, "train_regression(xgb) returned empty dict"
+    assert "best_params" in result
+    assert "n_estimators" in result["best_params"]
+
+
+# ---------------------------------------------------------------------------
+# train_dropout XGB contract
+# ---------------------------------------------------------------------------
+
+def test_train_dropout_xgb_returns_best_params(featured_df):
+    from qtx.models.dropout import train_dropout
+    result = train_dropout(featured_df, estimator_type="xgb")
+    assert result, "train_dropout(xgb) returned empty dict"
+    assert "best_params" in result
+    assert "n_estimators" in result["best_params"]
