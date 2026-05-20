@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # dashboard/ for _utils
 
+import html
 import pandas as pd
 import streamlit as st
 
@@ -24,6 +25,17 @@ LABEL_DISPLAY = {
     "lr10": "L+R 10 (20-min, 10 min each leg)",
 }
 CONFIDENCE_THRESHOLD = 0.50
+
+# Patient record card style constants
+_COL_HEADER = "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:10px;"
+_ROW = "display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:13px;"
+_LABEL = "color:#64748b;"
+_VAL = "color:#0f2744;font-weight:500;"
+
+
+def _row(label: str, val: str) -> str:
+    return f'<div style="{_ROW}"><span style="{_LABEL}">{label}</span><span style="{_VAL}">{val}</span></div>'
+
 
 st.set_page_config(page_title="Clinical Tools", layout="wide", initial_sidebar_state="expanded")
 inject_css()
@@ -73,7 +85,7 @@ if sn_query.strip():
     if match.empty:
         st.markdown(f"""
 <div style="background:#fff8f0;border:1px solid #fbd38d;border-radius:8px;padding:12px 16px;color:#744210;font-size:13px;">
-  Patient not found: <strong>{sn_query.strip()}</strong>
+  Patient not found: <strong>{html.escape(sn_query.strip())}</strong>
 </div>""", unsafe_allow_html=True)
     else:
         row = match.iloc[0]
@@ -95,17 +107,9 @@ if sn_query.strip():
         drop = row.get("is_dropout", None)
         drop_str = "Yes" if drop == 1 else ("No" if drop == 0 else "N/A")
 
-        _COL_HEADER = "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:10px;"
-        _ROW = "display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:13px;"
-        _LABEL = "color:#64748b;"
-        _VAL = "color:#0f2744;font-weight:500;"
-
-        def _row(label: str, val: str) -> str:
-            return f'<div style="{_ROW}"><span style="{_LABEL}">{label}</span><span style="{_VAL}">{val}</span></div>'
-
         st.markdown(f"""
 <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,0.06);margin-top:12px;">
-  <div style="font-size:13px;font-weight:600;color:#0f2744;margin-bottom:16px;">Record — S/N {sn_query.strip()}</div>
+  <div style="font-size:13px;font-weight:600;color:#0f2744;margin-bottom:16px;">Record — S/N {html.escape(sn_query.strip())}</div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px;">
 
     <div>
@@ -280,7 +284,7 @@ else:
         with cond_cols[i % 3]:
             condition_values[key] = int(st.checkbox(label, key=f"dr_{key}"))
 
-    st.markdown("---")
+    st.divider()
 
     if st.button("Get Recommendation", type="primary", key="dr_predict"):
         patient_base = {
