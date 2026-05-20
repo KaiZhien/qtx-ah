@@ -235,3 +235,14 @@ def test_train_dropout_uses_all_rows(featured_df):
     result = train_dropout(featured_df, imputation_strategy="median")
     # all 80 rows have is_dropout defined
     assert result["n"] == 80
+
+
+# ---------------------------------------------------------------------------
+# tuning_xgb config test
+# ---------------------------------------------------------------------------
+
+def test_config_has_tuning_xgb_block():
+    cfg = get_models_config()
+    assert "tuning_xgb" in cfg, "Expected tuning_xgb block in models.yaml"
+    assert "colsample_bytree" in cfg["tuning_xgb"]["param_distributions"]
+    assert cfg["tuning_xgb"]["n_iter"] == 30
