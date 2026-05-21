@@ -1,4 +1,4 @@
-.PHONY: install ingest clean-data phenotype outcomes features eda model dosage dashboard all test clean
+.PHONY: install ingest clean-data phenotype outcomes features eda model dosage dashboard dev api web all test clean
 
 PYTHON := $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 export PYTHONPATH := src
@@ -32,6 +32,18 @@ dosage:
 
 dashboard:
 	PYTHONPATH=src streamlit run dashboard/app.py
+
+api:
+	source .venv/bin/activate && cd api && uvicorn main:app --reload --port 8000
+
+web:
+	cd web && npm run dev
+
+dev:
+	@trap 'kill 0' SIGINT; \
+	(source .venv/bin/activate && cd api && uvicorn main:app --reload --port 8000) & \
+	(cd web && npm run dev) & \
+	wait
 
 all: ingest clean-data phenotype outcomes features eda model dosage
 
