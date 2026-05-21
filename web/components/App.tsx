@@ -21,6 +21,7 @@ import {
   TweakToggle,
 } from "@/components/TweaksPanel";
 import { OverviewPage } from "@/components/pages/OverviewPage";
+import { CohortsPage } from "@/components/pages/CohortsPage";
 
 interface TweaksUIProps {
   open: boolean;
@@ -219,7 +220,9 @@ export function App() {
             : <OverviewPage data={filteredData} dataAll={allData} onPatientClick={openDrawer} showFunnel={tweaks.showFunnel} />
         )}
         {page === "cohorts" && (
-          <div style={{ padding: 28, color: "var(--ink-3)" }}>Cohort Analysis</div>
+          loading
+            ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
+            : <CohortsPage data={filteredData} onPatientClick={openDrawer} />
         )}
         {page === "clinical" && (
           <div style={{ padding: 28, color: "var(--ink-3)" }}>Clinical Tools</div>
