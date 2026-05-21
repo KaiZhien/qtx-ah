@@ -20,6 +20,7 @@ import {
   TweakColor,
   TweakToggle,
 } from "@/components/TweaksPanel";
+import { OverviewPage } from "@/components/pages/OverviewPage";
 
 interface TweaksUIProps {
   open: boolean;
@@ -213,15 +214,9 @@ export function App() {
         </header>
 
         {page === "overview" && (
-          <div style={{ padding: 28 }}>
-            {loading ? (
-              <div style={{ color: "var(--ink-3)" }}>Loading patients…</div>
-            ) : (
-              <div style={{ color: "var(--ink-3)", fontSize: 13 }}>
-                Overview — {filteredData.length} patients
-              </div>
-            )}
-          </div>
+          loading
+            ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
+            : <OverviewPage data={filteredData} dataAll={allData} onPatientClick={openDrawer} showFunnel={tweaks.showFunnel} />
         )}
         {page === "cohorts" && (
           <div style={{ padding: 28, color: "var(--ink-3)" }}>Cohort Analysis</div>
