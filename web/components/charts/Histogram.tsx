@@ -57,7 +57,7 @@ export function Histogram({ values, bins = 24, height = 160, color = "var(--acce
           </g>
         );
       })}
-      {xLabel && <text x={w / 2} y={height - 0} textAnchor="middle" fontSize="10.5" fill="var(--ink-3)" />}
+      {xLabel && <text x={w / 2} y={height - 0} textAnchor="middle" fontSize="10.5" fill="var(--ink-3)">{xLabel}</text>}
     </svg>
   );
 }
