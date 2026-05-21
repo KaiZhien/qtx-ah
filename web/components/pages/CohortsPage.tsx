@@ -102,7 +102,7 @@ function PatientSampleTable({
             <td>{p.cohort}</td>
             <td style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{p.usage_frequency}</td>
             <td className="num">{p.baseline_sppb}</td>
-            <td className="num">{p.pre_tug_s.toFixed(1)}</td>
+            <td className="num">{p.pre_tug_s != null ? p.pre_tug_s.toFixed(1) : "—"}</td>
             <td className="num">{p.composite_improvement != null ? (p.composite_improvement >= 0 ? "+" : "") + p.composite_improvement.toFixed(2) : "—"}</td>
             <td>
               {p.is_dropout ? <Pill kind="warning">No follow-up</Pill>
