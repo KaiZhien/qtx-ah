@@ -13,6 +13,13 @@ import { fetchPatients } from "@/lib/api";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer } from "@/components/ui/Drawer";
 import { PatientDrawerBody } from "@/components/PatientDrawerBody";
+import {
+  TweaksPanel,
+  TweakSection,
+  TweakRadio,
+  TweakColor,
+  TweakToggle,
+} from "@/components/TweaksPanel";
 
 interface TweaksUIProps {
   open: boolean;
@@ -21,9 +28,50 @@ interface TweaksUIProps {
   setTweak: (kOrObj: string | Partial<Tweaks>, v?: unknown) => void;
 }
 
-function TweaksUI({ open: _open, onClose: _onClose, tweaks: _tweaks, setTweak: _setTweak }: TweaksUIProps) {
-  // TweaksPanel will be connected in Task 6
-  return null;
+function TweaksUI({ open, onClose, tweaks, setTweak }: TweaksUIProps) {
+  if (!open) return null;
+  return (
+    <TweaksPanel open={open} onClose={onClose} title="Tweaks">
+      <TweakSection title="Theme">
+        <TweakRadio
+          label="Mode"
+          value={tweaks.theme}
+          onChange={(v) => setTweak("theme", v as "light" | "dark")}
+          options={[
+            { label: "Light", value: "light" },
+            { label: "Dark", value: "dark" },
+          ]}
+        />
+        <TweakRadio
+          label="Density"
+          value={tweaks.density}
+          onChange={(v) => setTweak("density", v as "comfortable" | "compact")}
+          options={[
+            { label: "Comfortable", value: "comfortable" },
+            { label: "Compact", value: "compact" },
+          ]}
+        />
+        <TweakColor
+          label="Accent"
+          value={tweaks.accent}
+          onChange={(v) => setTweak("accent", v as string)}
+          options={["#3357c4", "#0a6e6a", "#7a4adb", "#b8580f"]}
+        />
+      </TweakSection>
+      <TweakSection title="Sections">
+        <TweakToggle
+          label="Programme funnel"
+          value={tweaks.showFunnel}
+          onChange={(v) => setTweak("showFunnel", v)}
+        />
+        <TweakToggle
+          label="Tabular numbers"
+          value={tweaks.tabularNums}
+          onChange={(v) => setTweak("tabularNums", v)}
+        />
+      </TweakSection>
+    </TweaksPanel>
+  );
 }
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
@@ -197,6 +245,39 @@ export function App() {
       >
         <PatientDrawerBody patient={drawerPatient} />
       </Drawer>
+
+      {/* Floating button to open tweaks panel */}
+      {!tweaksOpen && (
+        <button
+          aria-label="Open tweaks"
+          onClick={() => setTweaksOpen(true)}
+          style={{
+            position: "fixed",
+            top: 16,
+            right: 16,
+            zIndex: 2147483645,
+            appearance: "none",
+            border: "none",
+            borderRadius: 8,
+            width: 32,
+            height: 32,
+            background: "var(--surface-2, rgba(0,0,0,0.08))",
+            color: "var(--ink-2, rgba(0,0,0,0.6))",
+            cursor: "default",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 14,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
+            <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"
+              stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+        </button>
+      )}
 
       <TweaksUI
         open={tweaksOpen}
