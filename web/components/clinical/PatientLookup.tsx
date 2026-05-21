@@ -23,9 +23,8 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
     : [];
 
   const recentlyFlagged = data
-    .filter((p) => p.is_dropout === 1)
-    .sort((a, b) => b.sn - a.sn)
-    .slice(0, 3);
+    .filter((p) => p.is_dropout === 1 && p.age > 70)
+    .slice(0, 6);
 
   return (
     <div>
@@ -89,7 +88,7 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
         )}
       </Card>
       {!q && (
-        <Card title="Recently flagged" subtitle="Patients with dropout risk (most recent)">
+        <Card title="Recently flagged" subtitle="Patients with dropout risk in last cycle (sample)">
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
             {recentlyFlagged.map((p) => (
               <div

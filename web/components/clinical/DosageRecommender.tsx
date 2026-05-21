@@ -65,6 +65,7 @@ export function DosageRecommender() {
   });
   const [rec, setRec] = useState<DosageResult | null>(null);
   const [predicting, setPredicting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   function setCond(k: keyof DosageFormState["conditions"], v: boolean) {
     setForm((f) => ({ ...f, conditions: { ...f.conditions, [k]: v } }));
@@ -72,6 +73,7 @@ export function DosageRecommender() {
 
   const handleGetRec = async () => {
     setPredicting(true);
+    setError(null);
     try {
       const intake: DosageIntake = {
         age: form.age,
@@ -93,6 +95,7 @@ export function DosageRecommender() {
       setRec(result);
     } catch (e) {
       console.error(e);
+      setError("Prediction failed — check that the API server is running.");
     } finally {
       setPredicting(false);
     }
@@ -162,7 +165,11 @@ export function DosageRecommender() {
         title="Recommendation"
         subtitle={rec ? "Confidence-weighted across treatment options" : "Run the recommender"}
       >
-        {!rec ? (
+        {error && !rec ? (
+          <div style={{ padding: "16px 8px", textAlign: "center", color: "var(--red, #e53e3e)", fontSize: 13 }}>
+            {error}
+          </div>
+        ) : !rec ? (
           <PredictionEmpty />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>

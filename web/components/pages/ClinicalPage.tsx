@@ -29,7 +29,7 @@ export function ClinicalPage({ data, onPatientClick }: ClinicalPageProps) {
           ]}
         />
       </Card>
-      {tab === "intake" && <IntakeEstimator data={data} onPatientClick={onPatientClick} />}
+      {tab === "intake" && <IntakeEstimator />}
       {tab === "lookup" && <PatientLookup data={data} onPatientClick={onPatientClick} />}
       {tab === "dosage" && <DosageRecommender />}
     </div>

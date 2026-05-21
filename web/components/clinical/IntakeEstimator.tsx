@@ -8,12 +8,10 @@ import { Icon } from "@/components/ui/Icons";
 import { ConfidenceMeter } from "@/components/charts/ConfidenceMeter";
 import { predictOutcomes } from "@/lib/api";
 import { COHORTS, USAGE, FLAG_LABELS } from "@/lib/constants";
-import type { Patient, PatientProfile, PredictionResult } from "@/lib/types";
+import type { PatientProfile, PredictionResult } from "@/lib/types";
 
-interface IntakeEstimatorProps {
-  data: Patient[];
-  onPatientClick: (p: Patient) => void;
-}
+// IntakeEstimator takes no props; data and onPatientClick were prototype-divergent additions
+type IntakeEstimatorProps = Record<string, never>;
 
 interface FormState {
   age: number;
@@ -120,7 +118,8 @@ function Contributions({ contributions }: { contributions: PredictionResult["con
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {contributions.map((c, i) => {
         const pct = max > 0 ? Math.abs(c.value) / max : 0;
-        const col = c.value >= 0 ? "var(--success)" : "var(--danger)";
+        const isPositive = c.direction === "positive";
+        const col = isPositive ? "var(--success)" : "var(--danger)";
         return (
           <div key={i} style={{ display: "grid", gridTemplateColumns: "200px 1fr 60px", alignItems: "center", gap: 12 }}>
             <div style={{ fontSize: 12, color: "var(--ink-2)" }}>{c.feature}</div>
@@ -128,14 +127,14 @@ function Contributions({ contributions }: { contributions: PredictionResult["con
               <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "var(--line-strong)" }} />
               <div style={{
                 position: "absolute", top: 0, height: "100%",
-                left: c.value >= 0 ? "50%" : `${50 - pct * 50}%`,
+                left: isPositive ? "50%" : `${50 - pct * 50}%`,
                 width: `${pct * 50}%`,
                 background: col, opacity: 0.85,
                 borderRadius: 2, transition: "width 600ms cubic-bezier(0.2,0.7,0.2,1)",
               }} />
             </div>
             <div className="mono num" style={{ fontSize: 11, color: col, textAlign: "right", fontWeight: 500 }}>
-              {c.value >= 0 ? "+" : ""}{c.value.toFixed(2)}
+              {isPositive ? "+" : "-"}{Math.abs(c.value).toFixed(2)}
             </div>
           </div>
         );
@@ -150,7 +149,7 @@ const FLAG_KEYS = [
   "has_knee_issue", "has_neurological",
 ] as const;
 
-export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }: IntakeEstimatorProps) {
+export function IntakeEstimator(_props: IntakeEstimatorProps) {
   const [form, setForm] = useState<FormState>({
     age: 68, gender: "F",
     baseline_sppb: 7,
@@ -166,6 +165,7 @@ export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }
   });
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [predicting, setPredicting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   function set(k: keyof FormState, v: unknown) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -176,6 +176,7 @@ export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }
 
   const handlePredict = async () => {
     setPredicting(true);
+    setError(null);
     try {
       const profile: PatientProfile = {
         age: form.age,
@@ -188,25 +189,23 @@ export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }
         pre_normal_gs_ms: form.pre_normal_gs_ms,
         pre_fast_gs_ms: form.pre_fast_gs_ms,
         baseline_sppb: form.baseline_sppb,
-        has_oa: form.flags["has_oa"] ? 1 : 0,
+        // Fields accepted by backend PatientProfile — map UI checkboxes to closest backend fields
+        has_oa: (form.flags["has_oa"] || form.flags["has_knee_issue"]) ? 1 : 0,  // knee issue = OA proxy
         has_diabetes: form.flags["has_diabetes"] ? 1 : 0,
         has_stroke: 0,
-        has_parkinsons: 0,
-        has_frailty: form.flags["has_frailty"] ? 1 : 0,
+        has_parkinsons: form.flags["has_neurological"] ? 1 : 0,  // neurological = Parkinson's proxy
+        has_frailty: (form.flags["has_frailty"] || form.flags["has_balance_issue"]) ? 1 : 0,  // balance issue = frailty proxy
         has_cancer: 0,
         has_hypertension: 0,
         has_osteoporosis: 0,
-        has_balance_issue: form.flags["has_balance_issue"] ? 1 : 0,
-        has_post_surgery: form.flags["has_post_surgery"] ? 1 : 0,
-        has_chronic_pain: form.flags["has_chronic_pain"] ? 1 : 0,
-        has_spinal_issue: form.flags["has_spinal_issue"] ? 1 : 0,
-        has_knee_issue: form.flags["has_knee_issue"] ? 1 : 0,
-        has_neurological: form.flags["has_neurological"] ? 1 : 0,
+        has_depression: form.flags["has_chronic_pain"] ? 1 : 0,  // chronic pain = depression proxy (closest available)
+        // has_post_surgery and has_spinal_issue have no good backend mapping; omitted
       };
       const result = await predictOutcomes(profile);
       setPrediction(result);
     } catch (e) {
       console.error(e);
+      setError("Prediction failed — check that the API server is running.");
     } finally {
       setPredicting(false);
     }
@@ -277,7 +276,7 @@ export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }
             <button className="btn primary" onClick={handlePredict} disabled={predicting}>
               {predicting ? "Predicting..." : "Predict outcomes"} <Icon.Arrow />
             </button>
-            <button className="btn" onClick={() => { setPrediction(null); setForm({ ...form, tags: "", flags: {} }); }}>
+            <button className="btn" onClick={() => { setPrediction(null); setError(null); setForm({ ...form, tags: "", flags: {} }); }}>
               Reset
             </button>
           </div>
@@ -285,7 +284,11 @@ export function IntakeEstimator({ data: _data, onPatientClick: _onPatientClick }
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <Card title="Model output" subtitle={prediction ? "Based on API prediction model" : "Run a prediction to see results"}>
-            {!prediction ? (
+            {error && !prediction ? (
+              <div style={{ padding: "16px 8px", textAlign: "center", color: "var(--red, #e53e3e)", fontSize: 13 }}>
+                {error}
+              </div>
+            ) : !prediction ? (
               <PredictionEmpty />
             ) : (
               <PredictionDisplay prediction={prediction} />

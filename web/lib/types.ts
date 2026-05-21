@@ -102,6 +102,8 @@ export type PatientProfile = {
   has_cardiovascular?: 0 | 1 | null;
   has_hypertension: 0 | 1;
   has_osteoporosis: 0 | 1;
+  has_copd?: 0 | 1 | null;
+  has_depression?: 0 | 1 | null;
   has_spinal_issue?: 0 | 1 | null;
   has_knee_issue?: 0 | 1 | null;
   has_hip_issue?: 0 | 1 | null;
