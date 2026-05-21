@@ -79,12 +79,18 @@ export type PatientProfile = {
 export type DosageIntake = {
   age: number;
   gender: string;
-  has_pain: 0 | 1;
-  has_oa: 0 | 1;
-  has_diabetes: 0 | 1;
-  has_hypertension: 0 | 1;
-  has_frailty: 0 | 1;
-  has_osteoporosis: 0 | 1;
+  joined_with_pain?: string;
+  hl_knee_issue?: number;
+  hl_leg_issue?: number;
+  hl_back_spine_issue?: number;
+  hl_balance_issue?: number;
+  hl_upper_body_issue?: number;
+  hl_foot_ankle_issue?: number;
+  hl_neuro_issue?: number;
+  hl_frailty_issue?: number;
+  hl_metabolic_issue?: number;
+  hl_injury_surgery_issue?: number;
+  hl_general_pain_issue?: number;
 };
 
 export type PerTestPrediction = {
