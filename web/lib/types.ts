@@ -1,3 +1,11 @@
+export type PatientTestKey =
+  | "pre_vas" | "post_vas"
+  | "pre_tug_s" | "post_tug_s"
+  | "pre_5xsst_s" | "post_5xsst_s"
+  | "pre_normal_gs_ms" | "post_normal_gs_ms"
+  | "pre_fast_gs_ms" | "post_fast_gs_ms"
+  | "baseline_sppb" | "post_sppb";
+
 export type Patient = {
   sn: number;
   id: string;

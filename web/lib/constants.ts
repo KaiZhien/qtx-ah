@@ -78,3 +78,42 @@ export const DEFAULT_FILTERS: import("./types").Filters = {
   gender: ["F", "M"],
   fuOnly: false,
 };
+
+export const TESTS: {
+  key: string;
+  label: string;
+  unit: string;
+  pre: import("./types").PatientTestKey;
+  post: import("./types").PatientTestKey;
+  higherBetter: boolean;
+  mcid: string;
+}[] = [
+  { key: "vas", label: "VAS (Pain)", unit: "0–10", pre: "pre_vas", post: "post_vas", higherBetter: false, mcid: "≥2 pts" },
+  { key: "tug", label: "TUG", unit: "seconds", pre: "pre_tug_s", post: "post_tug_s", higherBetter: false, mcid: "≥3 s or 10%" },
+  { key: "sst", label: "5×SST", unit: "seconds", pre: "pre_5xsst_s", post: "post_5xsst_s", higherBetter: false, mcid: "≥10%" },
+  { key: "ngs", label: "Normal Gait", unit: "m/s", pre: "pre_normal_gs_ms", post: "post_normal_gs_ms", higherBetter: true, mcid: "≥0.05 m/s" },
+  { key: "fgs", label: "Fast Gait", unit: "m/s", pre: "pre_fast_gs_ms", post: "post_fast_gs_ms", higherBetter: true, mcid: "≥0.10 m/s" },
+  { key: "sppb", label: "SPPB", unit: "0–12", pre: "baseline_sppb", post: "post_sppb", higherBetter: true, mcid: "≥1 pt" },
+];
+
+export const FLAG_LABELS: Record<string, string> = {
+  has_oa: "Osteoarthritis",
+  has_diabetes: "Diabetes",
+  has_stroke: "Stroke",
+  has_parkinsons: "Parkinson's",
+  has_sarcopenia: "Sarcopenia",
+  has_frailty: "Frailty",
+  has_balance_issue: "Balance issue",
+  has_post_surgery: "Post-surgery",
+  has_chronic_pain: "Chronic pain",
+  has_neuropathy: "Neuropathy",
+  has_cardiovascular: "Cardiovascular",
+  has_hypertension: "Hypertension",
+  has_osteoporosis: "Osteoporosis",
+  has_spinal_issue: "Spinal",
+  has_knee_issue: "Knee",
+  has_hip_issue: "Hip",
+  has_shoulder_issue: "Shoulder",
+  has_neurological: "Neurological",
+  has_fracture: "Fracture",
+};
