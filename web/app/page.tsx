@@ -1,4 +1,3 @@
-"use client";
 // App component will be created in Task 5
 export default function Page() {
   return (

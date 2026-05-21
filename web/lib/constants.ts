@@ -27,6 +27,7 @@ export const USAGE = [
 export const AGE_BANDS = ["<50", "50-59", "60-69", "70-79", "80+"];
 
 export const FLAGS = [
+  "has_followup",
   "has_oa",
   "has_diabetes",
   "has_stroke",
@@ -37,6 +38,7 @@ export const FLAGS = [
   "has_post_surgery",
   "has_chronic_pain",
   "has_neuropathy",
+  "has_cancer",
   "has_cardiovascular",
   "has_hypertension",
   "has_osteoporosis",
@@ -46,6 +48,10 @@ export const FLAGS = [
   "has_shoulder_issue",
   "has_neurological",
   "has_fracture",
+  "has_autoimmune",
+  "has_metabolic",
+  "has_wellness_only",
+  "has_fall_risk",
 ];
 
 export const TEST_PAIRS: [string, string, string][] = [
