@@ -22,6 +22,7 @@ import {
 } from "@/components/TweaksPanel";
 import { OverviewPage } from "@/components/pages/OverviewPage";
 import { CohortsPage } from "@/components/pages/CohortsPage";
+import { ClinicalPage } from "@/components/pages/ClinicalPage";
 
 interface TweaksUIProps {
   open: boolean;
@@ -225,7 +226,7 @@ export function App() {
             : <CohortsPage data={filteredData} onPatientClick={openDrawer} />
         )}
         {page === "clinical" && (
-          <div style={{ padding: 28, color: "var(--ink-3)" }}>Clinical Tools</div>
+          <ClinicalPage data={allData} onPatientClick={openDrawer} />
         )}
       </main>
 
