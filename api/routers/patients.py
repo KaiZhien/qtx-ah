@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import List, Optional, Any
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
@@ -12,7 +13,11 @@ router = APIRouter()
 
 def _df_to_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert DataFrame to list of dicts, replacing NaN/NA with None."""
-    return frame.where(pd.notna(frame), other=None).to_dict(orient="records")
+    return [
+        {k: (None if isinstance(v, float) and np.isnan(v) else v)
+         for k, v in row.items()}
+        for row in frame.to_dict(orient="records")
+    ]
 
 
 @router.get("/patients")

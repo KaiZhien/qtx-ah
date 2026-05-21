@@ -1,14 +1,6 @@
 """Prediction endpoints: outcomes and dosage."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# Make qtx src available for dosage utilities
-_SRC = Path(__file__).resolve().parent.parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter
@@ -34,56 +26,6 @@ _PER_TEST_CONFIG = [
 # ---------------------------------------------------------------------------
 # Cohort / usage / gender / indication one-hot prefix maps
 # ---------------------------------------------------------------------------
-
-_COHORT_VALUES = [
-    "Neurological",
-    "Other-Mixed",
-    "Pain & Musculoskeletal",
-    "Post-Surgical/Rehab",
-    "Unclassified",
-    "Wellness",
-    # Frailty/Sarcopenia is NOT in classifier/regression feature list but IS in
-    # dropout features? Keep absent for now; handled by 0 for all if not listed
-]
-
-_USAGE_COLUMNS = [
-    "usage_frequency_Once (1x/week, one leg)",
-    "usage_frequency_Twice (2x/week, one leg per session)",
-    "usage_frequency___missing__",
-]
-
-# Default primary_indication when not supplied: all zeros (Unclassified fallback)
-_INDICATION_COLUMNS_CLF = [
-    "primary_indication_Cardiovascular",
-    "primary_indication_Frailty/Sarcopenia",
-    "primary_indication_Joint disease",
-    "primary_indication_Metabolic",
-    "primary_indication_Neurological",
-    "primary_indication_Oncology",
-    "primary_indication_Osteoporosis",
-    "primary_indication_Post-Surgical/Rehab",
-    "primary_indication_Soft-tissue injury",
-    "primary_indication_Spine/Back",
-    "primary_indication_Unclassified",
-    "primary_indication_Wellness",
-]
-
-_INDICATION_COLUMNS_DROP = [
-    "primary_indication_Balance/Falls",
-    "primary_indication_Cardiovascular",
-    "primary_indication_Frailty/Sarcopenia",
-    "primary_indication_Generalised pain",
-    "primary_indication_Joint disease",
-    "primary_indication_Metabolic",
-    "primary_indication_Neurological",
-    "primary_indication_Oncology",
-    "primary_indication_Osteoporosis",
-    "primary_indication_Post-Surgical/Rehab",
-    "primary_indication_Soft-tissue injury",
-    "primary_indication_Spine/Back",
-    "primary_indication_Unclassified",
-    "primary_indication_Wellness",
-]
 
 # ---------------------------------------------------------------------------
 # GRP and RGN columns needed for n_groups, n_regions
@@ -136,17 +78,16 @@ def _build_feature_vector(profile: "PatientProfile", feature_names: list[str]) -
     row["has_chronic_pain"] = 0.0
     row["has_fall_risk"] = 0.0
     row["has_neurological"] = 0.0
-    row["has_metabolic"] = float(profile.has_diabetes)  # metabolic ~ diabetes proxy
+    # has_metabolic is a proxy for has_diabetes; the intake API has no separate
+    # metabolic field, so we reuse the diabetes flag as the closest surrogate.
+    row["has_metabolic"] = float(profile.has_diabetes)
     row["has_knee_issue"] = 0.0
     row["has_spinal_issue"] = 0.0
 
-    # Derived counts from provided flags
-    flag_sum = sum([
-        row["has_oa"], row["has_diabetes"], row["has_hypertension"], row["has_frailty"],
-        row["has_stroke"], row["has_parkinsons"], row["has_cancer"], row["has_copd"],
-        row["has_depression"], row["has_osteoporosis"],
-    ])
-    row["n_flags"] = flag_sum
+    # n_flags: sum only the 15 has_ columns the model was trained on (_HAS_COLS).
+    # PatientProfile fields has_cancer, has_copd, has_depression, has_osteoporosis
+    # have no direct model counterparts, so they must NOT contribute to n_flags.
+    row["n_flags"] = sum(row.get(c, 0.0) for c in _HAS_COLS)
 
     # grp_ columns: all zero by default (derive from cohort if possible)
     for col in _GRP_COLS:
