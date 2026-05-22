@@ -60,6 +60,17 @@ export type Patient = {
   has_fall_risk?: 0 | 1 | null;
 };
 
+export type WearableFeatures = {
+  enrolled: boolean;
+  source: "clinic_only" | "clinic_and_wearable";
+  wearable_steps_30d_avg?: number | null;
+  wearable_sedentary_pct_30d?: number | null;
+  wearable_cadence_avg_30d?: number | null;
+  wearable_hrv_trend_7d?: number | null;
+  wearable_fall_events_90d?: number | null;
+  wearable_compliance_rate_30d?: number | null;
+};
+
 export type Filters = {
   cohorts: string[];
   usage: string[];
@@ -179,6 +190,7 @@ export type FallRiskInput = {
   pre_normal_gs_ms?: number | null;
   baseline_sppb?: number | null;
   pre_vas?: number | null;
+  patient_id?: string;
 };
 
 export type FallRiskFactor = {
@@ -191,6 +203,7 @@ export type FallRiskResult = {
   risk_score: number;
   risk_label: "low" | "moderate" | "elevated" | "high";
   confidence: "standard" | "high";
+  source?: "clinic_only" | "clinic_and_wearable";
   top_factors: FallRiskFactor[];
   cohort_stat: { improvement_pct: number; cohort_size: number };
 };

@@ -7,6 +7,7 @@ import type {
   DosageResult,
   FallRiskInput,
   FallRiskResult,
+  WearableFeatures,
 } from "./types";
 
 export async function fetchPatients(filters: Filters): Promise<Patient[]> {
@@ -54,5 +55,30 @@ export async function predictFallRisk(input: FallRiskInput): Promise<FallRiskRes
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(`predictFallRisk: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWearableFeatures(patientId: string): Promise<WearableFeatures> {
+  const res = await fetch(`/api/wearable/${encodeURIComponent(patientId)}/features`);
+  if (!res.ok) throw new Error(`fetchWearableFeatures: ${res.status}`);
+  return res.json();
+}
+
+export async function enrollPatient(
+  patientId: string,
+  deviceBrand: string
+): Promise<{ widget_url: string; patient_id: string }> {
+  const res = await fetch("/api/wearable/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patient_id: patientId, enrolled_by: "clinician", device_brand: deviceBrand }),
+  });
+  if (!res.ok) throw new Error(`enrollPatient: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWearableSummary(): Promise<{ enrolled_count: number }> {
+  const res = await fetch("/api/wearable/summary");
+  if (!res.ok) throw new Error(`fetchWearableSummary: ${res.status}`);
   return res.json();
 }

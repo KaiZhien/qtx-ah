@@ -90,6 +90,12 @@ def withdraw_enrollment(patient_id: str, db: Session = Depends(get_db)):
     return {"status": "withdrawn", "patient_id": patient_id}
 
 
+@router.get("/wearable/summary")
+def get_wearable_summary(db: Session = Depends(get_db)):
+    enrolled_count = db.query(WearableEnrollment).filter_by(active=True).count()
+    return {"enrolled_count": enrolled_count}
+
+
 @router.get("/wearable/{patient_id}/features")
 def get_wearable_features(patient_id: str, db: Session = Depends(get_db)):
     """
