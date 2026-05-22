@@ -1,15 +1,29 @@
 """Tests for Terra webhook ingestion."""
+from __future__ import annotations
+
+import hashlib
+import hmac as hmac_lib
+import os
+import sys
+import time
+from datetime import date as date_type
+from pathlib import Path
+
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+
+
 @pytest.fixture
 def db_engine(tmp_path):
-    from api.db import Base
-    import api.models.wearable  # noqa: F401 — registers ORM models with Base
+    from db import Base
+    import models.wearable  # noqa: F401 — registers ORM models with Base
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     Base.metadata.create_all(engine)
     return engine
+
 
 @pytest.fixture
 def db(db_engine):
@@ -17,6 +31,7 @@ def db(db_engine):
     session = Session()
     yield session
     session.close()
+
 
 def test_tables_created(db_engine):
     with db_engine.connect() as conn:
@@ -30,12 +45,6 @@ def test_tables_created(db_engine):
     assert "wearable_events" in tables
 
 
-import hashlib
-import hmac as hmac_lib
-import json
-import time
-from datetime import date as date_type
-
 def _make_terra_signature(body: bytes, secret: str) -> str:
     ts = str(int(time.time()))
     sig = hmac_lib.new(
@@ -47,7 +56,7 @@ def _make_terra_signature(body: bytes, secret: str) -> str:
 
 
 def test_verify_signature_valid():
-    from api.services.terra import verify_signature
+    from services.terra import verify_signature
     body = b'{"type":"activity"}'
     secret = "test_secret"
     header = _make_terra_signature(body, secret)
@@ -55,14 +64,14 @@ def test_verify_signature_valid():
 
 
 def test_verify_signature_invalid():
-    from api.services.terra import verify_signature
+    from services.terra import verify_signature
     body = b'{"type":"activity"}'
     assert verify_signature(body, "t=123,v1=badhash", "test_secret") is False
 
 
 def test_ingest_activity_payload(db):
-    from api.services.terra import ingest_payload
-    from api.models.wearable import WearableActivity
+    from services.terra import ingest_payload
+    from models.wearable import WearableActivity
 
     payload = {
         "type": "activity",
@@ -93,8 +102,8 @@ def test_ingest_activity_payload(db):
 
 
 def test_ingest_body_payload(db):
-    from api.services.terra import ingest_payload
-    from api.models.wearable import WearableBody
+    from services.terra import ingest_payload
+    from models.wearable import WearableBody
 
     payload = {
         "type": "body",
@@ -120,8 +129,8 @@ def test_ingest_body_payload(db):
 
 
 def test_ingest_sleep_payload(db):
-    from api.services.terra import ingest_payload
-    from api.models.wearable import WearableSleep
+    from services.terra import ingest_payload
+    from models.wearable import WearableSleep
 
     payload = {
         "type": "sleep",
@@ -150,8 +159,8 @@ def test_ingest_sleep_payload(db):
 
 
 def test_ingest_event_payload(db):
-    from api.services.terra import ingest_payload
-    from api.models.wearable import WearableEvent
+    from services.terra import ingest_payload
+    from models.wearable import WearableEvent
 
     payload = {
         "type": "event",
@@ -171,8 +180,8 @@ def test_ingest_event_payload(db):
 
 def test_ingest_idempotent(db):
     """Re-ingesting the same activity day does not create a duplicate row."""
-    from api.services.terra import ingest_payload
-    from api.models.wearable import WearableActivity
+    from services.terra import ingest_payload
+    from models.wearable import WearableActivity
 
     payload = {
         "type": "activity",
@@ -180,7 +189,7 @@ def test_ingest_idempotent(db):
         "data": [{"metadata": {"start_time": "2026-05-21T08:00:00Z"}, "steps_data": {"steps": 5000}}],
     }
     ingest_payload(payload, db)
-    ingest_payload(payload, db)  # second time — must not duplicate
+    ingest_payload(payload, db)
 
     rows = db.query(WearableActivity).filter_by(terra_user_id="user_xyz").all()
     assert len(rows) == 1

@@ -4,10 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from sqlalchemy import String, Float, Integer, Boolean, DateTime, Date, JSON
 from sqlalchemy.orm import Mapped, mapped_column
-try:
-    from api.db import Base  # when api/ is NOT on sys.path (project root is)
-except ModuleNotFoundError:
-    from db import Base  # when api/ IS on sys.path (PYTHONPATH=api)
+from db import Base
 
 
 class WearableEnrollment(Base):

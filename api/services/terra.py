@@ -9,20 +9,12 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy.orm import Session
 
-try:
-    from api.models.wearable import (
-        WearableActivity,
-        WearableBody,
-        WearableEvent,
-        WearableSleep,
-    )
-except ModuleNotFoundError:
-    from models.wearable import (  # type: ignore[no-redef]
-        WearableActivity,
-        WearableBody,
-        WearableEvent,
-        WearableSleep,
-    )
+from models.wearable import (
+    WearableActivity,
+    WearableBody,
+    WearableEvent,
+    WearableSleep,
+)
 
 TERRA_BASE_URL = "https://api.tryterra.co/v2"
 
