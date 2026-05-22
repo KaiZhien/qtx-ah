@@ -27,5 +27,5 @@ def get_db():
 
 def init_db() -> None:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    from api.models import wearable  # noqa: F401 — registers ORM models with Base
+    from models import wearable  # noqa: F401 — registers ORM models with Base
     Base.metadata.create_all(bind=_engine)
