@@ -5,6 +5,8 @@ import type {
   PredictionResult,
   DosageIntake,
   DosageResult,
+  FallRiskInput,
+  FallRiskResult,
 } from "./types";
 
 export async function fetchPatients(filters: Filters): Promise<Patient[]> {
@@ -42,5 +44,15 @@ export async function predictDosage(intake: DosageIntake): Promise<DosageResult>
     body: JSON.stringify(intake),
   });
   if (!res.ok) throw new Error(`predictDosage: ${res.status}`);
+  return res.json();
+}
+
+export async function predictFallRisk(input: FallRiskInput): Promise<FallRiskResult> {
+  const res = await fetch("/api/predict/fall-risk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`predictFallRisk: ${res.status}`);
   return res.json();
 }

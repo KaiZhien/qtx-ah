@@ -159,3 +159,38 @@ export type DosageResult = {
   confidence: number;
   probabilities: Record<string, number>;
 };
+
+export type FallRiskInput = {
+  // Patient self-report
+  age: number;
+  gender: "M" | "F";
+  falls_history: 0 | 1 | 2;
+  walking_aid: "none" | "stick" | "frame";
+  exercise_frequency: "rarely" | "1-2" | "3+";
+  has_oa: 0 | 1;
+  has_diabetes: 0 | 1;
+  has_stroke: 0 | 1;
+  has_parkinsons: 0 | 1;
+  has_heart_disease: 0 | 1;
+  polypharmacy: 0 | 1;
+  // Clinician (optional)
+  pre_tug_s?: number | null;
+  pre_5xsst_s?: number | null;
+  pre_normal_gs_ms?: number | null;
+  baseline_sppb?: number | null;
+  pre_vas?: number | null;
+};
+
+export type FallRiskFactor = {
+  label: string;
+  impact: "high" | "moderate";
+  explanation: string;
+};
+
+export type FallRiskResult = {
+  risk_score: number;
+  risk_label: "low" | "moderate" | "elevated" | "high";
+  confidence: "standard" | "high";
+  top_factors: FallRiskFactor[];
+  cohort_stat: { improvement_pct: number; cohort_size: number };
+};
