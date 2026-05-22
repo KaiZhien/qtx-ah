@@ -24,6 +24,8 @@ pydantic = "^2.6"
 pandera = "^0.18"
 jinja2 = "^3.1"
 xgboost = "^2.0"
+sqlalchemy = "^2.0"
+httpx = "^0.27"
 
 [tool.poetry.dev-dependencies]
 pytest = "^8.0"
