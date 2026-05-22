@@ -1,4 +1,4 @@
-.PHONY: install ingest clean-data phenotype outcomes features eda model dosage dashboard dev api web all test clean
+.PHONY: install ingest clean-data phenotype outcomes features eda model dosage fall-risk dashboard dev api web all test clean
 
 PYTHON := $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 export PYTHONPATH := src
@@ -30,6 +30,9 @@ model:
 dosage:
 	$(PYTHON) scripts/08_train_dosage_model.py
 
+fall-risk:
+	$(PYTHON) scripts/09_train_fall_risk_model.py
+
 dashboard:
 	PYTHONPATH=src streamlit run dashboard/app.py
 
@@ -45,7 +48,7 @@ dev:
 	(cd web && npm run dev) & \
 	wait
 
-all: ingest clean-data phenotype outcomes features eda model dosage
+all: ingest clean-data phenotype outcomes features eda model dosage fall-risk
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest tests/ -v
