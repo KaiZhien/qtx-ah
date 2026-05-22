@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 @pytest.fixture
 def db_engine(tmp_path):
     from api.db import Base
+    import api.models.wearable  # noqa: F401 — registers ORM models with Base
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     Base.metadata.create_all(engine)
     return engine
