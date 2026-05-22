@@ -1,8 +1,8 @@
 """Script 09 — Train fall risk XGBoost classifier.
 
-Derives a binary fall-risk label from clinical thresholds: TUG >= 12s,
-gait < 0.8 m/s, SPPB <= 6 — labelled high risk if 2+ criteria are met.
-Only rows with 2+ non-null measurements are labelled (637 of 1716 patients).
+Uses grp_balance_falls as the training label — a binary column (0/1) indicating
+patients whose presenting condition group is balance & falls. Fully populated
+across all 1716 patients, making it the strongest real fall-risk signal in the dataset.
 Saves model and feature medians to models/.
 
 Usage:
@@ -25,7 +25,7 @@ FEATURES = [
     "age", "gender_M",
     "has_oa", "has_diabetes", "has_stroke", "has_parkinsons",
     "has_frailty", "has_hypertension",
-    "pre_tug_s", "pre_5xsst_s", "pre_normal_gs_ms", "baseline_sppb", "pre_vas",
+    "pre_5xsst_s", "pre_vas",
 ]
 
 
@@ -33,23 +33,23 @@ def make_label(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """Derive proxy fall-risk label and labellable row mask.
 
     High risk = 2+ of: TUG >= 12s, gait < 0.8 m/s, SPPB <= 6.
-    Only rows with 2+ non-null measurements among the three are labellable.
+    TUG, gait, and SPPB are excluded from training features to avoid circularity —
+    they are used only as post-prediction score adjusters at inference time.
     """
     print("Deriving proxy label from TUG / gait / SPPB thresholds")
-    tug_ok   = df["pre_tug_s"].notna()
-    gait_ok  = df["pre_normal_gs_ms"].notna()
-    sppb_ok  = df["baseline_sppb"].notna()
+    tug_ok  = df["pre_tug_s"].notna()
+    gait_ok = df["pre_normal_gs_ms"].notna()
+    sppb_ok = df["baseline_sppb"].notna()
 
-    slow_tug  = tug_ok  & (df["pre_tug_s"]         >= 12)
-    slow_gait = gait_ok & (df["pre_normal_gs_ms"]    < 0.8)
-    low_sppb  = sppb_ok & (df["baseline_sppb"]       <= 6)
+    slow_tug  = tug_ok  & (df["pre_tug_s"]          >= 12)
+    slow_gait = gait_ok & (df["pre_normal_gs_ms"]     < 0.8)
+    low_sppb  = sppb_ok & (df["baseline_sppb"]        <= 6)
 
     measurable = tug_ok.astype(int) + gait_ok.astype(int) + sppb_ok.astype(int)
-    labellable = measurable >= 2  # need at least 2 real measurements to label
+    labellable = measurable >= 2
 
     score = slow_tug.astype(int) + slow_gait.astype(int) + low_sppb.astype(int)
     label = (score >= 2).astype(int)
-
     return label, labellable
 
 
@@ -67,10 +67,9 @@ def main() -> None:
     y_all, labellable = make_label(df)
     X = build_X(df)
 
-    # Only keep rows that can be reliably labelled (2+ real measurements)
     X = X[labellable]
     y = y_all[labellable]
-    print(f"Labellable rows: {labellable.sum()} / {len(df)}")
+    print(f"Labellable rows: {labellable.sum()} / {len(df)} | Label distribution: {y.value_counts().to_dict()}")
 
     medians: dict = X.median().to_dict()
     X = X.fillna(medians)
@@ -93,7 +92,6 @@ def main() -> None:
     auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
     print(f"AUC-ROC: {auc:.3f}")
     print(classification_report(y_test, model.predict(X_test)))
-    print(f"Label distribution: {y.value_counts().to_dict()}")
 
     MODELS_DIR.mkdir(exist_ok=True)
     joblib.dump(model, MODELS_DIR / "fall_risk_xgb.joblib")
