@@ -1,8 +1,9 @@
 """Script 09 — Train fall risk XGBoost classifier.
 
-Derives a binary fall-risk label (uses has_fall_risk column if present,
-otherwise derives proxy from TUG >= 12s, gait < 0.8 m/s, SPPB <= 6 —
-high risk if 2+ criteria met). Saves model and feature medians to models/.
+Derives a binary fall-risk label from clinical thresholds: TUG >= 12s,
+gait < 0.8 m/s, SPPB <= 6 — labelled high risk if 2+ criteria are met.
+Only rows with 2+ non-null measurements are labelled (637 of 1716 patients).
+Saves model and feature medians to models/.
 
 Usage:
     PYTHONPATH=. python scripts/09_train_fall_risk_model.py
@@ -29,13 +30,10 @@ FEATURES = [
 
 
 def make_label(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Returns (label Series of 0/1, labellable boolean mask).
+    """Derive proxy fall-risk label and labellable row mask.
 
-    has_fall_risk is an unfilled placeholder (all zeros) — reserved as a
-    future hook once the column is populated from clinical records.
-
-    Labels are derived only for rows with at least 2 real (non-null)
-    measurements so that missing-data sentinel fills don't bias the label.
+    High risk = 2+ of: TUG >= 12s, gait < 0.8 m/s, SPPB <= 6.
+    Only rows with 2+ non-null measurements among the three are labellable.
     """
     print("Deriving proxy label from TUG / gait / SPPB thresholds")
     tug_ok   = df["pre_tug_s"].notna()

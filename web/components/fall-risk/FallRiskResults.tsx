@@ -193,14 +193,6 @@ export function FallRiskResults({ result, onReset }: Props) {
           </div>
         </div>
       </Card>
-
-      <button
-        className="btn subtle"
-        style={{ fontSize: 12, alignSelf: "center" }}
-        onClick={onReset}
-      >
-        Start a new assessment
-      </button>
     </div>
   );
 }

@@ -50,7 +50,7 @@ _FEATURE_META: dict[str, tuple[str, str, str]] = {
     "has_stroke":        ("Stroke history",               "Stroke can impair balance and coordination",                                               "high"),
     "has_parkinsons":    ("Parkinson's disease",          "Parkinson's significantly increases fall risk through gait and balance changes",            "high"),
     "has_diabetes":      ("Diabetes",                    "Peripheral neuropathy from diabetes can impair proprioception and balance",                  "moderate"),
-    "has_hypertension":  ("Hypertension",                "Antihypertensive medications can cause dizziness and orthostatic hypotension",              "moderate"),
+    "has_hypertension":  ("Cardiovascular condition",  "Cardiovascular conditions and their medications can affect balance and blood pressure regulation",  "moderate"),
     "age":               ("Age",                         "Fall risk increases with age due to reduced muscle strength and postural stability",         "moderate"),
 }
 
