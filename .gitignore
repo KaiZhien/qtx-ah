@@ -13,6 +13,7 @@ __pycache__/
 dist/
 *.egg-info/
 .DS_Store
+web/tsconfig.tsbuildinfo
 
 # AI tooling artifacts
 .superpowers/
