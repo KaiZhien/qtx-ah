@@ -25,7 +25,6 @@ FULL_PATIENT = {
     "pre_5xsst_s": 18.0,
     "pre_normal_gs_ms": 0.72,
     "baseline_sppb": 7,
-    "grip_strength": 16.0,
     "pre_vas": 4.0,
 }
 

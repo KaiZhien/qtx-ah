@@ -1,8 +1,8 @@
 """Fall risk prediction endpoint."""
 from __future__ import annotations
 
+from typing import Literal
 from fastapi import APIRouter
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel, field_validator
 
@@ -14,10 +14,10 @@ router = APIRouter()
 class FallRiskRequest(BaseModel):
     # Patient self-report
     age: int
-    gender: str              # "M" | "F"
+    gender: Literal["M", "F"]
     falls_history: int       # 0 | 1 | 2  (0=none, 1=one, 2=two or more)
-    walking_aid: str         # "none" | "stick" | "frame"
-    exercise_frequency: str  # "rarely" | "1-2" | "3+"
+    walking_aid: Literal["none", "stick", "frame"]
+    exercise_frequency: Literal["rarely", "1-2", "3+"]
     has_oa: int              # 0 | 1
     has_diabetes: int        # 0 | 1
     has_stroke: int          # 0 | 1
@@ -29,7 +29,6 @@ class FallRiskRequest(BaseModel):
     pre_5xsst_s: float | None = None
     pre_normal_gs_ms: float | None = None
     baseline_sppb: float | None = None
-    grip_strength: float | None = None
     pre_vas: float | None = None
 
     @field_validator("age")
@@ -64,8 +63,8 @@ def _build_feature_vector(req: FallRiskRequest, medians: dict) -> pd.DataFrame:
         "has_diabetes":     float(req.has_diabetes),
         "has_stroke":       float(req.has_stroke),
         "has_parkinsons":   float(req.has_parkinsons),
-        "has_frailty":      1.0 if req.walking_aid == "frame" else float(max(req.has_stroke, req.has_parkinsons)),
-        "has_hypertension": float(req.has_heart_disease),
+        "has_frailty":      1.0 if req.walking_aid == "frame" else 0.0,
+        "has_hypertension": float(req.has_heart_disease),  # proxy: heart_disease → hypertension (closest training feature)
         "pre_tug_s":        req.pre_tug_s   if req.pre_tug_s   is not None else medians.get("pre_tug_s",   12.0),
         "pre_5xsst_s":      req.pre_5xsst_s if req.pre_5xsst_s is not None else medians.get("pre_5xsst_s", 15.0),
         "pre_normal_gs_ms": req.pre_normal_gs_ms if req.pre_normal_gs_ms is not None else medians.get("pre_normal_gs_ms", 0.85),
