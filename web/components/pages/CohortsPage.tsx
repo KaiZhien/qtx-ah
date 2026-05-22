@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import type { Patient } from "@/lib/types";
 import { COHORTS, COHORT_COLORS, AGE_BANDS } from "@/lib/constants";
+import { fetchWearableSummary } from "@/lib/api";
 import { GroupedBars } from "@/components/charts/GroupedBars";
 import { StackedBars } from "@/components/charts/StackedBars";
 import { Card } from "@/components/ui/Card";
@@ -121,6 +122,14 @@ export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
   const initialSelected = COHORTS.filter((c) => c !== "Unclassified");
   const [selected, setSelected] = useState<string[]>(initialSelected);
 
+  const [enrolledCount, setEnrolledCount] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    fetchWearableSummary()
+      .then((s) => setEnrolledCount(s.enrolled_count))
+      .catch(() => { /* non-critical — silently ignore */ });
+  }, []);
+
   function toggle(c: string) {
     setSelected((s) => s.includes(c) ? s.filter((x) => x !== c) : [...s, c]);
   }
@@ -164,6 +173,64 @@ export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
 
   return (
     <div className="content fade-in" key={selected.join(",")}>
+      {/* Wearable enrollment summary */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 18px",
+          background: "var(--surface-raised, var(--surface))",
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--ink-3)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginBottom: 4,
+            }}
+          >
+            Wearable enrollment
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span
+              style={{
+                fontSize: 28,
+                fontWeight: 700,
+                fontFamily: "var(--font-mono)",
+                color: "var(--ink)",
+              }}
+            >
+              {enrolledCount ?? "—"}
+            </span>
+            <span style={{ fontSize: 13, color: "var(--ink-3)" }}>
+              patient{enrolledCount !== 1 ? "s" : ""} with active wearable
+            </span>
+          </div>
+        </div>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 8,
+            background:
+              enrolledCount != null && enrolledCount > 0
+                ? "rgba(59,107,217,0.12)"
+                : "var(--surface-sunken)",
+            display: "grid",
+            placeItems: "center",
+            fontSize: 20,
+          }}
+        >
+          ⌚
+        </div>
+      </div>
+
       <Card title="Cohorts to compare" subtitle="Click a cohort to include or exclude">
         <div className="chip-row">
           {COHORTS.map((c) => (
