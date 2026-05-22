@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import deps
-from routers import patients, predict
+from routers import patients, predict, fall_risk
 
 
 @asynccontextmanager
@@ -28,3 +28,4 @@ app.add_middleware(
 
 app.include_router(patients.router, prefix="/api")
 app.include_router(predict.router, prefix="/api")
+app.include_router(fall_risk.router, prefix="/api")

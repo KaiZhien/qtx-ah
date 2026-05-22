@@ -28,8 +28,10 @@ def load_all():
     df = pd.read_parquet(DATA_PATH)
     df["age_band"] = df["age"].apply(_normalize_age_band)
     models = {
-        "classifier": joblib.load(MODELS_DIR / "classifier_xgb.joblib"),
-        "regression": joblib.load(MODELS_DIR / "regression_xgb.joblib"),
-        "dropout":    joblib.load(MODELS_DIR / "dropout_xgb.joblib"),
-        "dosage":     joblib.load(MODELS_DIR / "dosage_frequency.joblib"),
+        "classifier":        joblib.load(MODELS_DIR / "classifier_xgb.joblib"),
+        "regression":        joblib.load(MODELS_DIR / "regression_xgb.joblib"),
+        "dropout":           joblib.load(MODELS_DIR / "dropout_xgb.joblib"),
+        "dosage":            joblib.load(MODELS_DIR / "dosage_frequency.joblib"),
+        "fall_risk":         joblib.load(MODELS_DIR / "fall_risk_xgb.joblib"),
+        "fall_risk_medians": joblib.load(MODELS_DIR / "fall_risk_medians.joblib"),
     }
