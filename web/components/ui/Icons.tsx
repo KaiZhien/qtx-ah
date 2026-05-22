@@ -13,4 +13,12 @@ export const Icon = {
   Arrow: () => <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5h6M5 2l3 3-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   Spark: () => <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v3M8 11v3M2 8h3M11 8h3M3.5 3.5l2 2M10.5 10.5l2 2M3.5 12.5l2-2M10.5 5.5l2-2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
   Doc: () => <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 1.5h7l3 3v10h-10z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M10 1.5v3h3M5 8h6M5 11h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
+  FallRisk: () => (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="3" r="1.4" stroke="currentColor" strokeWidth="1.2"/>
+      <path d="M5 6.5c1-1 4-1.5 5 0l1 3-2 .5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M7 9.5l-1.5 3M9.5 9.5l.5 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+      <path d="M3.5 13.5l2.5-1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+    </svg>
+  ),
 };

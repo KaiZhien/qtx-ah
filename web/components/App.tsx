@@ -23,6 +23,7 @@ import {
 import { OverviewPage } from "@/components/pages/OverviewPage";
 import { CohortsPage } from "@/components/pages/CohortsPage";
 import { ClinicalPage } from "@/components/pages/ClinicalPage";
+import { FallRiskPage } from "@/components/pages/FallRiskPage";
 
 interface TweaksUIProps {
   open: boolean;
@@ -81,6 +82,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: "Overview", sub: "Programme-level KPIs and outcomes" },
   cohorts: { title: "Cohort Analysis", sub: "Compare outcomes across phenotype cohorts" },
   clinical: { title: "Clinical Tools", sub: "Patient lookup, intake estimation, dosage recommendations" },
+  "fall-risk": { title: "Fall Risk Predictor", sub: "Personalised fall risk assessment" },
 };
 
 export function App() {
@@ -228,6 +230,7 @@ export function App() {
         {page === "clinical" && (
           <ClinicalPage data={allData} onPatientClick={openDrawer} />
         )}
+        {page === "fall-risk" && <FallRiskPage />}
       </main>
 
       <Drawer
