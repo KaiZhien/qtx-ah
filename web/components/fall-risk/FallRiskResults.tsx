@@ -56,6 +56,25 @@ export function FallRiskResults({ result, onReset }: Props) {
           >
             {cfg.text}
           </div>
+          {result.source === "clinic_and_wearable" && (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 8px",
+                borderRadius: 20,
+                background: "rgba(59,107,217,0.12)",
+                color: "#3b6bd9",
+                fontSize: 10.5,
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+              }}
+            >
+              + Wearable data
+            </span>
+          )}
 
           {/* Progress bar */}
           <div

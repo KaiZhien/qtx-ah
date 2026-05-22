@@ -61,6 +61,7 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
   const [patient, setPatient] = useState<PatientFields>(DEFAULT_PATIENT);
   const [clinical, setClinical] = useState<ClinicalFields>(DEFAULT_CLINICAL);
   const [error, setError] = useState<string | null>(null);
+  const [patientId, setPatientId] = useState<string>("");
 
   function setP<K extends keyof PatientFields>(k: K, v: PatientFields[K]) {
     setPatient((p) => ({ ...p, [k]: v }));
@@ -97,6 +98,7 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
       has_parkinsons:     patient.has_parkinsons ? 1 : 0,
       has_heart_disease:  patient.has_heart_disease ? 1 : 0,
       polypharmacy:       patient.polypharmacy ? 1 : 0,
+      ...(patientId ? { patient_id: patientId } : {}),
       ...clinical_fields,
     };
   }
@@ -222,6 +224,31 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
               (v) => setP("polypharmacy", v === "yes")
             )}
           </Field>
+
+          {/* Optional patient ID to link wearable data */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={{ display: "block", fontSize: 11, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Patient ID <span style={{ fontWeight: 400 }}>(optional — links wearable data)</span>
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. PTX-001"
+              value={patientId}
+              onChange={(e) => setPatientId(e.target.value.trim())}
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                fontSize: 13,
+                fontFamily: "var(--font-mono)",
+                background: "var(--surface-sunken)",
+                border: "1px solid var(--line)",
+                borderRadius: 6,
+                color: "var(--ink)",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
 
           <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
             <button
