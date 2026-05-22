@@ -1,6 +1,7 @@
 data/inputs/
 data/processed/
 data/audit/
+data/wearable.db
 models/*.joblib
 reports/
 __pycache__/
