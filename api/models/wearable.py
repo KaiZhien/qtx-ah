@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from sqlalchemy import String, Float, Integer, Boolean, DateTime, Date, JSON
 from sqlalchemy.orm import Mapped, mapped_column
-from api.db import Base
+from db import Base
 
 
 class WearableEnrollment(Base):
