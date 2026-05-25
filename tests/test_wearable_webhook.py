@@ -211,9 +211,20 @@ def test_verify_signature_rejects_stale_timestamp():
 
 
 def test_verify_signature_rejects_non_utf8_body():
+    """UnicodeDecodeError guard must return False — uses a fresh timestamp so the
+    replay-window check is passed and body.decode() is actually attempted."""
     from services.terra import verify_signature
+    import hashlib, hmac as hmac_lib
     body = b'\xff\xfe invalid utf-8'
-    assert verify_signature(body, "t=123,v1=abc", "secret") is False
+    secret = "test_secret"
+    # Fresh timestamp: passes the replay-window check so we reach body.decode()
+    fresh_ts = str(int(time.time()))
+    # Compute HMAC with a placeholder body to get a valid-shaped header;
+    # the actual HMAC will be wrong (body is binary) so compare_digest returns
+    # False — but we need the decode to be attempted first.
+    wrong_sig = "0" * 64  # incorrect HMAC — function must reach decode before comparing
+    header = f"t={fresh_ts},v1={wrong_sig}"
+    assert verify_signature(body, header, secret) is False
 
 
 def test_ingest_partial_update_preserves_existing_fields(db):
