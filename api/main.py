@@ -14,9 +14,7 @@ from routers import patients, predict, fall_risk, wearable, webhooks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    deps.load_all()
-    from db import init_db
-    init_db()
+    deps.load_all()  # init_db() is called inside load_all() once Task 6 (deps.py) is done
     yield
 
 
