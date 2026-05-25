@@ -50,28 +50,34 @@ def get_patient_features(patient_id: str, db: Session) -> dict:
     )
 
     steps_values = [r.steps for r in activity_rows if r.steps is not None]
-    active_vals = [r.active_minutes for r in activity_rows if r.active_minutes is not None]
-    sedentary_vals = [r.sedentary_minutes for r in activity_rows if r.sedentary_minutes is not None]
     cadence_vals = [r.walking_cadence_avg for r in activity_rows if r.walking_cadence_avg is not None]
     hrv_vals = [r.hrv_rmssd for r in body_rows if r.hrv_rmssd is not None]
 
     compliant_days = sum(1 for r in activity_rows if (r.wear_minutes or 0) >= 240)
-    compliance_rate = compliant_days / 30 if activity_rows else 0.0
+    denominator = min(30, len(activity_rows)) if activity_rows else 30
+    compliance_rate = compliant_days / denominator if activity_rows else 0.0
 
     def _avg(vals: list) -> float | None:
         return sum(vals) / len(vals) if vals else None
 
-    def _sedentary_pct(active: list, sedentary: list) -> float | None:
-        if not active or not sedentary:
-            return None
-        pairs = [(a, s) for a, s in zip(active, sedentary) if a + s > 0]
-        return sum(s / (a + s) * 100 for a, s in pairs) / len(pairs) if pairs else None
+    # Pair active and sedentary from the SAME row — avoids positional mismatch
+    # when fields are sparsely populated across different days.
+    sedentary_pairs = [
+        (r.active_minutes, r.sedentary_minutes)
+        for r in activity_rows
+        if r.active_minutes is not None and r.sedentary_minutes is not None
+        and (r.active_minutes + r.sedentary_minutes) > 0
+    ]
+    sedentary_pct = (
+        sum(s / (a + s) * 100 for a, s in sedentary_pairs) / len(sedentary_pairs)
+        if sedentary_pairs else None
+    )
 
     return {
         "enrolled": True,
         "source": "clinic_and_wearable",
         "wearable_steps_30d_avg": _avg(steps_values),
-        "wearable_sedentary_pct_30d": _sedentary_pct(active_vals, sedentary_vals),
+        "wearable_sedentary_pct_30d": sedentary_pct,
         "wearable_cadence_avg_30d": _avg(cadence_vals),
         "wearable_hrv_trend_7d": _avg(hrv_vals),
         "wearable_fall_events_90d": fall_count,

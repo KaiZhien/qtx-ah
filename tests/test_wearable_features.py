@@ -108,3 +108,67 @@ def test_features_unenrolled_patient(client_with_data):
     data = resp.json()
     assert data["enrolled"] is False
     assert data["source"] == "clinic_only"
+
+
+def test_sedentary_pct_with_sparse_data(tmp_path):
+    """sedentary_pct must pair active and sedentary from the same row, not by position."""
+    import uuid
+    from datetime import date, datetime, timedelta, timezone
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+
+    from db import Base
+    from models.wearable import WearableActivity, WearableEnrollment
+    import models.wearable  # noqa: F401
+    from services.wearable_features import get_patient_features
+
+    engine = create_engine(f"sqlite:///{tmp_path}/sparse.db")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    db.add(WearableEnrollment(
+        id=str(uuid.uuid4()),
+        patient_id="P_SPARSE",
+        terra_user_id="terra_sparse",
+        device_brand="garmin",
+        enrolled_at=datetime.now(timezone.utc),
+        enrolled_by="cli",
+        consent_given_at=datetime.now(timezone.utc),
+        active=True,
+    ))
+
+    today = date.today()
+    # 3 rows with BOTH fields populated
+    for i in range(3):
+        db.add(WearableActivity(
+            terra_user_id="terra_sparse",
+            date=today - timedelta(days=i),
+            steps=5000,
+            active_minutes=60,
+            sedentary_minutes=600,
+            wear_minutes=960,
+        ))
+    # 2 rows with only active_minutes (sedentary_minutes=None)
+    for i in range(3, 5):
+        db.add(WearableActivity(
+            terra_user_id="terra_sparse",
+            date=today - timedelta(days=i),
+            steps=5000,
+            active_minutes=45,
+            sedentary_minutes=None,
+            wear_minutes=960,
+        ))
+    db.commit()
+
+    features = get_patient_features("P_SPARSE", db)
+    db.close()
+
+    # Only the 3 rows where BOTH fields are present should count
+    # 600 / (60 + 600) * 100 = 90.909...%
+    assert features["wearable_sedentary_pct_30d"] == pytest.approx(
+        600 / (60 + 600) * 100, abs=0.1
+    )
