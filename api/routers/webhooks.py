@@ -26,5 +26,9 @@ async def terra_webhook(request: Request, db: Session = Depends(get_db)):
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}")
-    terra_svc.ingest_payload(payload, db)
+    try:
+        terra_svc.ingest_payload(payload, db)
+    except Exception as exc:
+        # Return 400 so Terra does not retry indefinitely (Terra retries on 5xx only)
+        raise HTTPException(status_code=400, detail=f"Payload processing error: {exc}")
     return {"status": "ok"}

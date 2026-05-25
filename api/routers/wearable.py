@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -63,7 +64,11 @@ def confirm_enrollment(req: ConfirmEnrollmentRequest, db: Session = Depends(get_
             active=True,
         )
         db.add(enrollment)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Enrollment conflict — patient already enrolled with a different Terra user ID")
     return {"status": "enrolled", "patient_id": req.patient_id}
 
 
