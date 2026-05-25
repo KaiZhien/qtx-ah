@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session as DBSession
 
 import deps
 from db import get_db
-from models.clinical import Patient, Session as ClinicalSession, PatientTrend
+from models.clinical import Patient, Session as ClinicalSession, PatientTrend, PatientInsight
 from services.trend import TrendEngine
+from services.insight import InsightService
 
 router = APIRouter()
 
@@ -116,6 +117,29 @@ def _session_to_dict(s: ClinicalSession) -> dict:
     }
 
 
+def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
+    """Build the timeline payload that InsightService passes to Claude."""
+    sessions = (
+        db.query(ClinicalSession)
+        .filter_by(patient_id=patient.id)
+        .order_by(ClinicalSession.session_number.asc())
+        .all()
+    )
+    trends = db.query(PatientTrend).filter_by(patient_id=patient.id).all()
+    return {
+        "patient": {
+            "sn":                patient.sn,
+            "name":              patient.name,
+            "age":               patient.age,
+            "gender":            patient.gender,
+            "cohort":            patient.cohort,
+            "primary_indication": patient.primary_indication,
+        },
+        "sessions": [_session_to_dict(s) for s in sessions],
+        "trends":   [_trend_to_dict(t) for t in trends],
+    }
+
+
 @router.post("/patient/{sn}/session", status_code=201)
 def create_session(
     sn: str,
@@ -151,12 +175,19 @@ def create_session(
     db.flush()
 
     trends = TrendEngine(db).compute_and_save(patient.id)
-    db.commit()
+    db.commit()  # commit session + trends before calling external API
+
+    timeline = _build_timeline_dict(patient, db)
+    insight_text = InsightService(db).generate_session_insight(
+        timeline, patient.id, new_sn
+    )
+    db.commit()  # commit PatientInsight row
 
     return {
         "sn":             sn,
         "session_number": new_sn,
         "trends":         [_trend_to_dict(t) for t in trends],
+        "insight":        insight_text,
     }
 
 
