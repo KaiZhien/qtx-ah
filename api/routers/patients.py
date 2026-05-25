@@ -14,7 +14,7 @@ router = APIRouter()
 def _df_to_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert DataFrame to list of dicts, replacing NaN/NA with None."""
     return [
-        {k: (None if isinstance(v, float) and np.isnan(v) else v)
+        {k: (None if (isinstance(v, float) and np.isnan(v)) or v is pd.NA else v)
          for k, v in row.items()}
         for row in frame.to_dict(orient="records")
     ]
@@ -29,6 +29,8 @@ def list_patients(
     fu_only: bool = Query(default=False),
 ) -> list[dict[str, Any]]:
     """Return filtered patient records."""
+    if deps.df is None:
+        raise HTTPException(status_code=503, detail="Patient data not available — server is starting up or data file is missing")
     frame = deps.df.copy()
 
     if cohort:
@@ -48,6 +50,8 @@ def list_patients(
 @router.get("/patient/{sn}")
 def get_patient(sn: str) -> dict[str, Any]:
     """Return a single patient record by sn."""
+    if deps.df is None:
+        raise HTTPException(status_code=503, detail="Patient data not available — server is starting up or data file is missing")
     # sn column is stored as strings like "1.0"
     match = deps.df[deps.df["sn"].astype(str) == sn]
     if match.empty:

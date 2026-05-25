@@ -23,15 +23,37 @@ def _normalize_age_band(age):
     return "80+"
 
 
-def load_all():
+def load_all() -> None:
+    """Load all ML models and the patient DataFrame at startup."""
     global df, models
-    df = pd.read_parquet(DATA_PATH)
-    df["age_band"] = df["age"].apply(_normalize_age_band)
-    models = {
-        "classifier":        joblib.load(MODELS_DIR / "classifier_xgb.joblib"),
-        "regression":        joblib.load(MODELS_DIR / "regression_xgb.joblib"),
-        "dropout":           joblib.load(MODELS_DIR / "dropout_xgb.joblib"),
-        "dosage":            joblib.load(MODELS_DIR / "dosage_frequency.joblib"),
-        "fall_risk":         joblib.load(MODELS_DIR / "fall_risk_xgb.joblib"),
-        "fall_risk_medians": joblib.load(MODELS_DIR / "fall_risk_medians.joblib"),
+    missing: list[str] = []
+
+    # Patient data
+    try:
+        df = pd.read_parquet(DATA_PATH)
+        df["age_band"] = df["age"].apply(_normalize_age_band)
+    except FileNotFoundError:
+        missing.append(str(DATA_PATH))
+        print(f"[deps] MISSING data file: {DATA_PATH}")
+
+    # Models
+    model_files = {
+        "classifier":        MODELS_DIR / "classifier_xgb.joblib",
+        "regression":        MODELS_DIR / "regression_xgb.joblib",
+        "dropout":           MODELS_DIR / "dropout_xgb.joblib",
+        "dosage":            MODELS_DIR / "dosage_frequency.joblib",
+        "fall_risk":         MODELS_DIR / "fall_risk_xgb.joblib",
+        "fall_risk_medians": MODELS_DIR / "fall_risk_medians.joblib",
     }
+    for name, path in model_files.items():
+        try:
+            models[name] = joblib.load(path)
+        except FileNotFoundError:
+            missing.append(str(path))
+            print(f"[deps] MISSING model file: {path} — run the training script first")
+
+    if missing:
+        raise RuntimeError(
+            f"Startup failed — {len(missing)} required file(s) not found:\n"
+            + "\n".join(f"  {p}" for p in missing)
+        )

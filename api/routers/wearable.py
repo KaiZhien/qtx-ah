@@ -38,7 +38,10 @@ def enroll_patient(req: EnrollRequest):
     api_key = os.environ.get("TERRA_API_KEY", "")
     if not dev_id or not api_key:
         raise HTTPException(status_code=503, detail="Terra credentials not configured")
-    session = terra_svc.create_widget_session(req.patient_id, dev_id, api_key)
+    try:
+        session = terra_svc.create_widget_session(req.patient_id, dev_id, api_key)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Terra service unavailable: {exc}")
     return {"widget_url": session["url"], "patient_id": req.patient_id}
 
 
