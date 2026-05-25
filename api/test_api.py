@@ -1,16 +1,80 @@
 """API tests using FastAPI TestClient."""
 import os
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 from main import app
 
 _TEST_API_KEY = "test-qtx-api-key"
+_FLAG_COLS = [
+    "has_oa", "has_diabetes", "has_stroke", "has_parkinsons", "has_sarcopenia",
+    "has_frailty", "has_balance_issue", "has_post_surgery", "has_chronic_pain",
+    "has_neuropathy", "has_cancer", "has_cardiovascular", "has_hypertension",
+    "has_osteoporosis", "has_spinal_issue", "has_knee_issue", "has_hip_issue",
+    "has_shoulder_issue", "has_neurological", "has_fracture", "has_autoimmune",
+    "has_metabolic", "has_wellness_only", "has_fall_risk",
+    "grp_joint_disease", "grp_spine_back", "grp_neurological", "grp_post_surgical",
+    "grp_frailty_sarcopenia", "grp_balance_falls", "grp_metabolic", "grp_cardiovascular",
+    "grp_oncology", "grp_autoimmune", "grp_softtissue_injury", "grp_generalised_pain",
+    "grp_osteoporosis", "grp_wellness",
+    "rgn_knee", "rgn_hip", "rgn_spine", "rgn_shoulder", "rgn_ankle_foot",
+    "rgn_lower_limb", "rgn_upper_limb", "rgn_bilateral", "rgn_trunk",
+]
+
+
+def _make_test_engine():
+    import models.clinical  # noqa: F401
+    import models.wearable  # noqa: F401
+    from db import Base
+    eng = create_engine(
+        "sqlite:///file:qtx_test_api?mode=memory&cache=shared&uri=true",
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(eng, "connect")
+    def set_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(eng)
+    return eng
+
+
+def _seed_test_db(engine) -> None:
+    from models.clinical import Patient, Session as ClinicalSession
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    flags = {col: False for col in _FLAG_COLS}
+    patients = [
+        {"id": uuid.uuid4(), "sn": "1", "name": "Test Patient M", "gender": "M",
+         "age": 65, "age_band": "60-69", "cohort": "Pain & Musculoskeletal",
+         "record_type": "Active", **flags, "has_oa": True, "grp_joint_disease": True},
+        {"id": uuid.uuid4(), "sn": "2", "name": "Test Patient F", "gender": "F",
+         "age": 72, "age_band": "70-79", "cohort": "Neurological",
+         "record_type": "Active", **flags, "has_stroke": True, "grp_neurological": True},
+    ]
+    for p_data in patients:
+        p = Patient(**p_data)
+        db.add(p)
+    db.flush()
+    for p_data in patients:
+        s = ClinicalSession(
+            id=uuid.uuid4(), patient_id=p_data["id"], session_number=1,
+            has_followup=True, is_dropout=False,
+            usage_frequency="Once (1x/week, one leg)",
+        )
+        db.add(s)
+    db.commit()
+    db.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -23,8 +87,28 @@ def set_api_key_env():
 
 @pytest.fixture(scope="session")
 def client(set_api_key_env):
+    from db import get_db
+    import deps
+
+    eng = _make_test_engine()
+    _seed_test_db(eng)
+    Session = sessionmaker(bind=eng)
+
+    def override_get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+
     with TestClient(app, headers={"X-Api-Key": _TEST_API_KEY}) as c:
+        deps._db_ready = True
         yield c
+
+    app.dependency_overrides.clear()
+    deps._db_ready = False
 
 _VALID_OUTCOMES_BODY = {
     "age": 65,

@@ -1,9 +1,16 @@
 """Tests for the fall risk prediction endpoint."""
 from __future__ import annotations
 
+import sys
+import os
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
 
 MINIMAL_PATIENT = {
     "age": 68,
@@ -15,7 +22,8 @@ MINIMAL_PATIENT = {
     "has_diabetes": 0,
     "has_stroke": 0,
     "has_parkinsons": 0,
-    "has_heart_disease": 0,
+    "has_hypertension": 0,
+    "has_frailty": 0,
     "polypharmacy": 0,
 }
 
@@ -31,12 +39,42 @@ FULL_PATIENT = {
 
 @pytest.fixture(scope="module")
 def client():
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+    import models.clinical  # noqa: F401
+    import models.wearable  # noqa: F401
+    from db import Base, get_db
     from main import app
     import deps
-    deps.load_all()
-    return TestClient(app)
+
+    eng = create_engine(
+        "sqlite:///file:qtx_test_fall_risk?mode=memory&cache=shared&uri=true",
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(eng, "connect")
+    def set_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(eng)
+    Session = sessionmaker(bind=eng)
+
+    def override_get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    os.environ.setdefault("QTX_API_KEY", "test-qtx-api-key")
+
+    with TestClient(app, headers={"X-Api-Key": os.environ["QTX_API_KEY"]}) as c:
+        deps._db_ready = True
+        yield c
+
+    app.dependency_overrides.clear()
+    deps._db_ready = False
 
 
 def test_fall_risk_patient_only(client):

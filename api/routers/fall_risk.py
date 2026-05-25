@@ -246,7 +246,15 @@ def _top_factors(
 
 
 def _cohort_stat(age: int, gender: str) -> dict:
-    df = deps.df
+    """Return cohort improvement statistics for the patient's demographic.
+
+    Falls back to a static default when the in-memory DataFrame is unavailable
+    (e.g. after migration to PostgreSQL). A DB-backed implementation will be
+    added in Sub-project 2.
+    """
+    df = getattr(deps, "df", None)
+    if df is None:
+        return {"improvement_pct": 45, "cohort_size": 0}
     cohort = df[(df["age"] >= age - 8) & (df["age"] <= age + 8) & (df["gender"] == gender)]
     if len(cohort) < 10:
         cohort = df[(df["age"] >= age - 15) & (df["age"] <= age + 15)]
