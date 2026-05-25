@@ -106,6 +106,7 @@ class Session(Base):
     joined_with_pain: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     pain_improved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     pain_location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # VAS
     pre_vas: Mapped[float | None] = mapped_column(Numeric(5, 1), nullable=True)
@@ -171,3 +172,25 @@ class PatientCondition(Base):
     condition_label: Mapped[str] = mapped_column(String(100), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="tag_regex")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class PatientTrend(Base):
+    __tablename__ = "patient_trends"
+    __table_args__ = (
+        UniqueConstraint("patient_id", "metric", name="uq_patient_trends_patient_metric"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    metric: Mapped[str] = mapped_column(String(50), nullable=False)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    sessions_used: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    magnitude: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
+    first_value: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
+    last_value: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
