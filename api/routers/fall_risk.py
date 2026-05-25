@@ -245,24 +245,56 @@ def _top_factors(
     return factors[:4]
 
 
-def _cohort_stat(age: int, gender: str) -> dict:
+def _cohort_stat(age: int, gender: str, db: Session) -> dict:
     """Return cohort improvement statistics for the patient's demographic.
 
-    Falls back to a static default when the in-memory DataFrame is unavailable
-    (e.g. after migration to PostgreSQL). A DB-backed implementation will be
-    added in Sub-project 2.
+    Queries the patients + sessions tables for age/gender-matched peers.
+    Falls back to a static default if the DB is empty or unavailable.
     """
-    df = getattr(deps, "df", None)
-    if df is None:
+    from models.clinical import Patient, Session as ClinicalSession
+
+    def _query(age_delta: int):
+        return (
+            db.query(Patient)
+            .filter(
+                Patient.gender == gender,
+                Patient.age >= age - age_delta,
+                Patient.age <= age + age_delta,
+            )
+        )
+
+    patients = _query(8).all()
+    if len(patients) < 10:
+        patients = _query(15).all()
+
+    cohort_size = len(patients)
+    if cohort_size == 0:
         return {"improvement_pct": 45, "cohort_size": 0}
-    cohort = df[(df["age"] >= age - 8) & (df["age"] <= age + 8) & (df["gender"] == gender)]
-    if len(cohort) < 10:
-        cohort = df[(df["age"] >= age - 15) & (df["age"] <= age + 15)]
-    responders = cohort[cohort["overall_responder"].notna()] if "overall_responder" in cohort.columns else pd.DataFrame()
-    if len(responders) == 0:
-        return {"improvement_pct": 45, "cohort_size": len(cohort)}
-    pct = int((responders["overall_responder"] == 1).mean() * 100)
-    return {"improvement_pct": pct, "cohort_size": len(cohort)}
+
+    patient_ids = [p.id for p in patients]
+    total_with_outcome = (
+        db.query(ClinicalSession)
+        .filter(
+            ClinicalSession.patient_id.in_(patient_ids),
+            ClinicalSession.session_number == 1,
+            ClinicalSession.overall_responder.isnot(None),
+        )
+        .count()
+    )
+    if total_with_outcome == 0:
+        return {"improvement_pct": 45, "cohort_size": cohort_size}
+
+    responder_count = (
+        db.query(ClinicalSession)
+        .filter(
+            ClinicalSession.patient_id.in_(patient_ids),
+            ClinicalSession.session_number == 1,
+            ClinicalSession.overall_responder == True,  # noqa: E712
+        )
+        .count()
+    )
+    pct = int(responder_count / total_with_outcome * 100)
+    return {"improvement_pct": pct, "cohort_size": cohort_size}
 
 
 @router.post("/predict/fall-risk")
@@ -295,5 +327,5 @@ def predict_fall_risk(req: FallRiskRequest, db: Session = Depends(get_db)) -> di
         "confidence":   "high" if has_clinician_data else "standard",
         "source":       source,
         "top_factors":  _top_factors(req, provided, wearable),
-        "cohort_stat":  _cohort_stat(req.age, req.gender.upper()),
+        "cohort_stat":  _cohort_stat(req.age, req.gender.upper(), db),
     }
