@@ -25,7 +25,8 @@ class FallRiskRequest(BaseModel):
     has_diabetes: int        # 0 | 1
     has_stroke: int          # 0 | 1
     has_parkinsons: int      # 0 | 1
-    has_heart_disease: int   # 0 | 1
+    has_hypertension: int    # 0 | 1  (renamed from has_heart_disease — matches model feature)
+    has_frailty: int         # 0 | 1  (explicit clinician field — no longer inferred from walking aid)
     polypharmacy: int        # 0 | 1
     # Clinician fields (optional)
     pre_tug_s: float | None = None
@@ -70,8 +71,8 @@ def _build_feature_vector(req: FallRiskRequest, medians: dict) -> pd.DataFrame:
         "has_diabetes":     float(req.has_diabetes),
         "has_stroke":       float(req.has_stroke),
         "has_parkinsons":   float(req.has_parkinsons),
-        "has_frailty":      1.0 if req.walking_aid == "frame" else 0.0,
-        "has_hypertension": float(req.has_heart_disease),
+        "has_frailty":      float(req.has_frailty),       # clinician-supplied, no longer inferred
+        "has_hypertension": float(req.has_hypertension),  # renamed from has_heart_disease
         "pre_5xsst_s":      req.pre_5xsst_s if req.pre_5xsst_s is not None else medians.get("pre_5xsst_s", 15.0),
         "pre_vas":          req.pre_vas      if req.pre_vas      is not None else medians.get("pre_vas",     4.0),
     }

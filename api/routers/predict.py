@@ -23,6 +23,16 @@ _PER_TEST_CONFIG = [
     ("SPPB",          "baseline_sppb",     1.0,   0.5,  False),
 ]
 
+# Physiological bounds for per-test predictions: (min, max)
+_PER_TEST_BOUNDS: dict[str, tuple[float, float]] = {
+    "VAS (Pain)":  (0.0,  100.0),
+    "TUG (s)":     (1.0,  120.0),
+    "5xSST (s)":   (3.0,  120.0),
+    "Normal GS":   (0.1,  2.5),
+    "Fast GS":     (0.1,  2.5),
+    "SPPB":        (0.0,  12.0),
+}
+
 # ---------------------------------------------------------------------------
 # Cohort / usage / gender / indication one-hot prefix maps
 # ---------------------------------------------------------------------------
@@ -211,7 +221,9 @@ def predict_outcomes(profile: PatientProfile) -> dict:
 
     p_responder = float(clf.predict_proba(X_clf)[0][1])
     p_dropout = float(drop.predict_proba(X_drop)[0][1])
-    composite_improvement = float(reg.predict(X_clf)[0])
+    feature_names_reg = list(reg.feature_names_in_)
+    X_reg = _build_feature_vector(profile, feature_names_reg)
+    composite_improvement = float(reg.predict(X_reg)[0])
 
     # Per-test predictions
     per_test = []
@@ -220,6 +232,8 @@ def predict_outcomes(profile: PatientProfile) -> dict:
         if baseline is None:
             continue
         predicted = float(baseline) + composite_improvement * scale
+        lo, hi = _PER_TEST_BOUNDS.get(name, (-float("inf"), float("inf")))
+        predicted = float(max(lo, min(hi, predicted)))
         if lower_is_better:
             meets_mcid = (float(baseline) - predicted) >= mcid
         else:
