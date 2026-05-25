@@ -33,13 +33,23 @@ def test_db(tmp_path):
     return engine, override_get_db
 
 
+_TEST_API_KEY = "test-qtx-api-key"
+
+
+@pytest.fixture(autouse=True)
+def set_api_key_env():
+    os.environ["QTX_API_KEY"] = _TEST_API_KEY
+    yield
+    os.environ.pop("QTX_API_KEY", None)
+
+
 @pytest.fixture
 def client(test_db):
     engine, override_get_db = test_db
     from main import app
     from db import get_db
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-Api-Key": _TEST_API_KEY}) as c:
         yield c
     app.dependency_overrides.clear()
 
