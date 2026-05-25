@@ -44,22 +44,78 @@ def client(test_db):
     app.dependency_overrides.clear()
 
 
-def test_webhook_returns_ok(client):
-    payload = {
+def test_webhook_returns_ok(client, monkeypatch):
+    import hashlib
+    import hmac as hmac_lib
+    import time
+
+    secret = "test_secret_value"
+    monkeypatch.setenv("TERRA_WEBHOOK_SECRET", secret)
+
+    body_bytes = json.dumps({
         "type": "activity",
         "user": {"user_id": "u1", "provider": "APPLE"},
         "data": [{
             "metadata": {"start_time": "2026-05-20T08:00:00Z"},
             "steps_data": {"steps": 7000},
         }],
-    }
+    }).encode()
+
+    ts = str(int(time.time()))
+    sig = hmac_lib.new(
+        secret.encode(),
+        f"{ts}.{body_bytes.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    terra_sig = f"t={ts},v1={sig}"
+
     resp = client.post(
         "/webhooks/terra",
-        content=json.dumps(payload),
-        headers={"Content-Type": "application/json"},
+        content=body_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "terra-signature": terra_sig,
+        },
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_webhook_rejects_when_secret_unset(client, monkeypatch):
+    """Endpoint must return 500 (misconfiguration) when TERRA_WEBHOOK_SECRET is not set."""
+    monkeypatch.delenv("TERRA_WEBHOOK_SECRET", raising=False)
+    resp = client.post(
+        "/webhooks/terra",
+        content=b'{"type":"activity","user":{"user_id":"u1","provider":"APPLE"},"data":[]}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 500
+    assert "TERRA_WEBHOOK_SECRET" in resp.json()["detail"]
+
+
+def test_webhook_rejects_malformed_json(client, monkeypatch):
+    import hashlib
+    import hmac as hmac_lib
+    import time
+
+    secret = "test_secret_value"
+    monkeypatch.setenv("TERRA_WEBHOOK_SECRET", secret)
+
+    body_bytes = b'not valid json{'
+    ts = str(int(time.time()))
+    sig = hmac_lib.new(
+        secret.encode(),
+        f"{ts}.{body_bytes.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    terra_sig = f"t={ts},v1={sig}"
+
+    resp = client.post(
+        "/webhooks/terra",
+        content=body_bytes,
+        headers={"Content-Type": "application/json", "terra-signature": terra_sig},
+    )
+    assert resp.status_code == 400
 
 
 def test_webhook_rejects_bad_signature(client, monkeypatch):
