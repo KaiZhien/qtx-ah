@@ -1,42 +1,55 @@
 """Global singletons loaded once at startup."""
-import pandas as pd
+from __future__ import annotations
+
 import joblib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # quantumtx-ah/
-DATA_PATH = ROOT / "data" / "processed" / "dashboard_data.parquet"
 MODELS_DIR = ROOT / "models"
 
-df: pd.DataFrame = None
 models: dict = {}
-
-
-def _normalize_age_band(age):
-    """Map age to dashboard age band labels matching the frontend constants."""
-    if pd.isna(age):
-        return None
-    age = int(age)
-    if age < 50:   return "<50"
-    if age < 60:   return "50-59"
-    if age < 70:   return "60-69"
-    if age < 80:   return "70-79"
-    return "80+"
+_db_ready: bool = False  # True once DB is reachable and has patient rows
 
 
 def load_all() -> None:
-    """Load all ML models and the patient DataFrame at startup."""
-    global df, models
-    missing: list[str] = []
+    """Load ML models and verify DB connectivity at startup.
 
-    # Patient data
+    DB failures are logged as warnings (not exceptions) so the wearable
+    and prediction endpoints continue to serve even if the clinical DB is
+    temporarily unavailable. Patient-listing endpoints check _db_ready
+    and return 503 when False.
+    """
+    global models, _db_ready
+
+    # --- DB health check (non-fatal) ---
     try:
-        df = pd.read_parquet(DATA_PATH)
-        df["age_band"] = df["age"].apply(_normalize_age_band)
-    except FileNotFoundError:
-        missing.append(str(DATA_PATH))
-        print(f"[deps] MISSING data file: {DATA_PATH}")
+        from db import init_db, get_db
+        from models.clinical import Patient
+        from sqlalchemy import func, select
 
-    # Models
+        init_db()
+        db = next(get_db())
+        try:
+            count = db.execute(select(func.count()).select_from(Patient)).scalar()
+        finally:
+            db.close()
+
+        if count == 0:
+            print(
+                "[deps] WARNING: patients table is empty — "
+                "run: DATABASE_URL=... PYTHONPATH=src .venv/bin/python scripts/11_seed_database.py"
+            )
+            _db_ready = False
+        else:
+            print(f"[deps] DB ready — {count:,} patients loaded")
+            _db_ready = True
+
+    except Exception as exc:
+        print(f"[deps] WARNING: DB unavailable at startup: {exc}")
+        _db_ready = False
+
+    # --- ML models (fatal if missing) ---
+    missing: list[str] = []
     model_files = {
         "classifier":        MODELS_DIR / "classifier_xgb.joblib",
         "regression":        MODELS_DIR / "regression_xgb.joblib",
@@ -54,6 +67,6 @@ def load_all() -> None:
 
     if missing:
         raise RuntimeError(
-            f"Startup failed — {len(missing)} required file(s) not found:\n"
+            f"Startup failed — {len(missing)} model file(s) not found:\n"
             + "\n".join(f"  {p}" for p in missing)
         )
