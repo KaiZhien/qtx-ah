@@ -193,3 +193,81 @@ def test_ingest_idempotent(db):
 
     rows = db.query(WearableActivity).filter_by(terra_user_id="user_xyz").all()
     assert len(rows) == 1
+
+
+def test_verify_signature_rejects_stale_timestamp():
+    from services.terra import verify_signature
+    import hashlib, hmac as hmac_lib, time as time_lib
+    body = b'{"type":"activity"}'
+    secret = "test_secret"
+    stale_ts = str(int(time_lib.time()) - 601)  # 10 minutes ago
+    sig = hmac_lib.new(
+        secret.encode(),
+        f"{stale_ts}.{body.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    header = f"t={stale_ts},v1={sig}"
+    assert verify_signature(body, header, secret) is False
+
+
+def test_verify_signature_rejects_non_utf8_body():
+    from services.terra import verify_signature
+    body = b'\xff\xfe invalid utf-8'
+    assert verify_signature(body, "t=123,v1=abc", "secret") is False
+
+
+def test_ingest_partial_update_preserves_existing_fields(db):
+    """A partial payload must not overwrite previously stored non-None values with None."""
+    from services.terra import ingest_payload
+    from models.wearable import WearableActivity
+
+    full_payload = {
+        "type": "activity",
+        "user": {"user_id": "user_partial", "provider": "GARMIN"},
+        "data": [{
+            "metadata": {"start_time": "2026-05-20T08:00:00Z"},
+            "steps_data": {"steps": 9000},
+            "active_durations_data": {"activity_seconds": 3600, "rest_seconds": 7200},
+            "movement_data": {"cadence_avg": 95.0},
+            "distance_data": {"distance_meters": 6000.0},
+            "device_data": {"num_on_wrist_seconds": 57600},
+        }],
+    }
+    ingest_payload(full_payload, db)
+
+    partial_payload = {
+        "type": "activity",
+        "user": {"user_id": "user_partial", "provider": "GARMIN"},
+        "data": [{
+            "metadata": {"start_time": "2026-05-20T08:00:00Z"},
+            "steps_data": {"steps": 9500},
+        }],
+    }
+    ingest_payload(partial_payload, db)
+
+    row = db.get(WearableActivity, ("user_partial", date_type(2026, 5, 20)))
+    assert row.steps == 9500           # updated
+    assert row.active_minutes == 60    # preserved
+    assert row.distance_m == 6000.0    # preserved
+    assert row.wear_minutes == 960     # preserved
+
+
+def test_ingest_event_is_idempotent(db):
+    """Re-delivering the same event webhook must not create duplicate rows."""
+    from services.terra import ingest_payload
+    from models.wearable import WearableEvent
+
+    payload = {
+        "type": "event",
+        "user": {"user_id": "user_dedup", "provider": "APPLE"},
+        "data": [{
+            "type": "fall_detected",
+            "timestamp": "2026-05-20T14:32:00Z",
+            "metadata": {"severity": "low"},
+        }],
+    }
+    ingest_payload(payload, db)
+    ingest_payload(payload, db)  # simulate Terra re-delivery
+
+    events = db.query(WearableEvent).filter_by(terra_user_id="user_dedup").all()
+    assert len(events) == 1

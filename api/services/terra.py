@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time as _time_module
 import uuid
 from datetime import datetime, timezone
 
@@ -17,19 +18,34 @@ from models.wearable import (
 )
 
 TERRA_BASE_URL = "https://api.tryterra.co/v2"
+REPLAY_WINDOW_SECONDS = 300  # 5 minutes
 
 
 def verify_signature(body: bytes, header: str, secret: str) -> bool:
-    """Return True if Terra's HMAC-SHA256 webhook signature is valid."""
+    """Return True if Terra's HMAC-SHA256 signature is valid and not a replay."""
     try:
         parts = dict(p.split("=", 1) for p in header.split(","))
         timestamp = parts["t"]
         v1 = parts["v1"]
     except (KeyError, ValueError):
         return False
+
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        return False
+
+    if abs(_time_module.time() - ts_int) > REPLAY_WINDOW_SECONDS:
+        return False
+
+    try:
+        body_str = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+
     expected = hmac.new(
         secret.encode(),
-        f"{timestamp}.{body.decode()}".encode(),
+        f"{timestamp}.{body_str}".encode(),
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected, v1)
@@ -140,13 +156,17 @@ def _ingest_activity(
             row = WearableActivity(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        row.steps = steps_data.get("steps")
-        row.active_minutes = int(active_sec / 60) if active_sec is not None else None
-        row.sedentary_minutes = int(sedentary_sec / 60) if sedentary_sec is not None else None
-        row.walking_cadence_avg = movement_data.get("cadence_avg")
-        row.distance_m = distance_data.get("distance_meters")
-        row.wear_minutes = wear_minutes
-        row.source_device = provider
+        def _set(field: str, value) -> None:
+            if value is not None:
+                setattr(row, field, value)
+
+        _set("steps", steps_data.get("steps"))
+        _set("active_minutes", int(active_sec / 60) if active_sec is not None else None)
+        _set("sedentary_minutes", int(sedentary_sec / 60) if sedentary_sec is not None else None)
+        _set("walking_cadence_avg", movement_data.get("cadence_avg"))
+        _set("distance_m", distance_data.get("distance_meters"))
+        _set("wear_minutes", wear_minutes)
+        _set("source_device", provider)
 
     db.commit()
 
@@ -171,11 +191,15 @@ def _ingest_body(
             row = WearableBody(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        row.hr_resting = hr_summary.get("resting_hr_bpm")
-        row.hr_avg = hr_summary.get("avg_hr_bpm")
-        row.hrv_rmssd = hrv_summary.get("rmssd_ms")
-        row.spo2_avg = oxy.get("avg_saturation_percentage")
-        row.source_device = provider
+        def _set(field: str, value) -> None:
+            if value is not None:
+                setattr(row, field, value)
+
+        _set("hr_resting", hr_summary.get("resting_hr_bpm"))
+        _set("hr_avg", hr_summary.get("avg_hr_bpm"))
+        _set("hrv_rmssd", hrv_summary.get("rmssd_ms"))
+        _set("spo2_avg", oxy.get("avg_saturation_percentage"))
+        _set("source_device", provider)
 
     db.commit()
 
@@ -204,12 +228,16 @@ def _ingest_sleep(
             row = WearableSleep(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        row.total_minutes = int(total_sec / 60) if total_sec is not None else None
-        row.deep_minutes = int(deep_sec / 60) if deep_sec is not None else None
-        row.rem_minutes = int(rem_sec / 60) if rem_sec is not None else None
-        row.awake_minutes = int(awake_sec / 60) if awake_sec is not None else None
-        row.efficiency_pct = efficiency * 100 if efficiency is not None else None
-        row.source_device = provider
+        def _set(field: str, value) -> None:
+            if value is not None:
+                setattr(row, field, value)
+
+        _set("total_minutes", int(total_sec / 60) if total_sec is not None else None)
+        _set("deep_minutes", int(deep_sec / 60) if deep_sec is not None else None)
+        _set("rem_minutes", int(rem_sec / 60) if rem_sec is not None else None)
+        _set("awake_minutes", int(awake_sec / 60) if awake_sec is not None else None)
+        _set("efficiency_pct", efficiency * 100 if efficiency is not None else None)
+        _set("source_device", provider)
 
     db.commit()
 
@@ -228,6 +256,20 @@ def _ingest_events(
         occurred_at = datetime.fromisoformat(ts_str.rstrip("Z")).replace(
             tzinfo=timezone.utc
         )
+
+        # Deduplication: skip if an event with the same identity already exists.
+        existing = (
+            db.query(WearableEvent)
+            .filter_by(
+                terra_user_id=terra_user_id,
+                occurred_at=occurred_at,
+                event_type=event_type,
+            )
+            .first()
+        )
+        if existing:
+            continue
+
         event = WearableEvent(
             id=str(uuid.uuid4()),
             terra_user_id=terra_user_id,
