@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import deps
-from routers import patients, predict, fall_risk, wearable, webhooks, import_data, sessions
+from routers import patients, predict, fall_risk, wearable, webhooks, import_data, sessions, ask
 
 
 @asynccontextmanager
@@ -49,3 +49,4 @@ app.include_router(wearable.router, prefix="/api")
 app.include_router(webhooks.router)
 app.include_router(import_data.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(ask.router, prefix="/api")
