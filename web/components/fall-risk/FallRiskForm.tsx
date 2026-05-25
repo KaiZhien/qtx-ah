@@ -22,7 +22,8 @@ type PatientFields = {
   has_diabetes: boolean;
   has_stroke: boolean;
   has_parkinsons: boolean;
-  has_heart_disease: boolean;
+  has_hypertension: boolean;  // renamed from has_heart_disease
+  has_frailty: boolean;       // new
   polypharmacy: boolean | null;
 };
 
@@ -44,7 +45,8 @@ const DEFAULT_PATIENT: PatientFields = {
   has_diabetes: false,
   has_stroke: false,
   has_parkinsons: false,
-  has_heart_disease: false,
+  has_hypertension: false,
+  has_frailty: false,
   polypharmacy: null,
 };
 
@@ -68,9 +70,10 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
   }
 
   function step1Valid() {
+    const ageNum = parseInt(patient.age, 10);
+    const ageValid = Number.isFinite(ageNum) && ageNum >= 1 && ageNum <= 120 && String(ageNum) === patient.age.trim();
     return (
-      patient.age !== "" &&
-      parseInt(patient.age) > 0 &&
+      ageValid &&
       patient.gender !== "" &&
       patient.walking_aid !== "" &&
       patient.exercise_frequency !== "" &&
@@ -96,7 +99,8 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
       has_diabetes:       patient.has_diabetes ? 1 : 0,
       has_stroke:         patient.has_stroke ? 1 : 0,
       has_parkinsons:     patient.has_parkinsons ? 1 : 0,
-      has_heart_disease:  patient.has_heart_disease ? 1 : 0,
+      has_hypertension:   patient.has_hypertension ? 1 : 0,
+      has_frailty:        patient.has_frailty ? 1 : 0,
       polypharmacy:       patient.polypharmacy ? 1 : 0,
       ...(patientId ? { patient_id: patientId } : {}),
       ...clinical_fields,
@@ -197,11 +201,12 @@ export function FallRiskForm({ onResult, onLoading }: Props) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {(
                 [
-                  ["has_oa", "Osteoarthritis"],
-                  ["has_diabetes", "Diabetes"],
-                  ["has_stroke", "Stroke"],
-                  ["has_parkinsons", "Parkinson's"],
-                  ["has_heart_disease", "Heart disease"],
+                  ["has_oa",           "Osteoarthritis"],
+                  ["has_diabetes",      "Diabetes"],
+                  ["has_stroke",        "Stroke"],
+                  ["has_parkinsons",    "Parkinson's"],
+                  ["has_hypertension",  "Hypertension"],
+                  ["has_frailty",       "Frailty / sarcopenia"],
                 ] as [keyof PatientFields, string][]
               ).map(([key, label]) => (
                 <label key={key} className="check" style={{ fontSize: 13 }}>

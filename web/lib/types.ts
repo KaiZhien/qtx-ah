@@ -33,7 +33,7 @@ export type Patient = {
   overall_responder: 0 | 1 | null;
   mcid_count: number;
   is_dropout: 0 | 1;
-  has_followup?: 0 | 1 | null;
+  has_followup?: "Y" | "N" | null;
   has_oa: 0 | 1;
   has_diabetes: 0 | 1;
   has_stroke: 0 | 1;
@@ -98,7 +98,7 @@ export type PatientProfile = {
   pre_normal_gs_ms: number;
   pre_fast_gs_ms: number;
   baseline_sppb: number;
-  has_followup?: 0 | 1 | null;
+  has_followup?: "Y" | "N" | null;
   has_oa: 0 | 1;
   has_diabetes: 0 | 1;
   has_stroke: 0 | 1;
@@ -182,7 +182,8 @@ export type FallRiskInput = {
   has_diabetes: 0 | 1;
   has_stroke: 0 | 1;
   has_parkinsons: 0 | 1;
-  has_heart_disease: 0 | 1;
+  has_hypertension: 0 | 1;   // renamed from has_heart_disease
+  has_frailty: 0 | 1;        // new explicit clinician field
   polypharmacy: 0 | 1;
   // Clinician (optional)
   pre_tug_s?: number | null;

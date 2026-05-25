@@ -10,6 +10,12 @@ import type {
   WearableFeatures,
 } from "./types";
 
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
+function apiHeaders(extra?: Record<string, string>): Record<string, string> {
+  return { "X-Api-Key": API_KEY, ...extra };
+}
+
 export async function fetchPatients(filters: Filters): Promise<Patient[]> {
   const params = new URLSearchParams();
   filters.cohorts.forEach((c) => params.append("cohort", c));
@@ -17,13 +23,17 @@ export async function fetchPatients(filters: Filters): Promise<Patient[]> {
   filters.ageBands.forEach((a) => params.append("age_band", a));
   filters.gender.forEach((g) => params.append("gender", g));
   if (filters.fuOnly) params.set("fu_only", "true");
-  const res = await fetch(`/api/patients?${params.toString()}`);
+  const res = await fetch(`/api/patients?${params.toString()}`, {
+    headers: apiHeaders(),
+  });
   if (!res.ok) throw new Error(`fetchPatients: ${res.status}`);
   return res.json();
 }
 
 export async function fetchPatient(sn: number): Promise<Patient> {
-  const res = await fetch(`/api/patient/${sn}`);
+  const res = await fetch(`/api/patient/${sn}`, {
+    headers: apiHeaders(),
+  });
   if (!res.ok) throw new Error(`fetchPatient: ${res.status}`);
   return res.json();
 }
@@ -31,7 +41,7 @@ export async function fetchPatient(sn: number): Promise<Patient> {
 export async function predictOutcomes(profile: PatientProfile): Promise<PredictionResult> {
   const res = await fetch("/api/predict/outcomes", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(profile),
   });
   if (!res.ok) throw new Error(`predictOutcomes: ${res.status}`);
@@ -41,7 +51,7 @@ export async function predictOutcomes(profile: PatientProfile): Promise<Predicti
 export async function predictDosage(intake: DosageIntake): Promise<DosageResult> {
   const res = await fetch("/api/predict/dosage", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(intake),
   });
   if (!res.ok) throw new Error(`predictDosage: ${res.status}`);
@@ -51,7 +61,7 @@ export async function predictDosage(intake: DosageIntake): Promise<DosageResult>
 export async function predictFallRisk(input: FallRiskInput): Promise<FallRiskResult> {
   const res = await fetch("/api/predict/fall-risk", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(`predictFallRisk: ${res.status}`);
@@ -59,7 +69,9 @@ export async function predictFallRisk(input: FallRiskInput): Promise<FallRiskRes
 }
 
 export async function fetchWearableFeatures(patientId: string): Promise<WearableFeatures> {
-  const res = await fetch(`/api/wearable/${encodeURIComponent(patientId)}/features`);
+  const res = await fetch(`/api/wearable/${encodeURIComponent(patientId)}/features`, {
+    headers: apiHeaders(),
+  });
   if (!res.ok) throw new Error(`fetchWearableFeatures: ${res.status}`);
   return res.json();
 }
@@ -70,7 +82,7 @@ export async function enrollPatient(
 ): Promise<{ widget_url: string; patient_id: string }> {
   const res = await fetch("/api/wearable/enroll", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ patient_id: patientId, enrolled_by: "clinician", device_brand: deviceBrand }),
   });
   if (!res.ok) throw new Error(`enrollPatient: ${res.status}`);
@@ -78,7 +90,9 @@ export async function enrollPatient(
 }
 
 export async function fetchWearableSummary(): Promise<{ enrolled_count: number }> {
-  const res = await fetch("/api/wearable/summary");
+  const res = await fetch("/api/wearable/summary", {
+    headers: apiHeaders(),
+  });
   if (!res.ok) throw new Error(`fetchWearableSummary: ${res.status}`);
   return res.json();
 }
