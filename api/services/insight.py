@@ -1,0 +1,164 @@
+"""AI insight generation service using Anthropic Claude.
+
+InsightService builds prompts from patient timeline data, calls
+claude-sonnet-4-6, and persists the generated text in patient_insights.
+
+Stub mode: if ANTHROPIC_API_KEY is not set, returns a placeholder string
+and saves a row with model="stub". No exception is raised.
+"""
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import datetime
+
+from sqlalchemy.orm import Session as DBSession
+
+from models.clinical import PatientInsight
+
+_SYSTEM_PROMPT = (
+    "You are a clinical physiotherapy assistant reviewing longitudinal data for a single patient. "
+    "Reason only from the data provided. Do not compare this patient to others. "
+    "Be concise and clinically relevant. Never speculate beyond what the data supports."
+)
+
+_SESSION_SUMMARY_TEMPLATE = """\
+Patient timeline data:
+{timeline_json}
+
+The patient just completed session {session_number}. In 3-5 bullet points, summarise:
+1. Overall progress trajectory across all sessions
+2. Notable changes in this session compared to prior sessions
+3. Any measurements that warrant clinician attention"""
+
+_QA_TEMPLATE = """\
+Patient timeline data:
+{timeline_json}
+
+Clinician question: {question}
+
+Answer the question in 2-4 sentences based only on this patient's data above."""
+
+
+class InsightService:
+    STUB_RESPONSE = "[AI insights unavailable — ANTHROPIC_API_KEY not configured]"
+    MODEL = "claude-sonnet-4-6"
+
+    def __init__(self, db: DBSession) -> None:
+        self._db = db
+        self._api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    def _call_claude(self, user_message: str) -> str:
+        """Call the Anthropic API and return the text response."""
+        import anthropic  # deferred so module loads without the package in stub mode
+        client = anthropic.Anthropic(api_key=self._api_key)
+        message = client.messages.create(
+            model=self.MODEL,
+            max_tokens=1024,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return message.content[0].text
+
+    def _save_insight(
+        self,
+        patient_id: uuid.UUID,
+        content: str,
+        model: str,
+        insight_type: str,
+        session_number: int | None = None,
+        question: str | None = None,
+    ) -> None:
+        row = PatientInsight(
+            id=uuid.uuid4(),
+            patient_id=patient_id,
+            session_number=session_number,
+            insight_type=insight_type,
+            question=question,
+            content=content,
+            model=model,
+            created_at=datetime.utcnow(),
+        )
+        self._db.add(row)
+        self._db.flush()
+
+    def generate_session_insight(
+        self,
+        timeline: dict,
+        patient_id: uuid.UUID,
+        session_number: int,
+    ) -> str:
+        """Generate a session summary insight and persist it.
+
+        Returns the generated text (or STUB_RESPONSE if no API key).
+        Must be called inside an open transaction — caller commits.
+        """
+        if not self._api_key:
+            self._save_insight(
+                patient_id=patient_id,
+                content=self.STUB_RESPONSE,
+                model="stub",
+                insight_type="session_summary",
+                session_number=session_number,
+            )
+            return self.STUB_RESPONSE
+
+        user_message = _SESSION_SUMMARY_TEMPLATE.format(
+            timeline_json=json.dumps(timeline, indent=2),
+            session_number=session_number,
+        )
+        try:
+            content = self._call_claude(user_message)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+
+        self._save_insight(
+            patient_id=patient_id,
+            content=content,
+            model=self.MODEL,
+            insight_type="session_summary",
+            session_number=session_number,
+        )
+        return content
+
+    def answer_question(
+        self,
+        timeline: dict,
+        patient_id: uuid.UUID,
+        question: str,
+    ) -> str:
+        """Answer a clinician question and persist the response.
+
+        Returns the generated text (or STUB_RESPONSE if no API key).
+        Must be called inside an open transaction — caller commits.
+        """
+        if not self._api_key:
+            self._save_insight(
+                patient_id=patient_id,
+                content=self.STUB_RESPONSE,
+                model="stub",
+                insight_type="qa_response",
+                question=question,
+            )
+            return self.STUB_RESPONSE
+
+        user_message = _QA_TEMPLATE.format(
+            timeline_json=json.dumps(timeline, indent=2),
+            question=question,
+        )
+        try:
+            content = self._call_claude(user_message)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+
+        self._save_insight(
+            patient_id=patient_id,
+            content=content,
+            model=self.MODEL,
+            insight_type="qa_response",
+            question=question,
+        )
+        return content
