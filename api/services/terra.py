@@ -18,7 +18,19 @@ from models.wearable import (
 )
 
 TERRA_BASE_URL = "https://api.tryterra.co/v2"
+
+# Matches Terra's recommended replay-attack window (see Terra webhook docs).
 REPLAY_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def _set_if_not_none(obj, field: str, value) -> None:
+    """Set `obj.field = value` only when value is not None.
+
+    Used by ingest helpers to ensure partial payloads don't overwrite
+    previously stored complete values with None.
+    """
+    if value is not None:
+        setattr(obj, field, value)
 
 
 def verify_signature(body: bytes, header: str, secret: str) -> bool:
@@ -156,17 +168,13 @@ def _ingest_activity(
             row = WearableActivity(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        def _set(field: str, value) -> None:
-            if value is not None:
-                setattr(row, field, value)
-
-        _set("steps", steps_data.get("steps"))
-        _set("active_minutes", int(active_sec / 60) if active_sec is not None else None)
-        _set("sedentary_minutes", int(sedentary_sec / 60) if sedentary_sec is not None else None)
-        _set("walking_cadence_avg", movement_data.get("cadence_avg"))
-        _set("distance_m", distance_data.get("distance_meters"))
-        _set("wear_minutes", wear_minutes)
-        _set("source_device", provider)
+        _set_if_not_none(row, "steps", steps_data.get("steps"))
+        _set_if_not_none(row, "active_minutes", int(active_sec / 60) if active_sec is not None else None)
+        _set_if_not_none(row, "sedentary_minutes", int(sedentary_sec / 60) if sedentary_sec is not None else None)
+        _set_if_not_none(row, "walking_cadence_avg", movement_data.get("cadence_avg"))
+        _set_if_not_none(row, "distance_m", distance_data.get("distance_meters"))
+        _set_if_not_none(row, "wear_minutes", wear_minutes)
+        _set_if_not_none(row, "source_device", provider)
 
     db.commit()
 
@@ -191,15 +199,11 @@ def _ingest_body(
             row = WearableBody(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        def _set(field: str, value) -> None:
-            if value is not None:
-                setattr(row, field, value)
-
-        _set("hr_resting", hr_summary.get("resting_hr_bpm"))
-        _set("hr_avg", hr_summary.get("avg_hr_bpm"))
-        _set("hrv_rmssd", hrv_summary.get("rmssd_ms"))
-        _set("spo2_avg", oxy.get("avg_saturation_percentage"))
-        _set("source_device", provider)
+        _set_if_not_none(row, "hr_resting", hr_summary.get("resting_hr_bpm"))
+        _set_if_not_none(row, "hr_avg", hr_summary.get("avg_hr_bpm"))
+        _set_if_not_none(row, "hrv_rmssd", hrv_summary.get("rmssd_ms"))
+        _set_if_not_none(row, "spo2_avg", oxy.get("avg_saturation_percentage"))
+        _set_if_not_none(row, "source_device", provider)
 
     db.commit()
 
@@ -228,16 +232,12 @@ def _ingest_sleep(
             row = WearableSleep(terra_user_id=terra_user_id, date=day)
             db.add(row)
 
-        def _set(field: str, value) -> None:
-            if value is not None:
-                setattr(row, field, value)
-
-        _set("total_minutes", int(total_sec / 60) if total_sec is not None else None)
-        _set("deep_minutes", int(deep_sec / 60) if deep_sec is not None else None)
-        _set("rem_minutes", int(rem_sec / 60) if rem_sec is not None else None)
-        _set("awake_minutes", int(awake_sec / 60) if awake_sec is not None else None)
-        _set("efficiency_pct", efficiency * 100 if efficiency is not None else None)
-        _set("source_device", provider)
+        _set_if_not_none(row, "total_minutes", int(total_sec / 60) if total_sec is not None else None)
+        _set_if_not_none(row, "deep_minutes", int(deep_sec / 60) if deep_sec is not None else None)
+        _set_if_not_none(row, "rem_minutes", int(rem_sec / 60) if rem_sec is not None else None)
+        _set_if_not_none(row, "awake_minutes", int(awake_sec / 60) if awake_sec is not None else None)
+        _set_if_not_none(row, "efficiency_pct", efficiency * 100 if efficiency is not None else None)
+        _set_if_not_none(row, "source_device", provider)
 
     db.commit()
 

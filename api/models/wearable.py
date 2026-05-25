@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from sqlalchemy import String, Float, Integer, Boolean, DateTime, Date, JSON
+from sqlalchemy import String, Float, Integer, Boolean, DateTime, Date, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from db import Base
 
@@ -62,6 +62,12 @@ class WearableSleep(Base):
 
 class WearableEvent(Base):
     __tablename__ = "wearable_events"
+    __table_args__ = (
+        # Prevents duplicate rows under concurrent Terra re-delivery.
+        # Application-level dedup in _ingest_events is the fast path;
+        # this constraint is the safety net for race conditions.
+        UniqueConstraint("terra_user_id", "occurred_at", "event_type", name="uq_wearable_event_identity"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     terra_user_id: Mapped[str] = mapped_column(String, index=True)

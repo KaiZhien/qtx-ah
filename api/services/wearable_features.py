@@ -54,8 +54,7 @@ def get_patient_features(patient_id: str, db: Session) -> dict:
     hrv_vals = [r.hrv_rmssd for r in body_rows if r.hrv_rmssd is not None]
 
     compliant_days = sum(1 for r in activity_rows if (r.wear_minutes or 0) >= 240)
-    denominator = min(30, len(activity_rows)) if activity_rows else 30
-    compliance_rate = compliant_days / denominator if activity_rows else 0.0
+    compliance_rate = compliant_days / min(30, len(activity_rows)) if activity_rows else 0.0
 
     def _avg(vals: list) -> float | None:
         return sum(vals) / len(vals) if vals else None
