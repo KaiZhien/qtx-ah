@@ -6,6 +6,7 @@ import { COHORT_COLORS, TESTS, FLAG_LABELS } from "@/lib/constants";
 import { Pill } from "@/components/ui/Pill";
 import { Tabs } from "@/components/ui/Tabs";
 import { fetchWearableFeatures, enrollPatient } from "@/lib/api";
+import { TimelineTab } from "@/components/clinical/TimelineTab";
 
 interface PatientDrawerBodyProps {
   patient: Patient | null;
@@ -180,7 +181,7 @@ function WearableMetricsPanel({ data }: { data: WearableFeatures }) {
 }
 
 export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
-  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable">("clinical");
+  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable" | "timeline">("clinical");
   const [wearableData, setWearableData] = React.useState<WearableFeatures | null>(null);
   const [wearableLoading, setWearableLoading] = React.useState(false);
   const [wearableError, setWearableError] = React.useState<string | null>(null);
@@ -273,8 +274,9 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
         options={[
           { value: "clinical", label: "Clinical" },
           { value: "wearable", label: "Wearable" },
+          { value: "timeline", label: "Timeline" },
         ]}
-        onChange={(v) => setActiveTab(v as "clinical" | "wearable")}
+        onChange={(v) => setActiveTab(v as "clinical" | "wearable" | "timeline")}
       />
 
       {/* ── Clinical tab ── */}
@@ -534,6 +536,11 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
             </>
           )}
         </div>
+      )}
+
+      {/* ── Timeline tab ── */}
+      {activeTab === "timeline" && (
+        <TimelineTab sn={String(patient.sn)} />
       )}
     </div>
   );

@@ -1,10 +1,20 @@
 """API tests using FastAPI TestClient."""
 import os
 import sys
+import types
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Stub weasyprint before main/routers import it (no system Pango/Cairo needed).
+if "weasyprint" not in sys.modules:
+    _wp_stub = types.ModuleType("weasyprint")
+    class _StubHTML:
+        def __init__(self, string: str) -> None: pass
+        def write_pdf(self) -> bytes: return b"%PDF-stub"
+    _wp_stub.HTML = _StubHTML  # type: ignore[attr-defined]
+    sys.modules["weasyprint"] = _wp_stub
 
 import pytest
 from fastapi.testclient import TestClient

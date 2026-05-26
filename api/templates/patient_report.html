@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QTX Clinical Report — {{ patient.name }}</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm 18mm 18mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; font-size: 11pt; color: #111; line-height: 1.45; }
+
+  .header { border-bottom: 2px solid #2563eb; padding-bottom: 8pt; margin-bottom: 16pt; }
+  .header h1 { font-size: 15pt; color: #2563eb; margin-bottom: 4pt; }
+  .header .meta { font-size: 9.5pt; color: #555; display: flex; flex-wrap: wrap; gap: 6pt 18pt; }
+  .header .meta span { white-space: nowrap; }
+
+  h2 { font-size: 11.5pt; color: #2563eb; margin: 16pt 0 6pt; border-bottom: 1px solid #d1d5db; padding-bottom: 3pt; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-top: 4pt; }
+  thead th { background: #f1f5f9; font-weight: 600; padding: 4pt 6pt; text-align: left; border: 1px solid #e2e8f0; }
+  tbody tr:nth-child(even) td { background: #f8fafc; }
+  tbody td { padding: 3.5pt 6pt; border: 1px solid #e2e8f0; vertical-align: top; }
+
+  .trend-table td.direction { font-weight: 600; }
+  .direction-improving { color: #16a34a; }
+  .direction-declining  { color: #dc2626; }
+  .direction-stable     { color: #6b7280; }
+  .direction-early_signal  { color: #6b7280; }
+  .direction-baseline_only { color: #6b7280; }
+
+  .insight-block { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4pt; padding: 8pt 10pt; margin-top: 6pt; }
+  .insight-block .insight-header { font-size: 9.5pt; color: #555; margin-bottom: 5pt; }
+  .insight-block .insight-body { font-size: 10pt; white-space: pre-wrap; line-height: 1.55; }
+
+  .notes-list { font-size: 10pt; }
+  .notes-list li { margin-bottom: 4pt; }
+
+  .footer { border-top: 1px solid #d1d5db; margin-top: 20pt; padding-top: 6pt; font-size: 8.5pt; color: #9ca3af; text-align: center; }
+
+  .null { color: #9ca3af; }
+  .responder-yes { color: #16a34a; font-weight: 600; }
+  .responder-no  { color: #dc2626; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="header">
+  <h1>Clinical Summary — {{ patient.name }}</h1>
+  <div class="meta">
+    <span><strong>S/N:</strong> {{ patient.sn }}</span>
+    <span><strong>Age:</strong> {{ patient.age }}</span>
+    <span><strong>Gender:</strong> {{ patient.gender }}</span>
+    <span><strong>Cohort:</strong> {{ patient.cohort }}</span>
+    {% if patient.primary_indication %}<span><strong>Indication:</strong> {{ patient.primary_indication }}</span>{% endif %}
+    <span><strong>Generated:</strong> {{ generated_date }}</span>
+  </div>
+</div>
+
+<!-- ── Session History ── -->
+<h2>Session History</h2>
+{% if sessions %}
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Date</th>
+      <th>VAS</th>
+      <th>TUG (s)</th>
+      <th>5xSST (s)</th>
+      <th>Gait (m/s)</th>
+      <th>SPPB</th>
+      <th>Responder</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in sessions %}
+    <tr>
+      <td>{{ s.session_number }}</td>
+      <td>{{ s.session_date or '—' }}</td>
+      <td>{{ '%.1f'|format(s.post_vas) if s.post_vas is not none else '—' }}</td>
+      <td>{{ '%.1f'|format(s.post_tug_s) if s.post_tug_s is not none else '—' }}</td>
+      <td>{{ '%.1f'|format(s.post_5xsst_s) if s.post_5xsst_s is not none else '—' }}</td>
+      <td>{{ '%.2f'|format(s.post_normal_gs_ms) if s.post_normal_gs_ms is not none else '—' }}</td>
+      <td>{{ s.post_sppb if s.post_sppb is not none else '—' }}</td>
+      <td>
+        {% if s.overall_responder is none %}—
+        {% elif s.overall_responder %}<span class="responder-yes">Yes</span>
+        {% else %}<span class="responder-no">No</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#9ca3af;font-size:10pt;margin-top:6pt;">No sessions recorded.</p>
+{% endif %}
+
+<!-- ── Trend Signals ── -->
+{% if trends %}
+<h2>Trend Signals</h2>
+<table class="trend-table">
+  <thead>
+    <tr><th>Metric</th><th>Direction</th><th>Change</th><th>Sessions</th></tr>
+  </thead>
+  <tbody>
+    {% for t in trends %}
+    <tr>
+      <td>{{ t.metric }}</td>
+      <td class="direction direction-{{ t.direction }}">{{ t.direction | replace('_', ' ') | title }}</td>
+      <td>
+        {% if t.magnitude is not none %}
+          {% if t.first_value is not none and t.last_value is not none %}
+            {{ '%.2f'|format(t.first_value) }} → {{ '%.2f'|format(t.last_value) }}
+            (Δ {{ '%+.2f'|format(t.last_value - t.first_value) }})
+          {% else %}
+            {{ '%.2f'|format(t.magnitude) }}
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ t.sessions_used }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- ── Latest AI Insight ── -->
+{% if latest_insight %}
+<h2>Latest AI Insight</h2>
+<div class="insight-block">
+  <div class="insight-header">
+    Session {{ latest_insight.session_number }} · {{ latest_insight.created_at[:10] }}
+    {% if latest_insight.model and latest_insight.model != 'stub' %}· <em>{{ latest_insight.model }}</em>{% endif %}
+  </div>
+  <div class="insight-body">{{ latest_insight.content }}</div>
+</div>
+{% endif %}
+
+<!-- ── Clinician Notes ── -->
+{% set notes_sessions = sessions | selectattr('notes') | list %}
+{% if notes_sessions %}
+<h2>Clinician Notes</h2>
+<ul class="notes-list">
+  {% for s in notes_sessions %}
+  <li><strong>Session {{ s.session_number }}:</strong> {{ s.notes }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<!-- ── Footer ── -->
+<div class="footer">
+  Generated by QTX Clinical Intelligence &middot; {{ generated_date }}
+</div>
+
+</body>
+</html>

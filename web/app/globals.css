@@ -476,6 +476,7 @@ body {
 .btn.primary:hover { background: oklch(from var(--ink) calc(l - 0.05) c h); }
 .btn.subtle { border-color: transparent; background: var(--surface-sunken); }
 .btn.icon { padding: 7px; width: 32px; height: 32px; }
+.btn:disabled { opacity: 0.38; cursor: not-allowed; pointer-events: none; }
 
 .slider {
   -webkit-appearance: none; appearance: none;

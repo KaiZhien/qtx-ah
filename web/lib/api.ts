@@ -8,6 +8,8 @@ import type {
   FallRiskInput,
   FallRiskResult,
   WearableFeatures,
+  TimelineResponse,
+  InsightRow,
 } from "./types";
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
@@ -95,4 +97,38 @@ export async function fetchWearableSummary(): Promise<{ enrolled_count: number }
   });
   if (!res.ok) throw new Error(`fetchWearableSummary: ${res.status}`);
   return res.json();
+}
+
+export async function fetchTimeline(sn: string): Promise<TimelineResponse> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/timeline`, {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) throw new Error(`fetchTimeline: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchInsights(sn: string): Promise<InsightRow[]> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/insights`, {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) throw new Error(`fetchInsights: ${res.status}`);
+  return res.json();
+}
+
+export async function askQuestion(
+  sn: string,
+  question: string
+): Promise<{ answer: string; model: string }> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/ask`, {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ question }),
+  });
+  if (!res.ok) throw new Error(`askQuestion: ${res.status}`);
+  return res.json();
+}
+
+export function downloadPatientPdf(sn: string): void {
+  const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
+  window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf?key=${key}`, "_blank");
 }

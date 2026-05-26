@@ -109,7 +109,7 @@ def _normalize_age_band(age: Any) -> str | None:
 
 
 def _coerce(value: Any) -> Any:
-    """Replace NaN / pandas NA with None for DB insertion."""
+    """Replace NaN / pandas NA / ML sentinel '__missing__' with None for DB insertion."""
     if value is None:
         return None
     if isinstance(value, float) and math.isnan(value):
@@ -120,6 +120,9 @@ def _coerce(value: Any) -> Any:
             return None
     except Exception:
         pass
+    # ML pipeline uses '__missing__' as a categorical sentinel — treat as NULL in the DB
+    if value == "__missing__":
+        return None
     return value
 
 
@@ -155,13 +158,15 @@ class IngestPipeline:
                 continue
 
             try:
-                was_inserted = self._upsert_row(row, sn)
+                # Use a savepoint so only this row is rolled back on failure,
+                # not the entire session (which would wipe all previous inserts).
+                with self._db.begin_nested():
+                    was_inserted = self._upsert_row(row, sn)
                 if was_inserted:
                     summary.inserted += 1
                 else:
                     summary.updated += 1
             except Exception as exc:
-                self._db.rollback()
                 summary.errors.append(RowError(row_index=idx, sn=sn, reason=str(exc)))
                 summary.skipped += 1
 

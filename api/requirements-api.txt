@@ -1,5 +1,6 @@
 fastapi>=0.111
 uvicorn[standard]>=0.29
+python-dotenv>=1.0
 pandas>=2.0
 pyarrow>=14
 joblib>=1.3

@@ -208,3 +208,50 @@ export type FallRiskResult = {
   top_factors: FallRiskFactor[];
   cohort_stat: { improvement_pct: number; cohort_size: number };
 };
+
+export type TimelineSession = {
+  session_number: number;
+  session_date: string | null;
+  notes: string | null;
+  post_vas: number | null;
+  post_tug_s: number | null;
+  post_5xsst_s: number | null;
+  post_normal_gs_ms: number | null;
+  post_fast_gs_ms: number | null;
+  post_sppb: number | null;
+  composite_improvement: number | null;
+  overall_responder: boolean | null;
+  is_dropout: boolean;
+};
+
+export type TrendRow = {
+  metric: string;
+  direction: string;
+  sessions_used: number;
+  magnitude: number | null;
+  first_value: number | null;
+  last_value: number | null;
+};
+
+export type TimelineResponse = {
+  patient: {
+    sn: string;
+    name: string;
+    age: number;
+    gender: string;
+    cohort: string;
+    primary_indication: string;
+  };
+  sessions: TimelineSession[];
+  trends: TrendRow[];
+};
+
+export type InsightRow = {
+  id: string;
+  session_number: number | null;
+  insight_type: string;
+  question: string | null;
+  content: string;
+  model: string;
+  created_at: string;
+};
