@@ -6,6 +6,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import os
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -103,7 +105,8 @@ _BASE_REQUEST = {
     "has_diabetes": 0,
     "has_stroke": 0,
     "has_parkinsons": 0,
-    "has_heart_disease": 0,
+    "has_hypertension": 0,
+    "has_frailty": 0,
     "polypharmacy": 0,
 }
 
@@ -112,6 +115,7 @@ _BASE_REQUEST = {
 def test_db_override(tmp_path):
     from db import Base, get_db
     import models.wearable  # noqa: F401
+    import models.clinical  # noqa: F401  — registers patients/sessions tables in Base.metadata
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -133,7 +137,8 @@ def app_client(test_db_override):
     from db import get_db
     _, override = test_db_override
     app.dependency_overrides[get_db] = override
-    with TestClient(app) as c:
+    os.environ.setdefault("QTX_API_KEY", "test-qtx-api-key")
+    with TestClient(app, headers={"X-Api-Key": os.environ["QTX_API_KEY"]}) as c:
         yield c
     app.dependency_overrides.clear()
 

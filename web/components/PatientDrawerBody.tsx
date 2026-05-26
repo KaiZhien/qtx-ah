@@ -7,6 +7,7 @@ import { Pill } from "@/components/ui/Pill";
 import { Tabs } from "@/components/ui/Tabs";
 import { fetchWearableFeatures, enrollPatient } from "@/lib/api";
 import { TimelineTab } from "@/components/clinical/TimelineTab";
+import { AITab } from "@/components/clinical/AITab";
 
 interface PatientDrawerBodyProps {
   patient: Patient | null;
@@ -181,7 +182,7 @@ function WearableMetricsPanel({ data }: { data: WearableFeatures }) {
 }
 
 export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
-  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable" | "timeline">("clinical");
+  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable" | "timeline" | "ai">("clinical");
   const [wearableData, setWearableData] = React.useState<WearableFeatures | null>(null);
   const [wearableLoading, setWearableLoading] = React.useState(false);
   const [wearableError, setWearableError] = React.useState<string | null>(null);
@@ -275,8 +276,9 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
           { value: "clinical", label: "Clinical" },
           { value: "wearable", label: "Wearable" },
           { value: "timeline", label: "Timeline" },
+          { value: "ai", label: "AI" },
         ]}
-        onChange={(v) => setActiveTab(v as "clinical" | "wearable" | "timeline")}
+        onChange={(v) => setActiveTab(v as "clinical" | "wearable" | "timeline" | "ai")}
       />
 
       {/* ── Clinical tab ── */}
@@ -541,6 +543,11 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
       {/* ── Timeline tab ── */}
       {activeTab === "timeline" && (
         <TimelineTab sn={String(patient.sn)} />
+      )}
+
+      {/* ── AI tab ── */}
+      {activeTab === "ai" && (
+        <AITab sn={String(patient.sn)} />
       )}
     </div>
   );

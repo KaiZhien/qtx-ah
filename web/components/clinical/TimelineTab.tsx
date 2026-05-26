@@ -1,11 +1,9 @@
 "use client";
 
 import React from "react";
-import type { TimelineResponse, InsightRow } from "@/lib/types";
-import { fetchTimeline, fetchInsights } from "@/lib/api";
+import type { TimelineResponse } from "@/lib/types";
+import { fetchTimeline } from "@/lib/api";
 import { MetricChart } from "./MetricChart";
-import { InsightCard } from "./InsightCard";
-import { QAPanel } from "./QAPanel";
 
 interface TimelineTabProps {
   sn: string;
@@ -23,18 +21,14 @@ type MetricKey = typeof METRIC_DEFS[number]["key"];
 
 export function TimelineTab({ sn }: TimelineTabProps) {
   const [timeline, setTimeline] = React.useState<TimelineResponse | null>(null);
-  const [insights, setInsights] = React.useState<InsightRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   function load() {
     setLoading(true);
     setError(null);
-    Promise.all([fetchTimeline(sn), fetchInsights(sn)])
-      .then(([tl, ins]) => {
-        setTimeline(tl);
-        setInsights(ins);
-      })
+    fetchTimeline(sn)
+      .then(setTimeline)
       .catch(() => setError("Could not load timeline data."))
       .finally(() => setLoading(false));
   }
@@ -43,10 +37,6 @@ export function TimelineTab({ sn }: TimelineTabProps) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sn]);
-
-  function handleAnswer(insight: InsightRow) {
-    setInsights((prev) => [insight, ...prev]);
-  }
 
   if (loading) {
     return (
@@ -114,31 +104,6 @@ export function TimelineTab({ sn }: TimelineTabProps) {
         )}
       </div>
 
-      {/* Section 2: Insight Cards */}
-      <div>
-        <div className="filter-label" style={{ marginBottom: 10 }}>
-          AI Insights ({insights.length})
-        </div>
-        {insights.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: "var(--ink-4)" }}>
-            No insights yet. Add a session or ask a question below.
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {insights.map((ins) => (
-              <InsightCard key={ins.id} insight={ins} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Section 3: Q&A Panel */}
-      <div>
-        <div className="filter-label" style={{ marginBottom: 10 }}>
-          Ask a Question
-        </div>
-        <QAPanel sn={sn} onAnswer={handleAnswer} onPdfDownload={() => {}} />
-      </div>
     </div>
   );
 }
