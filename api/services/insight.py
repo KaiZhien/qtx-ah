@@ -9,13 +9,17 @@ and saves a row with model="stub". No exception is raised.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
 
 from sqlalchemy.orm import Session as DBSession
 
+logger = logging.getLogger(__name__)
+
 from models.clinical import PatientInsight
+from services.voyage import VoyageEmbedder
 
 _SYSTEM_PROMPT = (
     "You are a clinical physiotherapy assistant reviewing longitudinal data for a single patient. "
@@ -69,6 +73,7 @@ class InsightService:
         insight_type: str,
         session_number: int | None = None,
         question: str | None = None,
+        embedding: list[float] | None = None,
     ) -> None:
         row = PatientInsight(
             id=uuid.uuid4(),
@@ -79,9 +84,33 @@ class InsightService:
             content=content,
             model=model,
             created_at=datetime.utcnow(),
+            embedding=embedding,
         )
         self._db.add(row)
         self._db.flush()
+
+    def _retrieve_relevant(
+        self,
+        patient_id: uuid.UUID,
+        question: str,
+        k: int = 5,
+    ) -> list[PatientInsight]:
+        embedding = VoyageEmbedder().embed(question, input_type="query")
+        if embedding is None:
+            return []
+        try:
+            rows = (
+                self._db.query(PatientInsight)
+                .filter(PatientInsight.patient_id == patient_id)
+                .filter(PatientInsight.embedding.isnot(None))
+                .order_by(PatientInsight.embedding.op("<=>") (embedding))
+                .limit(k)
+                .all()
+            )
+            return rows
+        except Exception as exc:
+            logger.warning("_retrieve_relevant query failed: %s", exc)
+            return []
 
     def generate_session_insight(
         self,
@@ -114,12 +143,14 @@ class InsightService:
             from fastapi import HTTPException
             raise HTTPException(status_code=502, detail="AI service unavailable") from exc
 
+        embedding = VoyageEmbedder().embed(content, input_type="document")
         self._save_insight(
             patient_id=patient_id,
             content=content,
             model=self.MODEL,
             insight_type="session_summary",
             session_number=session_number,
+            embedding=embedding,
         )
         return content
 
@@ -144,21 +175,38 @@ class InsightService:
             )
             return self.STUB_RESPONSE
 
-        user_message = _QA_TEMPLATE.format(
-            timeline_json=json.dumps(timeline, indent=2),
-            question=question,
-        )
+        relevant = self._retrieve_relevant(patient_id, question)
+
+        if relevant:
+            insight_lines = "\n".join(
+                f"- [{r.insight_type}, {r.created_at.date()}] {r.content}"
+                for r in relevant
+            )
+            user_message = (
+                f"Relevant past insights for this patient:\n{insight_lines}\n\n"
+                + _QA_TEMPLATE.format(
+                    timeline_json=json.dumps(timeline, indent=2),
+                    question=question,
+                )
+            )
+        else:
+            user_message = _QA_TEMPLATE.format(
+                timeline_json=json.dumps(timeline, indent=2),
+                question=question,
+            )
         try:
             content = self._call_claude(user_message)
         except Exception as exc:
             from fastapi import HTTPException
             raise HTTPException(status_code=502, detail="AI service unavailable") from exc
 
+        embedding = VoyageEmbedder().embed(content, input_type="document")
         self._save_insight(
             patient_id=patient_id,
             content=content,
             model=self.MODEL,
             insight_type="qa_response",
             question=question,
+            embedding=embedding,
         )
         return content

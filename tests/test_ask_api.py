@@ -204,3 +204,36 @@ def test_get_insights_503_when_db_not_ready(client):
         assert resp.status_code == 503
     finally:
         deps._db_ready = True
+
+
+# ── Retrieval-augmented ask tests ────────────────────────────────────────────
+
+def test_ask_response_shape_unchanged_with_retrieval(client, monkeypatch):
+    """API response shape is unchanged when _retrieve_relevant returns results."""
+    from services.insight import InsightService
+    from unittest.mock import MagicMock
+    from datetime import datetime
+
+    fake_insight = MagicMock()
+    fake_insight.insight_type = "session_summary"
+    fake_insight.created_at = datetime(2026, 1, 1)
+    fake_insight.content = "Patient showed improvement"
+
+    monkeypatch.setattr(InsightService, "_retrieve_relevant", lambda self, *a, **kw: [fake_insight])
+    monkeypatch.setattr(InsightService, "_call_claude", lambda self, msg: "Test answer from retrieval")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/ask", json={"question": "test?"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "answer" in data
+    assert "model" in data
+
+
+def test_stub_mode_returns_200_regardless_of_retrieval(client):
+    """Stub mode (no ANTHROPIC_API_KEY) returns 200 even when retrieval would otherwise run."""
+    # client fixture already removes ANTHROPIC_API_KEY — this confirms 200 in all cases
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/ask", json={"question": "stub retrieval test"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "answer" in data

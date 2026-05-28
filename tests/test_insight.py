@@ -188,3 +188,135 @@ def test_real_mode_qa_prompt_contains_question(db_session, monkeypatch):
     db_session.flush()
 
     assert q in captured["msg"]
+
+
+# ── Embedding persistence ─────────────────────────────────────────────────────
+
+def test_saving_insight_stores_embedding(db_session, monkeypatch):
+    """generate_session_insight stores the embedding returned by VoyageEmbedder."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-voyage-key")
+    from services.insight import InsightService
+    from services.voyage import VoyageEmbedder
+    from models.clinical import PatientInsight
+
+    fake_vec = [0.1] * 1024
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": fake_vec)
+    monkeypatch.setattr(InsightService, "_call_claude", lambda self, msg: "- Embedding test response")
+
+    p = _make_patient(db_session, "I008")
+    InsightService(db_session).generate_session_insight(_FAKE_TIMELINE, p.id, 1)
+    db_session.flush()
+
+    row = db_session.query(PatientInsight).filter_by(patient_id=p.id).one()
+    assert row.embedding is not None
+    # Embedding may be stored as a numpy array by the pgvector column type
+    stored = list(row.embedding) if hasattr(row.embedding, "tolist") else row.embedding
+    assert stored == fake_vec
+
+
+def test_saving_insight_with_null_embedding_persists_row(db_session, monkeypatch):
+    """Row is still saved even when VoyageEmbedder returns None."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    from services.insight import InsightService
+    from services.voyage import VoyageEmbedder
+    from models.clinical import PatientInsight
+
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": None)
+    monkeypatch.setattr(InsightService, "_call_claude", lambda self, msg: "- No embedding response")
+
+    p = _make_patient(db_session, "I009")
+    InsightService(db_session).generate_session_insight(_FAKE_TIMELINE, p.id, 1)
+    db_session.flush()
+
+    row = db_session.query(PatientInsight).filter_by(patient_id=p.id).one()
+    assert row is not None
+    assert row.embedding is None
+    assert row.content == "- No embedding response"
+
+
+# ── _retrieve_relevant behaviour ─────────────────────────────────────────────
+
+def test_retrieve_relevant_returns_empty_when_no_embeddings(db_session, monkeypatch):
+    """_retrieve_relevant returns [] when the DB query finds no matching rows."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-voyage-key")
+    from services.insight import InsightService
+    from services.voyage import VoyageEmbedder
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 1024)
+
+    p = _make_patient(db_session, "I010")
+
+    # Mock the DB query chain to avoid pgvector ops on SQLite
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.order_by.return_value = mock_query
+    mock_query.limit.return_value = mock_query
+    mock_query.all.return_value = []
+    monkeypatch.setattr(db_session, "query", lambda *a, **kw: mock_query)
+
+    service = InsightService(db_session)
+    result = service._retrieve_relevant(p.id, "test question")
+    assert result == []
+
+
+def test_retrieve_relevant_returns_empty_when_question_embedding_is_none(db_session, monkeypatch):
+    """_retrieve_relevant returns [] when VoyageEmbedder returns None for the question."""
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    from services.insight import InsightService
+    from services.voyage import VoyageEmbedder
+
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": None)
+
+    p = _make_patient(db_session, "I011")
+    service = InsightService(db_session)
+    result = service._retrieve_relevant(p.id, "does this matter?")
+    assert result == []
+
+
+# ── answer_question prompt content ───────────────────────────────────────────
+
+def test_answer_question_prompt_includes_retrieved_section(db_session, monkeypatch):
+    """When _retrieve_relevant returns insights, the prompt includes 'Relevant past insights'."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    from services.insight import InsightService
+    from unittest.mock import MagicMock
+    from datetime import datetime as dt
+
+    fake_insight = MagicMock()
+    fake_insight.insight_type = "session_summary"
+    fake_insight.created_at = dt(2026, 1, 1)
+    fake_insight.content = "Patient showed improvement in TUG"
+
+    captured = {}
+    monkeypatch.setattr(InsightService, "_retrieve_relevant", lambda self, *a, **kw: [fake_insight])
+    monkeypatch.setattr(
+        InsightService, "_call_claude",
+        lambda self, msg: captured.update({"msg": msg}) or "Answer here.",
+    )
+
+    p = _make_patient(db_session, "I012")
+    InsightService(db_session).answer_question(_FAKE_TIMELINE, p.id, "How is she doing?")
+    db_session.flush()
+
+    assert "Relevant past insights" in captured["msg"]
+
+
+def test_answer_question_prompt_omits_retrieved_section_when_no_results(db_session, monkeypatch):
+    """When _retrieve_relevant returns [], the prompt does NOT include 'Relevant past insights'."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    from services.insight import InsightService
+
+    captured = {}
+    monkeypatch.setattr(InsightService, "_retrieve_relevant", lambda self, *a, **kw: [])
+    monkeypatch.setattr(
+        InsightService, "_call_claude",
+        lambda self, msg: captured.update({"msg": msg}) or "No retrieval answer.",
+    )
+
+    p = _make_patient(db_session, "I013")
+    InsightService(db_session).answer_question(_FAKE_TIMELINE, p.id, "Any concerns?")
+    db_session.flush()
+
+    assert "Relevant past insights" not in captured["msg"]
