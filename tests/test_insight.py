@@ -320,3 +320,60 @@ def test_answer_question_prompt_omits_retrieved_section_when_no_results(db_sessi
     db_session.flush()
 
     assert "Relevant past insights" not in captured["msg"]
+
+
+def test_generate_session_insight_raises_502_when_claude_fails(db_session, monkeypatch):
+    """When _call_claude raises, generate_session_insight propagates as HTTP 502."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    from services.insight import InsightService
+    from fastapi import HTTPException
+
+    def raise_exc(self, msg):
+        raise Exception("API down")
+
+    monkeypatch.setattr(InsightService, "_call_claude", raise_exc)
+
+    p = _make_patient(db_session, "I014")
+    with pytest.raises(HTTPException) as exc_info:
+        InsightService(db_session).generate_session_insight(_FAKE_TIMELINE, p.id, 1)
+    assert exc_info.value.status_code == 502
+
+
+def test_answer_question_raises_502_when_claude_fails(db_session, monkeypatch):
+    """When _call_claude raises, answer_question propagates as HTTP 502."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    from services.insight import InsightService
+    from fastapi import HTTPException
+
+    def raise_exc(self, msg):
+        raise Exception("API down")
+
+    monkeypatch.setattr(InsightService, "_call_claude", raise_exc)
+    monkeypatch.setattr(InsightService, "_retrieve_relevant", lambda self, *a, **kw: [])
+
+    p = _make_patient(db_session, "I015")
+    with pytest.raises(HTTPException) as exc_info:
+        InsightService(db_session).answer_question(_FAKE_TIMELINE, p.id, "Is she improving?")
+    assert exc_info.value.status_code == 502
+
+
+def test_retrieve_relevant_returns_empty_on_db_exception(db_session, monkeypatch):
+    """_retrieve_relevant swallows DB query exceptions and returns []."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-voyage-key")
+    from services.insight import InsightService
+    from services.voyage import VoyageEmbedder
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 1024)
+
+    p = _make_patient(db_session, "I016")
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.order_by.return_value = mock_query
+    mock_query.limit.return_value = mock_query
+    mock_query.all.side_effect = Exception("DB exploded")
+    monkeypatch.setattr(db_session, "query", lambda *a, **kw: mock_query)
+
+    result = InsightService(db_session)._retrieve_relevant(p.id, "test question")
+    assert result == []
