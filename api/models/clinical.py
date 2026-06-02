@@ -83,6 +83,13 @@ class Patient(Base):
     rgn_bilateral: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rgn_trunk: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Tandem stand (RAISE / BIXEPS data)
+    pre_tandem_s: Mapped[float | None] = mapped_column(Numeric(7, 2), nullable=True)
+
+    # SPPB
+    baseline_sppb: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    post_sppb: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -141,6 +148,9 @@ class Session(Base):
     post_fast_gs_ms: Mapped[float | None] = mapped_column(Numeric(7, 2), nullable=True)
     fast_gs_change_ms: Mapped[float | None] = mapped_column(Numeric(7, 2), nullable=True)
     fast_gs_change_pct: Mapped[float | None] = mapped_column(Numeric(7, 4), nullable=True)
+
+    # Tandem stand (RAISE / BIXEPS data)
+    post_tandem_s: Mapped[float | None] = mapped_column(Numeric(7, 2), nullable=True)
 
     # SPPB
     baseline_sppb: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
