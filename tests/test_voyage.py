@@ -70,3 +70,32 @@ def test_embed_uses_correct_input_type(monkeypatch):
     second_kwargs = calls[1][1]
     second_args = calls[1][0]
     assert second_kwargs.get("input_type") == "query" or (len(second_args) > 2 and second_args[2] == "query")
+
+
+def test_embed_passes_timeout_to_client(monkeypatch):
+    """voyageai.Client is initialized with timeout=5."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+    fake_embedding = [0.1] * 1024
+    fake_result = MagicMock()
+    fake_result.embeddings = [fake_embedding]
+    fake_client = MagicMock()
+    fake_client.embed.return_value = fake_result
+    mock_voyageai = MagicMock()
+    mock_voyageai.Client.return_value = fake_client
+    with patch.dict("sys.modules", {"voyageai": mock_voyageai}):
+        VoyageEmbedder().embed("test text")
+    mock_voyageai.Client.assert_called_once_with(api_key="test-key", timeout=5)
+
+
+def test_embed_returns_none_on_empty_embeddings(monkeypatch):
+    """Returns None when the API returns an empty embeddings list (IndexError caught)."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+    fake_result = MagicMock()
+    fake_result.embeddings = []
+    fake_client = MagicMock()
+    fake_client.embed.return_value = fake_result
+    mock_voyageai = MagicMock()
+    mock_voyageai.Client.return_value = fake_client
+    with patch.dict("sys.modules", {"voyageai": mock_voyageai}):
+        result = VoyageEmbedder().embed("test text")
+    assert result is None
