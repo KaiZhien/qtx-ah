@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session as DBSession
 
@@ -83,7 +83,7 @@ class InsightService:
             question=question,
             content=content,
             model=model,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             embedding=embedding,
         )
         self._db.add(row)
