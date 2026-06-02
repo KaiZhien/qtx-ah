@@ -237,3 +237,27 @@ def test_stub_mode_returns_200_regardless_of_retrieval(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "answer" in data
+
+
+def test_ask_missing_question_field_returns_422(client):
+    """POST /ask with a missing 'question' field returns 422 Unprocessable Entity."""
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/ask", json={})
+    assert resp.status_code == 422
+
+
+def test_ask_returns_502_when_claude_api_fails(client, monkeypatch):
+    """When Claude is configured but the API call raises, /ask returns 502."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    from services.insight import InsightService
+
+    def raise_exc(self, msg):
+        raise Exception("API down")
+
+    monkeypatch.setattr(InsightService, "_call_claude", raise_exc)
+    monkeypatch.setattr(InsightService, "_retrieve_relevant", lambda self, *a, **kw: [])
+
+    resp = client.post(
+        f"/api/patient/{_PATIENT_SN}/ask",
+        json={"question": "will this 502?"},
+    )
+    assert resp.status_code == 502
