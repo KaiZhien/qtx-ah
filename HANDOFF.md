@@ -1,9 +1,9 @@
 # QTX-AH Handoff — Clinical Intelligence System
 
-**Date:** 2026-05-26
+**Date:** 2026-06-02
 **Branch:** main
-**Commit:** 2f9f1a1
-**Status:** Sub-project 1 complete + dev environment fully operational. Sub-project 2 in progress. Sub-projects 3–4 partially scaffolded.
+**Commit:** 0b195c8
+**Status:** Sub-projects 1–4 complete. All 329 tests passing. PDF download verified end-to-end.
 
 ---
 
@@ -14,14 +14,14 @@ A per-patient clinical intelligence system in four sub-projects that must be bui
 ### Sub-project 1 — Foundation: Database + Data Ingestion ✅ COMPLETE
 Replaced the static `data/processed/dashboard_data.parquet` with PostgreSQL (+ pgvector). Built a CSV/Excel import pipeline and longitudinal session schema.
 
-### Sub-project 2 — Patient Knowledge Graph (IN PROGRESS)
-Per-patient longitudinal model. Each new clinic visit creates a new session row. Trend signals computed automatically on each new session entry (e.g. "gait speed improving", "TUG plateaued for 3 sessions"). Clinician observations stored alongside measurements. This is the accumulating "vault" per patient that the AI layer (Sub-project 3) reasons over.
+### Sub-project 2 — Patient Knowledge Graph ✅ COMPLETE
+Per-patient longitudinal model. Each new clinic visit creates a new session row. Trend signals computed automatically on each new session entry (e.g. "gait speed improving", "TUG plateaued for 3 sessions"). Clinician observations stored alongside measurements.
 
-### Sub-project 3 — AI Reasoning Layer
-Claude Sonnet 4.6 + Voyage-3-lite embeddings. Reasons **purely over THIS patient's own data** — no cross-patient comparison (clinically inappropriate). Two modes: (a) proactive insights on each new session, (b) clinician Q&A. BAA with Anthropic required before sending patient data.
+### Sub-project 3 — AI Reasoning Layer ✅ COMPLETE
+Claude Sonnet 4.6 + Voyage-3-lite embeddings. Reasons **purely over THIS patient's own data** — no cross-patient comparison (clinically inappropriate). Two modes: (a) proactive session insights, (b) clinician Q&A with semantic retrieval of past insights. BAA with Anthropic required before sending patient data in production.
 
-### Sub-project 4 — Frontend + PDF Reporting
-Timeline view of patient progress across sessions, AI insight cards, clinician Q&A interface, exportable PDF clinical summaries.
+### Sub-project 4 — Frontend + PDF Reporting ✅ COMPLETE
+Timeline tab, AI tab (Q&A + insight history), MetricChart, InsightCard, QAPanel all wired to live API. PDF export (`GET /api/patient/{sn}/report.pdf`) verified end-to-end.
 
 ---
 
@@ -74,12 +74,28 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 Both keys must match exactly.
 
-### Seed the database (one-time after fresh setup)
+### Seed the database and run migrations (one-time after fresh setup)
 ```bash
+# 1. Seed patient data
 DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
-PYTHONPATH=src .venv/bin/python scripts/11_seed_database.py
+PYTHONPATH=src .venv/bin/python3.14 scripts/11_seed_database.py
 ```
 Expected: `Inserted: 1,715 / Errors: 0`
+
+```bash
+# 2. Add notes column (migration 12)
+DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
+PYTHONPATH=api .venv/bin/python3.14 scripts/12_migrate_add_notes_column.py
+```
+
+```bash
+# 3. Add Voyage embedding column + IVFFlat index to patient_insights (migration 13)
+#    Required for AI Q&A retrieval and PDF report generation.
+#    Skipping this causes 500 errors on GET /api/patient/{sn}/report.pdf.
+DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
+PYTHONPATH=api .venv/bin/python3.14 scripts/13_migrate_add_embeddings.py
+```
+Expected: `Migration 13 complete.`
 
 ### Run everything
 ```bash
@@ -149,8 +165,9 @@ web/
     types.ts               — shared TypeScript types
     constants.ts
 scripts/
-  11_seed_database.py      — seed Postgres from dashboard_data.parquet
-  12_migrate_add_notes_column.py
+  11_seed_database.py              — seed Postgres from dashboard_data.parquet
+  12_migrate_add_notes_column.py   — adds notes column to sessions
+  13_migrate_add_embeddings.py     — adds embedding vector(1024) + IVFFlat index to patient_insights
 tests/
   (existing)
   test_clinical_schema.py, test_ingest.py, test_patients_db.py,
@@ -230,9 +247,8 @@ POST /api/import/file  ──▶  qtx pipeline → IngestPipeline.upsert(df)
 - **Webhook signature enforcement** — currently skipped when `TERRA_WEBHOOK_SECRET` is unset.
 - **Walking cadence in fall risk adjuster** — `wearable_cadence_avg_30d` computed but not wired into score.
 - **`POST /api/import/file` pipeline** — function signatures are illustrative; wire to actual `src/qtx/` pipeline when ready.
-- **Sub-project 2** — trend signals + longitudinal knowledge graph not yet built.
-- **Sub-project 3** — AI Q&A endpoint stubbed (`ask.py`); needs Anthropic BAA + embeddings wired.
-- **Clinical components** — `InsightCard`, `MetricChart`, `QAPanel`, `TimelineTab` scaffolded but not connected to live data.
+- **Anthropic BAA** — required before sending real patient data to Claude in production.
+- **`datetime.utcnow()` in `api/services/trend.py`** — still emits deprecation warnings (lines 124, 132); low priority but worth cleaning up.
 
 ---
 
