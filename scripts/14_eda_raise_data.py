@@ -102,6 +102,9 @@ def main() -> None:
         print(f"  {centre}: n={sppb.notna().sum()}  mean={sppb.mean():.2f}  median={sppb.median():.2f}")
 
     _section("TAG / CONDITION FREQUENCY")
+    if "Tags" not in df.columns:
+        print("  ⚠  MISSING COLUMN: 'Tags' — skipping condition frequency")
+        return
     tags_all = df["Tags"].dropna().str.lower()
     conditions = {
         "Stroke": "stroke",
