@@ -17,7 +17,7 @@ def main() -> None:
 
     with engine.connect() as conn:
         conn.execute(text(
-            "ALTER TABLE patient_insights ADD COLUMN IF NOT EXISTS embedding vector(1024)"
+            "ALTER TABLE patient_insights ADD COLUMN IF NOT EXISTS embedding vector(512)"
         ))
         conn.commit()
         print("  patient_insights.embedding column: OK")

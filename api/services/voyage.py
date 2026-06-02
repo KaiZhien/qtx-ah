@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class VoyageEmbedder:
     MODEL = "voyage-3-lite"
-    DIMENSION = 1024
+    DIMENSION = 512
 
     def embed(self, text: str, input_type: str = "document") -> list[float] | None:
         api_key = os.environ.get("VOYAGE_API_KEY")

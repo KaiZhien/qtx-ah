@@ -200,7 +200,7 @@ def test_saving_insight_stores_embedding(db_session, monkeypatch):
     from services.voyage import VoyageEmbedder
     from models.clinical import PatientInsight
 
-    fake_vec = [0.1] * 1024
+    fake_vec = [0.1] * 512
     monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": fake_vec)
     monkeypatch.setattr(InsightService, "_call_claude", lambda self, msg: "- Embedding test response")
 
@@ -244,7 +244,7 @@ def test_retrieve_relevant_returns_empty_when_no_embeddings(db_session, monkeypa
     from services.voyage import VoyageEmbedder
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 1024)
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 512)
 
     p = _make_patient(db_session, "I010")
 
@@ -364,7 +364,7 @@ def test_retrieve_relevant_returns_empty_on_db_exception(db_session, monkeypatch
     from services.voyage import VoyageEmbedder
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 1024)
+    monkeypatch.setattr(VoyageEmbedder, "embed", lambda self, text, input_type="document": [0.1] * 512)
 
     p = _make_patient(db_session, "I016")
 

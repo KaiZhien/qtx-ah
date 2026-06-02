@@ -31,10 +31,10 @@ def test_embed_returns_none_on_timeout(monkeypatch):
     assert result is None
 
 
-def test_embed_returns_1024_floats_on_success(monkeypatch):
-    """Returns a list of 1024 floats on a successful API call."""
+def test_embed_returns_512_floats_on_success(monkeypatch):
+    """Returns a list of 512 floats on a successful API call."""
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
-    fake_embedding = [0.1] * 1024
+    fake_embedding = [0.1] * 512
     fake_result = MagicMock()
     fake_result.embeddings = [fake_embedding]
     fake_client = MagicMock()
@@ -44,13 +44,13 @@ def test_embed_returns_1024_floats_on_success(monkeypatch):
     with patch.dict("sys.modules", {"voyageai": mock_voyageai}):
         result = VoyageEmbedder().embed("test text")
     assert result is not None
-    assert len(result) == 1024
+    assert len(result) == 512
 
 
 def test_embed_uses_correct_input_type(monkeypatch):
     """Passes the correct input_type for document vs query embedding."""
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
-    fake_embedding = [0.1] * 1024
+    fake_embedding = [0.1] * 512
     fake_result = MagicMock()
     fake_result.embeddings = [fake_embedding]
     fake_client = MagicMock()
@@ -75,7 +75,7 @@ def test_embed_uses_correct_input_type(monkeypatch):
 def test_embed_passes_timeout_to_client(monkeypatch):
     """voyageai.Client is initialized with timeout=5."""
     monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
-    fake_embedding = [0.1] * 1024
+    fake_embedding = [0.1] * 512
     fake_result = MagicMock()
     fake_result.embeddings = [fake_embedding]
     fake_client = MagicMock()
