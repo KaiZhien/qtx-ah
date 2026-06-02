@@ -30,8 +30,9 @@ def _to_float(val) -> float | None:
     if val is None:
         return None
     try:
+        import math
         f = float(val)
-        return None if (f != f) else f  # NaN check
+        return None if math.isnan(f) else f
     except (ValueError, TypeError):
         return None
 
@@ -55,11 +56,12 @@ def _age_band(age: int) -> str:
 
 def _parse_tags(tags: str | None) -> dict:
     """Map free-text tags to has_* boolean flags."""
+    import re as _re
     t = (tags or "").lower()
     has_stroke = "stroke" in t
     has_parkinsons = "parkinson" in t
     has_neurological = "dementia" in t or has_parkinsons or "neurolog" in t
-    has_oa = "oa " in t or " oa" in t or "osteoarthritis" in t or "oa\n" in t or t.startswith("oa")
+    has_oa = bool(_re.search(r'\boa\b', t)) or "osteoarthritis" in t
     has_spinal = "back pain" in t or "spine" in t or "spinal" in t or "myelopathy" in t
     has_knee = "knee" in t
     has_shoulder = "shoulder" in t
@@ -223,7 +225,6 @@ def main() -> None:
                 else:
                     skipped += 1
             except Exception as exc:
-                db.rollback()
                 sn = str(row.get("S/N", "?"))
                 error_list.append(f"  {sn}: {exc}")
                 errors += 1
