@@ -39,7 +39,7 @@ def db_with_enrolled_patient(tmp_path):
         active=True,
     ))
 
-    today = date(2026, 5, 22)
+    today = date.today()
     for i in range(30):
         d = today - timedelta(days=i)
         db.add(WearableActivity(
@@ -58,7 +58,7 @@ def db_with_enrolled_patient(tmp_path):
     db.add(WearableEvent(
         id=str(uuid.uuid4()),
         terra_user_id="terra_fr",
-        occurred_at=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+        occurred_at=datetime.now(timezone.utc) - timedelta(days=60),
         event_type="fall_detected",
         payload_json={},
     ))
