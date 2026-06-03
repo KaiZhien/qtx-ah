@@ -23,7 +23,6 @@ import math
 import numpy as np
 import pandas as pd
 import joblib
-import shap
 from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score
 from sqlalchemy import create_engine, text
@@ -105,7 +104,7 @@ def shap_gate(
     )
     confound_shap = shap_df.loc[confound_mask, "mean_abs_shap"].sum()
     # confound_pct: fraction of total absolute SHAP attributable to confounders
-    pct = float(confound_shap)
+    pct = float(confound_shap / total)
     return bool(pct < threshold), pct
 
 

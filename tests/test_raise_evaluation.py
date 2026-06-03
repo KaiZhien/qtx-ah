@@ -73,7 +73,7 @@ def _make_shap_df(rows: list[tuple[str, float]]) -> pd.DataFrame:
 
 def test_shap_gate_passes_when_confound_low():
     shap_df = _make_shap_df([
-        ("age", 0.50), ("pre_tug_s", 0.30), ("cohort_Pain", 0.05), ("usage_frequency_weekly", 0.05)
+        ("age", 0.60), ("pre_tug_s", 0.30), ("cohort_Pain", 0.05), ("usage_frequency_weekly", 0.05)
     ])
     passes, pct = shap_gate(shap_df, ["cohort", "usage_frequency"])
     assert passes is True
