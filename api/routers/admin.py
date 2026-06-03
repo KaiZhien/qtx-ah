@@ -1,5 +1,5 @@
 # api/routers/admin.py
-"""Admin endpoints — model hot-reload. No auth in dev; add bearer gate for production."""
+"""Admin endpoints — model hot-reload. Uses the same QTX_API_KEY as all other routes."""
 from __future__ import annotations
 
 from fastapi import APIRouter
