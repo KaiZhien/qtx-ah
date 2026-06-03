@@ -376,21 +376,193 @@ def _print_report(
     skip_reason: str = "",
 ) -> None:
     """Print the formatted comparison report to stdout."""
-    raise NotImplementedError
+    print()
+    print("=" * 54)
+    print("=== Covariate Shift Report ===")
+    print(f"Shift classifier AUC : {shift_auc:.3f}  → {'PASS' if shift_passes else 'FAIL'} (threshold < 0.70)")
+    print(f"Confound SHAP        : {confound_pct*100:.1f}%  → {'PASS' if shap_passes else 'FAIL'} (threshold < 15%)")
+    print()
+
+    if skip_reason:
+        print(f"Retraining skipped: {skip_reason}")
+        print("=" * 54)
+        return
+
+    print("=== Retraining Comparison ===")
+    print(f"{'Metric':<22} {'QTX-only':>10} {'Combined':>10} {'Delta':>10}")
+    print("-" * 54)
+
+    if qtx_reg and comb_reg:
+        for key, label in [("rmse_mean", "Outcome RMSE"), ("r2_mean", "Outcome R²")]:
+            b = qtx_reg.get(key)
+            c = comb_reg.get(key)
+            if b is not None and c is not None:
+                delta = c - b
+                print(f"{label:<22} {b:>10.4f} {c:>10.4f} {delta:>+10.4f}")
+    else:
+        print(f"{'Outcome metrics':<22} {'N/A':>10} {'N/A':>10}")
+
+    if qtx_fr and comb_fr:
+        b = qtx_fr.get("auc_roc_mean")
+        c = comb_fr.get("auc_roc_mean")
+        if b is not None and c is not None:
+            delta = c - b
+            print(f"{'Fall Risk AUC':<22} {b:>10.4f} {c:>10.4f} {delta:>+10.4f}")
+        else:
+            b_str = f"{b:.4f}" if b is not None else "N/A"
+            c_str = f"{c:.4f}" if c is not None else "N/A"
+            print(f"{'Fall Risk AUC':<22} {b_str:>10} {c_str:>10} {'N/A':>10}")
+    else:
+        print(f"{'Fall Risk AUC':<22} {'N/A':>10} {'N/A':>10}")
+
+    print("-" * 54)
+    print(f"Models saved: {'YES' if models_saved else 'NO'}")
+    print("=" * 54)
+    print()
 
 
 def _save_augmented_regression(df: pd.DataFrame) -> None:
     """Train XGBRegressor on combined data and save as regression_xgb_raise_augmented.joblib."""
-    raise NotImplementedError
+    df_model = df[df["composite_improvement"].notna()].copy()
+    feature_cols = [c for c in SHIFT_FEATURES if c in df_model.columns]
+    df_enc = _label_encode_cats(df_model[feature_cols])
+    X = df_enc.to_numpy(dtype=float, na_value=float("nan"))
+    y = df_model["composite_improvement"].astype(float).values
+    model = XGBRegressor(
+        n_estimators=300, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, tree_method="hist",
+        random_state=42, n_jobs=-1, verbosity=0,
+    )
+    model.fit(X, y)
+    out_path = MODELS_DIR / "regression_xgb_raise_augmented.joblib"
+    joblib.dump(model, out_path)
+    print(f"  Saved: {out_path}")
 
 
 def _save_augmented_fall_risk(df: pd.DataFrame) -> None:
     """Train XGBClassifier on combined data (proxy label) and save as fall_risk_xgb_raise_augmented.joblib."""
-    raise NotImplementedError
+    label, labellable = _make_fall_risk_label(df)
+    df_model = df[labellable].copy()
+    df_model["_fall_label"] = label[labellable].values
+
+    if df_model["_fall_label"].nunique() < 2:
+        print("  WARNING: Only one class — not saving augmented fall risk model.")
+        return
+
+    df_feat = df_model.copy()
+    if "gender_M" not in df_feat.columns:
+        gender_upper = df_feat["gender"].astype(str).str.upper()
+        df_feat["gender_M"] = gender_upper.map({"M": 1.0, "F": 0.0})
+
+    feature_cols = [c for c in FALL_RISK_FEATURES if c in df_feat.columns]
+    X = df_feat[feature_cols].to_numpy(dtype=float, na_value=float("nan"))
+    y = df_feat["_fall_label"].astype(int).values
+
+    medians = pd.DataFrame(X, columns=feature_cols).median().to_dict()
+    X_filled = pd.DataFrame(X, columns=feature_cols).fillna(medians).to_numpy(dtype=float)
+
+    model = XGBClassifier(
+        n_estimators=300, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, tree_method="hist",
+        random_state=42, n_jobs=-1, verbosity=0,
+    )
+    model.fit(X_filled, y)
+    out_path = MODELS_DIR / "fall_risk_xgb_raise_augmented.joblib"
+    out_medians_path = MODELS_DIR / "fall_risk_medians_raise_augmented.joblib"
+    joblib.dump(model, out_path)
+    joblib.dump(medians, out_medians_path)
+    print(f"  Saved: {out_path}")
+    print(f"  Saved: {out_medians_path}")
 
 
 def main() -> None:
-    raise NotImplementedError
+    print("Loading QTX data ...")
+    qtx_df = load_qtx_df()
+    print(f"  QTX: {len(qtx_df)} patients")
+
+    print("Loading RAISE data from DB ...")
+    raise_df = load_raise_df()
+    if raise_df.empty:
+        print("  ERROR: No RAISE rows found in DB. Run scripts 15 + 16 first.")
+        sys.exit(1)
+    print(f"  RAISE: {len(raise_df)} patients, {raise_df['composite_improvement'].notna().sum()} with composite_improvement")
+
+    print("Assembling combined dataset ...")
+    combined = assemble_combined(qtx_df, raise_df)
+    print(f"  Combined: {len(combined)} rows (QTX={len(qtx_df)}, RAISE={len(raise_df)})")
+
+    print("Running covariate shift test (XGBoost 5-fold CV) ...")
+    shift_auc, shap_df = run_shift_test(combined)
+    print(f"  Shift AUC: {shift_auc:.3f}")
+
+    print("Top 5 shift SHAP features:")
+    for _, row in shap_df.head(5).iterrows():
+        print(f"  {row['feature']:<35} {row['mean_abs_shap']:.4f}")
+
+    shift_passes = auc_gate(shift_auc)
+    shap_passes, confound_pct = shap_gate(shap_df, ["cohort", "usage_frequency"])
+
+    if not shift_passes:
+        _print_report(
+            shift_auc, shift_passes, confound_pct, shap_passes,
+            skip_reason=f"AUC {shift_auc:.3f} >= 0.70 — populations too different to merge",
+        )
+        sys.exit(0)
+
+    if not shap_passes:
+        _print_report(
+            shift_auc, shift_passes, confound_pct, shap_passes,
+            skip_reason=f"Confound SHAP {confound_pct*100:.1f}% >= 15% — separation driven by programme/centre",
+        )
+        sys.exit(0)
+
+    print("Both gates passed — retraining models ...")
+
+    print("  QTX-only regression CV ...")
+    qtx_reg = cv_metrics_regression(qtx_df)
+    if qtx_reg:
+        print(f"    RMSE={qtx_reg['rmse_mean']:.4f}, R²={qtx_reg['r2_mean']:.4f}")
+
+    print("  Combined regression CV ...")
+    comb_reg = cv_metrics_regression(combined)
+    if comb_reg:
+        print(f"    RMSE={comb_reg['rmse_mean']:.4f}, R²={comb_reg['r2_mean']:.4f}")
+
+    print("  QTX-only fall risk CV ...")
+    qtx_fr = cv_metrics_fall_risk(qtx_df)
+    auc_qtx = qtx_fr.get("auc_roc_mean")
+    print(f"    AUC={auc_qtx:.4f}" if auc_qtx is not None else "    AUC=N/A (single class)")
+
+    print("  Combined fall risk CV ...")
+    comb_fr = cv_metrics_fall_risk(combined)
+    auc_comb = comb_fr.get("auc_roc_mean")
+    print(f"    AUC={auc_comb:.4f}" if auc_comb is not None else "    AUC=N/A (single class)")
+
+    baseline_metrics: dict = {}
+    combined_metrics: dict = {}
+    if qtx_reg:
+        baseline_metrics.update({"rmse_mean": qtx_reg["rmse_mean"], "r2_mean": qtx_reg["r2_mean"]})
+    if comb_reg:
+        combined_metrics.update({"rmse_mean": comb_reg["rmse_mean"], "r2_mean": comb_reg["r2_mean"]})
+    if auc_qtx is not None and auc_comb is not None:
+        baseline_metrics["auc_roc_mean"] = auc_qtx
+        combined_metrics["auc_roc_mean"] = auc_comb
+
+    save = should_save_models(baseline_metrics, combined_metrics) if baseline_metrics else False
+
+    if save:
+        print("Combined metrics are >= QTX-only — saving augmented models ...")
+        _save_augmented_regression(combined)
+        _save_augmented_fall_risk(combined)
+    else:
+        print("Combined metrics did not improve — not saving models.")
+
+    _print_report(
+        shift_auc, shift_passes, confound_pct, shap_passes,
+        qtx_reg=qtx_reg, comb_reg=comb_reg,
+        qtx_fr=qtx_fr, comb_fr=comb_fr,
+        models_saved=save,
+    )
 
 
 if __name__ == "__main__":
