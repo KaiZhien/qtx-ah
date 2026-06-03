@@ -278,17 +278,89 @@ def run_shift_test(df: pd.DataFrame) -> tuple[float, pd.DataFrame]:
 
 def _make_fall_risk_label(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """Derive proxy fall-risk label. Returns (label, labellable_mask)."""
-    raise NotImplementedError
+    tug_ok  = df["pre_tug_s"].notna()
+    gait_ok = df["pre_normal_gs_ms"].notna()
+    sppb_ok = df["baseline_sppb"].notna()
+
+    slow_tug  = tug_ok  & (df["pre_tug_s"].astype(float)          >= 12)
+    slow_gait = gait_ok & (df["pre_normal_gs_ms"].astype(float)    < 0.8)
+    low_sppb  = sppb_ok & (df["baseline_sppb"].astype(float)       <= 6)
+
+    measurable = tug_ok.astype(int) + gait_ok.astype(int) + sppb_ok.astype(int)
+    labellable = measurable >= 2
+
+    score = slow_tug.astype(int) + slow_gait.astype(int) + low_sppb.astype(int)
+    label = (score >= 2).astype(int)
+    return label, labellable
 
 
 def cv_metrics_regression(df: pd.DataFrame) -> dict:
     """5-fold CV RMSE and R2 for composite_improvement prediction."""
-    raise NotImplementedError
+    df_model = df[df["composite_improvement"].notna()].copy()
+    if len(df_model) < 20:
+        print(f"  WARNING: only {len(df_model)} rows with composite_improvement — skipping regression CV")
+        return {}
+
+    feature_cols = [c for c in SHIFT_FEATURES if c in df_model.columns]
+    df_enc = _label_encode_cats(df_model[feature_cols])
+    X = df_enc.to_numpy(dtype=float, na_value=float("nan"))
+    y = df_model["composite_improvement"].astype(float).values
+
+    model = XGBRegressor(
+        n_estimators=200, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, tree_method="hist",
+        random_state=42, n_jobs=-1, verbosity=0,
+    )
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+    from sklearn.metrics import mean_squared_error, r2_score
+    from sklearn.base import clone
+    rmse_scores, r2_scores = [], []
+    for train_idx, val_idx in kf.split(X):
+        m = clone(model)
+        m.fit(X[train_idx], y[train_idx])
+        preds = m.predict(X[val_idx])
+        rmse_scores.append(math.sqrt(mean_squared_error(y[val_idx], preds)))
+        r2_scores.append(r2_score(y[val_idx], preds))
+
+    return {
+        "rmse_mean": float(np.mean(rmse_scores)),
+        "r2_mean": float(np.mean(r2_scores)),
+        "n": len(df_model),
+    }
 
 
 def cv_metrics_fall_risk(df: pd.DataFrame) -> dict:
     """5-fold CV AUC-ROC for fall risk proxy label prediction."""
-    raise NotImplementedError
+    label, labellable = _make_fall_risk_label(df)
+    df_model = df[labellable].copy()
+    df_model["_fall_label"] = label[labellable].values
+
+    if len(df_model) < 20:
+        print(f"  WARNING: only {len(df_model)} labellable rows — skipping fall risk CV")
+        return {}
+
+    if df_model["_fall_label"].nunique() < 2:
+        print(f"  WARNING: only one class for fall risk in this dataset — skipping CV")
+        return {"auc_roc_mean": None, "n": len(df_model)}
+
+    df_feat = df_model.copy()
+    if "gender_M" not in df_feat.columns:
+        gender_upper = df_feat["gender"].astype(str).str.upper()
+        df_feat["gender_M"] = gender_upper.map({"M": 1.0, "F": 0.0})
+
+    feature_cols = [c for c in FALL_RISK_FEATURES if c in df_feat.columns]
+    X = df_feat[feature_cols].to_numpy(dtype=float, na_value=float("nan"))
+    y = df_feat["_fall_label"].astype(int).values
+
+    model = XGBClassifier(
+        n_estimators=200, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, tree_method="hist",
+        random_state=42, n_jobs=-1, verbosity=0,
+    )
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    auc_scores = cross_val_score(model, X, y, cv=skf, scoring="roc_auc", n_jobs=-1)
+    return {"auc_roc_mean": float(np.mean(auc_scores)), "n": len(df_model)}
 
 
 def _print_report(
