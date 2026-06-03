@@ -24,7 +24,9 @@ from services.voyage import VoyageEmbedder
 _SYSTEM_PROMPT = (
     "You are a clinical physiotherapy assistant reviewing longitudinal data for a single patient. "
     "Reason only from the data provided. Do not compare this patient to others. "
-    "Be concise and clinically relevant. Never speculate beyond what the data supports."
+    "Be concise and clinically relevant. Never speculate beyond what the data supports. "
+    "Where model predictions are provided, reference them explicitly — flag when actual "
+    "measurements diverge significantly from what was predicted."
 )
 
 _SESSION_SUMMARY_TEMPLATE = """\
@@ -43,6 +45,29 @@ Patient timeline data:
 Clinician question: {question}
 
 Answer the question in 2-4 sentences based only on this patient's data above."""
+
+
+def _format_predictions(predictions: dict) -> dict:
+    """Format model prediction dict for inclusion in timeline JSON sent to Claude."""
+    result: dict = {}
+    fr_score = predictions.get("fall_risk_score")
+    fr_label = predictions.get("fall_risk_label")
+    if fr_score is not None:
+        label_str = "HIGH" if fr_label else "LOW"
+        result["fall_risk"] = f"{label_str} ({fr_score:.2f}) [threshold > 0.50]"
+    pci = predictions.get("predicted_composite_improvement")
+    if pci is not None:
+        result["predicted_composite_improvement"] = round(float(pci), 2)
+    rp = predictions.get("responder_probability")
+    if rp is not None:
+        result["responder_probability"] = round(float(rp), 2)
+    dp = predictions.get("dropout_probability")
+    if dp is not None:
+        result["dropout_risk"] = f"{'HIGH' if dp > 0.5 else 'LOW'} ({dp:.2f})"
+    dr = predictions.get("dosage_recommendation")
+    if dr is not None:
+        result["dosage_recommendation"] = dr
+    return result
 
 
 class InsightService:
@@ -117,6 +142,7 @@ class InsightService:
         timeline: dict,
         patient_id: uuid.UUID,
         session_number: int,
+        predictions: dict | None = None,
     ) -> str:
         """Generate a session summary insight and persist it.
 
@@ -133,8 +159,11 @@ class InsightService:
             )
             return self.STUB_RESPONSE
 
+        tl = dict(timeline)
+        if predictions:
+            tl["model_predictions"] = _format_predictions(predictions)
         user_message = _SESSION_SUMMARY_TEMPLATE.format(
-            timeline_json=json.dumps(timeline, indent=2),
+            timeline_json=json.dumps(tl, indent=2),
             session_number=session_number,
         )
         try:
@@ -153,6 +182,30 @@ class InsightService:
             embedding=embedding,
         )
         return content
+
+    def _get_latest_predictions(self, patient_id: uuid.UUID) -> dict | None:
+        """Query the latest SessionPrediction row for a patient."""
+        from models.clinical import SessionPrediction
+        try:
+            row = (
+                self._db.query(SessionPrediction)
+                .filter_by(patient_id=patient_id)
+                .order_by(SessionPrediction.predicted_at.desc())
+                .first()
+            )
+            if row is None:
+                return None
+            return {
+                "fall_risk_score": float(row.fall_risk_score) if row.fall_risk_score is not None else None,
+                "fall_risk_label": row.fall_risk_label,
+                "predicted_composite_improvement": float(row.predicted_composite_improvement) if row.predicted_composite_improvement is not None else None,
+                "responder_probability": float(row.responder_probability) if row.responder_probability is not None else None,
+                "dropout_probability": float(row.dropout_probability) if row.dropout_probability is not None else None,
+                "dosage_recommendation": row.dosage_recommendation,
+            }
+        except Exception as exc:
+            logger.warning("_get_latest_predictions failed: %s", exc)
+            return None
 
     def answer_question(
         self,
@@ -175,6 +228,8 @@ class InsightService:
             )
             return self.STUB_RESPONSE
 
+        predictions = self._get_latest_predictions(patient_id)
+
         relevant = self._retrieve_relevant(patient_id, question)
 
         if relevant:
@@ -182,16 +237,22 @@ class InsightService:
                 f"- [{r.insight_type}, {r.created_at.date()}] {r.content}"
                 for r in relevant
             )
+            tl = dict(timeline)
+            if predictions:
+                tl["model_predictions"] = _format_predictions(predictions)
             user_message = (
                 f"Relevant past insights for this patient:\n{insight_lines}\n\n"
                 + _QA_TEMPLATE.format(
-                    timeline_json=json.dumps(timeline, indent=2),
+                    timeline_json=json.dumps(tl, indent=2),
                     question=question,
                 )
             )
         else:
+            tl = dict(timeline)
+            if predictions:
+                tl["model_predictions"] = _format_predictions(predictions)
             user_message = _QA_TEMPLATE.format(
-                timeline_json=json.dumps(timeline, indent=2),
+                timeline_json=json.dumps(tl, indent=2),
                 question=question,
             )
         try:
