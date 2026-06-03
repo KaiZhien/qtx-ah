@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import deps
-from routers import patients, predict, fall_risk, wearable, webhooks, import_data, sessions, ask, report
+from routers import patients, predict, fall_risk, wearable, webhooks, import_data, sessions, ask, report, admin
 
 
 @asynccontextmanager
@@ -38,7 +38,8 @@ app.add_middleware(
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     """Require X-Api-Key header on all routes except /webhooks/ (which uses Terra HMAC)."""
-    if not request.url.path.startswith("/webhooks"):
+    exempt = request.url.path.startswith("/webhooks") or request.url.path.startswith("/api/admin")
+    if not exempt:
         expected = os.environ.get("QTX_API_KEY", "")
         if not expected:
             return JSONResponse({"detail": "QTX_API_KEY is not configured on the server"}, status_code=500)
@@ -56,4 +57,5 @@ app.include_router(webhooks.router)
 app.include_router(import_data.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(ask.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 app.include_router(report.router, prefix="/api")
