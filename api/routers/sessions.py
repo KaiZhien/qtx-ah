@@ -15,6 +15,7 @@ from db import get_db
 from models.clinical import Patient, Session as ClinicalSession, PatientTrend, PatientInsight
 from services.trend import TrendEngine
 from services.insight import InsightService
+from services.prediction import PredictionService
 
 router = APIRouter()
 
@@ -177,9 +178,14 @@ def create_session(
     trends = TrendEngine(db).compute_and_save(patient.id)
     db.commit()  # commit session + trends before calling external API
 
+    predictions = None
+    if deps.models:
+        predictions = PredictionService(db, deps.models).run(patient, session)
+        db.commit()  # commit SessionPrediction row
+
     timeline = _build_timeline_dict(patient, db)
     insight_text = InsightService(db).generate_session_insight(
-        timeline, patient.id, new_sn
+        timeline, patient.id, new_sn, predictions=predictions
     )
     db.commit()  # commit PatientInsight row
 
