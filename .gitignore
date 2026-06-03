@@ -19,3 +19,4 @@ web/tsconfig.tsbuildinfo
 .superpowers/
 docs/superpowers/
 HANDOFF.md
+retrain_state.json
