@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Numeric, SmallInteger,
+    Boolean, Date, DateTime, JSON, Numeric, SmallInteger,
     String, Text, UniqueConstraint, ForeignKey,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -224,3 +224,32 @@ class PatientInsight(Base):
     model: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
+
+
+class SessionPrediction(Base):
+    __tablename__ = "session_predictions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    fall_risk_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    fall_risk_label: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    predicted_composite_improvement: Mapped[float | None] = mapped_column(Numeric(7, 4), nullable=True)
+    responder_probability: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    dropout_probability: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    dosage_recommendation: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model_versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    predicted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
