@@ -235,7 +235,45 @@ def run_shift_test(df: pd.DataFrame) -> tuple[float, pd.DataFrame]:
     Returns (mean_auc_roc, shap_df) from 5-fold stratified CV.
     shap_df has columns: feature, mean_abs_shap.
     """
-    raise NotImplementedError
+    import shap as _shap
+    feature_cols = [c for c in SHIFT_FEATURES if c in df.columns]
+    df_enc = _label_encode_cats(df[feature_cols + ["dataset"]].copy())
+    X = df_enc[feature_cols]
+    y = df["dataset"].astype(int)
+
+    mask = y.notna()
+    X, y = X[mask], y[mask]
+
+    X_arr = X.to_numpy(dtype=float, na_value=float("nan"))
+    y_arr = y.values
+
+    clf = XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        random_state=42,
+        n_jobs=-1,
+        verbosity=0,
+    )
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    auc_scores = cross_val_score(clf, X_arr, y_arr, cv=skf, scoring="roc_auc", n_jobs=-1)
+    mean_auc = float(np.mean(auc_scores))
+
+    clf.fit(X_arr, y_arr)
+    X_sample = X if len(X) <= 300 else X.sample(300, random_state=42)
+    explainer = _shap.TreeExplainer(clf)
+    shap_vals = explainer.shap_values(X_sample.to_numpy(dtype=float, na_value=float("nan")))
+    if isinstance(shap_vals, list):
+        shap_vals = shap_vals[1]
+    mean_abs = np.abs(shap_vals).mean(axis=0)
+    shap_df = pd.DataFrame({"feature": X_sample.columns.tolist(), "mean_abs_shap": mean_abs})
+    shap_df = shap_df.sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
+
+    return mean_auc, shap_df
 
 
 def _make_fall_risk_label(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
