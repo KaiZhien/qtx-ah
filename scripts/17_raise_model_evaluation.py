@@ -132,22 +132,101 @@ def should_save_models(baseline: dict, combined: dict) -> bool:
 
 def load_qtx_df(parquet_path: Path | str = PARQUET) -> pd.DataFrame:
     """Load QTX parquet and add dataset=0 flag."""
-    raise NotImplementedError
+    df = pd.read_parquet(parquet_path)
+    df["dataset"] = 0
+    return df
 
 
 def load_raise_df(db_url: str = DB_URL) -> pd.DataFrame:
     """Query RAISE patients + sessions from DB, compute change scores + composite."""
-    raise NotImplementedError
+    engine = create_engine(db_url)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    try:
+        rows = db.execute(text("""
+            SELECT
+                p.age, p.gender, p.cohort, p.tags, p.primary_indication,
+                p.baseline_sppb AS patient_baseline_sppb,
+                p.pre_tandem_s,
+                p.has_oa, p.has_diabetes, p.has_stroke, p.has_parkinsons,
+                p.has_sarcopenia, p.has_frailty, p.has_balance_issue,
+                p.has_post_surgery, p.has_chronic_pain, p.has_neuropathy,
+                p.has_cancer, p.has_cardiovascular, p.has_hypertension,
+                p.has_osteoporosis, p.has_spinal_issue, p.has_knee_issue,
+                p.has_hip_issue, p.has_shoulder_issue, p.has_neurological,
+                p.has_fracture, p.has_autoimmune, p.has_metabolic,
+                p.has_wellness_only, p.has_fall_risk,
+                p.grp_joint_disease, p.grp_spine_back, p.grp_neurological,
+                p.grp_post_surgical, p.grp_frailty_sarcopenia, p.grp_balance_falls,
+                p.grp_metabolic, p.grp_cardiovascular, p.grp_oncology,
+                p.grp_autoimmune, p.grp_softtissue_injury, p.grp_generalised_pain,
+                p.grp_osteoporosis, p.grp_wellness,
+                p.rgn_knee, p.rgn_hip, p.rgn_spine, p.rgn_shoulder,
+                p.rgn_ankle_foot, p.rgn_lower_limb, p.rgn_upper_limb,
+                p.rgn_bilateral, p.rgn_trunk,
+                s.usage_frequency,
+                s.pre_vas, s.post_vas,
+                s.pre_tug_s, s.post_tug_s,
+                s.pre_5xsst_s, s.post_5xsst_s,
+                s.pre_normal_gs_ms, s.post_normal_gs_ms,
+                s.pre_fast_gs_ms, s.post_fast_gs_ms,
+                s.baseline_sppb AS session_baseline_sppb,
+                s.post_sppb
+            FROM patients p
+            JOIN sessions s ON s.patient_id = p.id
+            WHERE s.ingested_from ILIKE '%raise%'
+        """)).fetchall()
+    finally:
+        db.close()
+
+    if not rows:
+        return pd.DataFrame()
+
+    records = []
+    for r in rows:
+        row_dict = dict(r._mapping)
+        s_sppb = row_dict.pop("session_baseline_sppb", None)
+        p_sppb = row_dict.pop("patient_baseline_sppb", None)
+        row_dict["baseline_sppb"] = s_sppb if s_sppb is not None else p_sppb
+        counts = _compute_flag_counts(row_dict)
+        row_dict.update(counts)
+        row_dict["dataset"] = 1
+        records.append(row_dict)
+
+    df = pd.DataFrame(records)
+    df = compute_change_scores(df)
+    if "fast_gs_improvement" not in df.columns:
+        df["fast_gs_improvement"] = float("nan")
+    df = compute_composite(df)
+    return df
 
 
 def assemble_combined(qtx_df: pd.DataFrame, raise_df: pd.DataFrame) -> pd.DataFrame:
     """Concatenate QTX + RAISE dataframes, ensuring consistent columns."""
-    raise NotImplementedError
+    for col in qtx_df.columns:
+        if col not in raise_df.columns:
+            raise_df = raise_df.copy()
+            raise_df[col] = float("nan")
+    for col in raise_df.columns:
+        if col not in qtx_df.columns:
+            qtx_df = qtx_df.copy()
+            qtx_df[col] = float("nan")
+    combined = pd.concat([qtx_df, raise_df], ignore_index=True)
+    return combined
 
 
 def _label_encode_cats(df: pd.DataFrame, cat_cols: list[str] = CAT_COLS) -> pd.DataFrame:
     """Label-encode categorical columns in-place (NaN → -1, XGBoost handles as missing)."""
-    raise NotImplementedError
+    df = df.copy()
+    for col in cat_cols:
+        if col not in df.columns:
+            df[col] = float("nan")
+            continue
+        cat = pd.Categorical(df[col].astype(str).where(df[col].notna(), other=None))
+        df[col] = cat.codes.astype(float)
+        df[col] = df[col].replace(-1, float("nan"))
+    return df
 
 
 def run_shift_test(df: pd.DataFrame) -> tuple[float, pd.DataFrame]:
