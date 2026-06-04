@@ -78,6 +78,33 @@ export async function fetchLatestPredictions(sn: string): Promise<LatestPredicti
   return data as LatestPredictions;
 }
 
+export interface CohortCalibration {
+  cohort: string;
+  n: number;
+  current_mae: number;
+  baseline_mae: number | null;
+  drift_pct: number | null;
+  status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
+}
+
+export interface CalibrationReport {
+  generated_at: string;
+  drift_threshold: number;
+  min_cohort_n: number;
+  total_matchable: number;
+  cohorts: CohortCalibration[];
+}
+
+export async function fetchCalibration(): Promise<CalibrationReport | null> {
+  const res = await fetch("/api/calibration/report", {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || Object.keys(data).length === 0) return null;
+  return data as CalibrationReport;
+}
+
 export async function fetchWearableFeatures(patientId: string): Promise<WearableFeatures> {
   const res = await fetch(`/api/wearable/${encodeURIComponent(patientId)}/features`, {
     headers: apiHeaders(),

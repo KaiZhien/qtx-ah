@@ -15,6 +15,7 @@ import { PrePostBox } from "@/components/charts/PrePostBox";
 import { Histogram } from "@/components/charts/Histogram";
 import { Card } from "@/components/ui/Card";
 import { KPI } from "@/components/ui/KPI";
+import { ModelHealthCard } from "@/components/clinical/ModelHealthCard";
 
 function mean(arr: number[]): number | null {
   if (!arr.length) return null;
@@ -227,6 +228,9 @@ export function OverviewPage({ data, dataAll, onPatientClick: _onPatientClick, s
           </div>
         </Card>
       </div>
+
+      {/* Model calibration health */}
+      <ModelHealthCard />
     </div>
   );
 }
