@@ -170,9 +170,9 @@ def main() -> None:
         try:
             import os as _os
             import urllib.request
-            api_key = _os.environ.get("QTX_API_KEY", "")
+            admin_key = _os.environ.get("QTX_ADMIN_KEY") or _os.environ.get("QTX_API_KEY", "")
             req = urllib.request.Request(RELOAD_URL, method="POST",
-                                         headers={"X-Api-Key": api_key})
+                                         headers={"X-Admin-Key": admin_key})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 print(f"  Hot-reload: {resp.read().decode()}")
         except Exception as exc:

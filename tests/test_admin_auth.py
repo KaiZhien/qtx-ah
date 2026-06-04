@@ -83,12 +83,14 @@ def _make_client():
 def test_correct_admin_key_returns_200(monkeypatch):
     """Correct X-Admin-Key header → route executes and returns 200."""
     monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
-    with patch.object(deps, "load_all") as mock_load:
-        with _make_client() as c:
+    # Use _make_client to handle the lifespan setup, then patch load_all for the request only
+    with _make_client() as c:
+        with patch.object(deps, "load_all") as mock_load:
             resp = c.post(
                 "/api/admin/reload-models",
                 headers={"X-Admin-Key": _TEST_ADMIN_KEY},
             )
+            mock_load.assert_called_once()
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
