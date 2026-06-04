@@ -38,7 +38,7 @@ app.add_middleware(
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     """Require X-Api-Key header on all routes except /webhooks/ (which uses Terra HMAC)."""
-    if not request.url.path.startswith("/webhooks"):
+    if not request.url.path.startswith("/webhooks") and not request.url.path.startswith("/api/admin"):
         expected = os.environ.get("QTX_API_KEY", "")
         if not expected:
             return JSONResponse({"detail": "QTX_API_KEY is not configured on the server"}, status_code=500)

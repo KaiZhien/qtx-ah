@@ -335,3 +335,20 @@ def test_webhook_route_bypasses_key_check(monkeypatch):
         )
     assert resp.status_code == 200
     assert resp.json().get("status") == "ok"
+
+
+def test_admin_route_bypasses_api_key_middleware(monkeypatch):
+    """/api/admin/* routes are NOT checked by the QTX_API_KEY middleware.
+
+    A request with no X-Api-Key header should reach the route handler.
+    The route will return 503 (QTX_ADMIN_KEY not configured) — not 401 from
+    the middleware — proving the middleware bypass is in effect.
+    """
+    monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
+    monkeypatch.delenv("QTX_ADMIN_KEY", raising=False)
+    with _make_client() as c:
+        resp = c.post("/api/admin/reload-models")
+    # 503 means the request reached the route handler (admin key not configured).
+    # 401 would mean the global middleware rejected it — that must NOT happen.
+    assert resp.status_code == 503
+    assert "QTX_ADMIN_KEY" in resp.json()["detail"]
