@@ -48,6 +48,9 @@ REGRESSION_FEATURES = [
     "rgn_spine", "rgn_knee", "rgn_ankle_foot", "rgn_hip", "rgn_lower_limb",
     "rgn_shoulder", "rgn_upper_limb", "rgn_trunk",
     "n_flags", "n_groups", "n_regions",
+    "session_number",
+    "prior_avg_composite_improvement",
+    "trend_tug_magnitude",
 ]
 
 def _load_qtx_sessions() -> pd.DataFrame:
@@ -75,9 +78,22 @@ def _load_qtx_sessions() -> pd.DataFrame:
                 s.pre_tug_s, s.post_tug_s, s.pre_5xsst_s, s.post_5xsst_s,
                 s.pre_normal_gs_ms, s.post_normal_gs_ms,
                 s.pre_fast_gs_ms, s.post_fast_gs_ms,
-                s.baseline_sppb AS session_sppb, s.post_sppb
+                s.baseline_sppb AS session_sppb, s.post_sppb,
+                s.session_number,
+                AVG(s.composite_improvement) OVER (
+                    PARTITION BY s.patient_id
+                    ORDER BY s.session_number
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) AS prior_avg_composite_improvement,
+                pt.magnitude AS trend_tug_magnitude
             FROM patients p
             JOIN sessions s ON s.patient_id = p.id
+            LEFT JOIN (
+                SELECT DISTINCT ON (patient_id) patient_id, magnitude
+                FROM patient_trends
+                WHERE metric ILIKE '%tug%'
+                ORDER BY patient_id, computed_at DESC
+            ) pt ON pt.patient_id = p.id
             WHERE s.ingested_from IS NULL OR s.ingested_from NOT ILIKE '%raise%'
         """)).fetchall()
     records = []
@@ -91,6 +107,9 @@ def _load_qtx_sessions() -> pd.DataFrame:
         d["n_flags"] = sum(1 for k in d if k.startswith("has_") and d.get(k))
         d["n_groups"] = sum(1 for k in d if k.startswith("grp_") and d.get(k))
         d["n_regions"] = sum(1 for k in d if k.startswith("rgn_") and d.get(k))
+        d["session_number"] = float(d.get("session_number") or 1)
+        d["prior_avg_composite_improvement"] = float(d.get("prior_avg_composite_improvement") or 0.0)
+        d["trend_tug_magnitude"] = float(d.get("trend_tug_magnitude") or 0.0)
         records.append(d)
     df = pd.DataFrame(records)
     df = compute_change_scores(df)

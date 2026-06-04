@@ -34,7 +34,32 @@ def _f(val, default: float = 0.0) -> float:
     return float(val) if val is not None else default
 
 
-def _build_feature_vector_from_orm(patient, session, feature_names: list[str]) -> pd.DataFrame:
+def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
+    """Compute longitudinal features that require DB access."""
+    from models.clinical import Session as ClinicalSession, PatientTrend
+    from sqlalchemy import func
+
+    # prior_avg_composite_improvement
+    prior_avg = db.query(func.avg(ClinicalSession.composite_improvement)).filter(
+        ClinicalSession.patient_id == patient.id,
+        ClinicalSession.session_number < session.session_number,
+        ClinicalSession.composite_improvement.isnot(None),
+    ).scalar()
+
+    # trend_tug_magnitude
+    tug_trend = db.query(PatientTrend).filter(
+        PatientTrend.patient_id == patient.id,
+        PatientTrend.metric.ilike('%tug%'),
+    ).first()
+
+    return {
+        "session_number": float(session.session_number or 1),
+        "prior_avg_composite_improvement": float(prior_avg) if prior_avg is not None else 0.0,
+        "trend_tug_magnitude": float(tug_trend.magnitude) if (tug_trend and tug_trend.magnitude is not None) else 0.0,
+    }
+
+
+def _build_feature_vector_from_orm(patient, session, feature_names: list[str], extra: dict | None = None) -> pd.DataFrame:
     """Build a single-row DataFrame from ORM Patient + Session objects."""
     row: dict[str, float] = {}
 
@@ -71,6 +96,9 @@ def _build_feature_vector_from_orm(patient, session, feature_names: list[str]) -
             row[col] = 1.0 if gender == col[len("gender_"):].upper() else 0.0
         elif col.startswith("primary_indication_"):
             row[col] = 0.0
+
+    if extra:
+        row.update(extra)
 
     for feat in feature_names:
         if feat not in row:
@@ -140,9 +168,11 @@ class PredictionService:
         predictions: dict = {}
         model_versions: dict = {}
 
+        longitudinal = _get_longitudinal_features(patient, session, self._db)
+
         try:
             reg = self._models["regression"]
-            X = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_))
+            X = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_), extra=longitudinal)
             predictions["predicted_composite_improvement"] = float(reg.predict(X)[0])
             model_versions["regression"] = "regression_xgb.joblib"
         except Exception as exc:
@@ -151,7 +181,7 @@ class PredictionService:
 
         try:
             clf = self._models["classifier"]
-            X = _build_feature_vector_from_orm(patient, session, list(clf.feature_names_in_))
+            X = _build_feature_vector_from_orm(patient, session, list(clf.feature_names_in_), extra=longitudinal)
             predictions["responder_probability"] = float(clf.predict_proba(X)[0][1])
             model_versions["classifier"] = "classifier_xgb.joblib"
         except Exception as exc:
@@ -160,7 +190,7 @@ class PredictionService:
 
         try:
             drop = self._models["dropout"]
-            X = _build_feature_vector_from_orm(patient, session, list(drop.feature_names_in_))
+            X = _build_feature_vector_from_orm(patient, session, list(drop.feature_names_in_), extra=longitudinal)
             predictions["dropout_probability"] = float(drop.predict_proba(X)[0][1])
             model_versions["dropout"] = "dropout_xgb.joblib"
         except Exception as exc:
