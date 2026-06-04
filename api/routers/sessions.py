@@ -17,6 +17,7 @@ from services.trend import TrendEngine
 from services.insight import InsightService
 from services.prediction import PredictionService
 from services.retrain import RetrainService
+from services.calibration import CalibrationService
 
 router = APIRouter()
 
@@ -194,6 +195,7 @@ def create_session(
     try:
         session_count = db.query(func.count(ClinicalSession.id)).scalar() or 0
         RetrainService().check_and_trigger(session_count)
+        CalibrationService.check_and_trigger(db)
     except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).warning("Retrain trigger failed: %s", exc)

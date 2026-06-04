@@ -134,6 +134,40 @@ def _write_state(session_count: int, metrics: dict) -> None:
     }, indent=2))
 
 
+def _compute_calibration_baseline() -> dict[str, float]:
+    """Query per-cohort MAE of current predictions vs actuals.
+
+    Returns a {cohort: mae} dict for cohorts with >= 20 matched sessions.
+    Returns an empty dict on any error — caller should not abort on failure.
+    """
+    try:
+        engine = create_engine(DB_URL)
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT
+                    p.cohort,
+                    COUNT(*) as n,
+                    AVG(ABS(sp.predicted_composite_improvement - s.composite_improvement)) as mae
+                FROM (
+                    SELECT DISTINCT ON (session_id)
+                           session_id, patient_id, predicted_composite_improvement
+                    FROM   session_predictions
+                    WHERE  predicted_composite_improvement IS NOT NULL
+                    ORDER  BY session_id, predicted_at DESC
+                ) sp
+                JOIN sessions s ON s.id = sp.session_id
+                JOIN patients p ON p.id = sp.patient_id
+                WHERE  s.composite_improvement IS NOT NULL
+                  AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+                GROUP BY p.cohort
+                HAVING COUNT(*) >= 20
+            """)).fetchall()
+        return {str(r._mapping["cohort"]): float(r._mapping["mae"]) for r in rows}
+    except Exception as exc:
+        print(f"  WARNING: _compute_calibration_baseline failed: {exc}")
+        return {}
+
+
 def _metrics_improved_or_equal(old: dict, new_reg: dict) -> bool:
     checks = []
     if "rmse_mean" in old and "rmse_mean" in new_reg:
@@ -167,6 +201,13 @@ def main() -> None:
         joblib.dump(reg_model, MODELS_DIR / "regression_xgb.joblib")
         print("  Saved: regression_xgb.joblib")
         _write_state(session_count, new_reg_metrics)
+        calibration_baseline = _compute_calibration_baseline()
+        if calibration_baseline:
+            state = _read_state()
+            state["calibration_baseline"] = calibration_baseline
+            with open(STATE_PATH, "w") as f:
+                json.dump(state, f, indent=2)
+            print(f"  Calibration baseline updated: {len(calibration_baseline)} cohorts")
         try:
             import os as _os
             import urllib.request
