@@ -55,7 +55,7 @@ RGN_COLS = [
 ]
 SHIFT_FEATURES = [
     "age", "gender", "baseline_sppb", "pre_normal_gs_ms", "pre_tug_s", "pre_5xsst_s",
-    "usage_frequency", "cohort", "has_oa", "has_diabetes", "has_stroke", "has_parkinsons",
+    "has_oa", "has_diabetes", "has_stroke", "has_parkinsons",
     "has_sarcopenia", "has_post_surgery", "has_balance_issue", "has_chronic_pain",
     "pre_vas", "pre_fast_gs_ms", "n_flags", "n_regions", "n_groups", "has_hypertension",
     "has_frailty", "has_fall_risk", "has_neurological", "has_metabolic", "has_knee_issue",
@@ -500,7 +500,7 @@ def main() -> None:
         print(f"  {row['feature']:<35} {row['mean_abs_shap']:.4f}")
 
     shift_passes = auc_gate(shift_auc)
-    shap_passes, confound_pct = shap_gate(shap_df, ["cohort", "usage_frequency"])
+    shap_passes, confound_pct = shap_gate(shap_df, ["primary_indication"])
 
     if not shift_passes:
         _print_report(
