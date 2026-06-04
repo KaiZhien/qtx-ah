@@ -2,7 +2,7 @@
 
 Tests whether RAISE and QTX populations are safe to merge using two gates:
   1. XGBoost shift classifier AUC < 0.70  (populations indistinguishable)
-  2. Cohort + usage_frequency SHAP < 15%  (separation not driven by programme)
+  2. primary_indication SHAP < 15%  (separation not driven by clinical classification)
 
 If both gates pass, retrains outcome regression and fall risk models on combined
 data and saves augmented models if combined metrics >= QTX-only metrics.
@@ -93,7 +93,7 @@ def shap_gate(
     """Return (passes, confound_pct).
 
     passes=True when combined confound SHAP importance < threshold.
-    confound_cols are prefix-matched (post-dummies names like 'cohort_Pain').
+    confound_cols are prefix-matched (post-dummies names like 'primary_indication_Pain').
     shap_df must have columns: feature, mean_abs_shap.
     """
     total = shap_df["mean_abs_shap"].sum()
