@@ -88,13 +88,14 @@ def test_shap_gate_fails_above_threshold():
     ])
     passes, pct = shap_gate(shap_df, ["confound_col"])
     assert passes is False
-    assert pct > 0.15
+    assert abs(pct - 0.80) < 1e-9
 
 
 def test_shap_gate_exact_feature_name_match():
     """Test that shap_gate matches exact feature names (prefix not required)."""
     shap_df = _make_shap_df([("confound_col", 0.10), ("feature_a", 0.90)])
     passes, pct = shap_gate(shap_df, ["confound_col"])
+    assert passes is True
     assert abs(pct - 0.10) < 1e-9
 
 
