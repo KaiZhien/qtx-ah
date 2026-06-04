@@ -1,24 +1,32 @@
-# api/routers/admin.py
-"""Admin endpoints — model hot-reload. Uses the same QTX_API_KEY as all other routes."""
+"""Admin endpoints — model hot-reload. Protected by QTX_ADMIN_KEY (separate from QTX_API_KEY)."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+import hmac
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import deps
 
 router = APIRouter()
 
 
-@router.post("/admin/reload-models")
-def reload_models() -> dict:
-    """Reload all ML model files from disk into the running process.
+def require_admin_key(request: Request) -> None:
+    """Verify X-Admin-Key header matches QTX_ADMIN_KEY env var."""
+    expected = os.environ.get("QTX_ADMIN_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="QTX_ADMIN_KEY is not configured")
+    provided = request.headers.get("X-Admin-Key", "")
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing admin key")
 
-    Safe to call while the API is serving requests — deps.models is a mutable
-    dict and the swap is atomic at the Python interpreter level.
-    """
+
+@router.post("/admin/reload-models", dependencies=[Depends(require_admin_key)])
+def reload_models() -> dict:
+    """Reload all ML model files from disk into the running process."""
     deps.load_all()
     loaded = [
-        "classifier_xgb.joblib", "regression_xgb.joblib", "dropout_xgb.joblib",
-        "dosage_frequency.joblib", "fall_risk_xgb.joblib", "fall_risk_medians.joblib",
+        "classifier_xgb.joblib", "regression_xgb.joblib",
+        "dropout_xgb.joblib", "dosage_frequency.joblib",
     ]
     return {"status": "ok", "models_loaded": loaded}
