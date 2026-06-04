@@ -65,7 +65,7 @@ SHIFT_FEATURES = [
     "rgn_hip", "rgn_lower_limb", "rgn_shoulder", "rgn_upper_limb", "rgn_trunk",
     "primary_indication",
 ]
-CAT_COLS = ["gender", "cohort", "usage_frequency", "primary_indication"]
+CAT_COLS = ["gender", "primary_indication"]
 FALL_RISK_FEATURES = [
     "age", "gender_M", "has_oa", "has_diabetes", "has_stroke", "has_parkinsons",
     "has_frailty", "has_hypertension", "pre_5xsst_s", "pre_vas",

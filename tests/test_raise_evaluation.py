@@ -102,6 +102,19 @@ def test_shap_gate_zero_total_returns_pass():
     assert pct == 0.0
 
 
+def test_shap_gate_primary_indication_confound():
+    """Verify shap_gate correctly identifies primary_indication_* features as confounds."""
+    shap_df = _make_shap_df([
+        ("age", 0.70),
+        ("baseline_sppb", 0.20),
+        ("primary_indication_Pain", 0.07),
+        ("primary_indication_Neurological", 0.03),
+    ])
+    passes, pct = shap_gate(shap_df, ["primary_indication"])
+    assert passes is True
+    assert abs(pct - 0.10) < 1e-9  # 0.07 + 0.03 = 0.10, total = 1.0, so 10%
+
+
 # ── should_save_models ────────────────────────────────────────────────────────
 
 def test_should_save_when_combined_better():
