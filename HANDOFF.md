@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-04
 **Branch:** main
-**Commit:** 7b86434
-**Status:** Sub-projects 1–4 complete. RAISE eldercare dataset ingested (162 patients). Dual-loop ML+AI integration live. 423 tests passing.
+**Commit:** ed07e3e
+**Status:** Sub-projects 1–4 complete. RAISE dataset ingested (162 patients). Dual-loop ML+AI integration live. Fall risk module removed (owned by separate team). 410 tests passing.
 
 ---
 
@@ -30,11 +30,12 @@ Timeline tab, AI tab (Q&A + insight history), MetricChart, InsightCard, QAPanel 
 | Decision | Choice | Reason |
 |----------|--------|--------|
 | Database | PostgreSQL 17 + pgvector | Vector storage + concurrent access; pgvector requires PG17+ on macOS homebrew |
-| Embeddings | Voyage-3-lite ($0.06/1M tokens) | Best structured-data quality at lowest cost |
+| Embeddings | Voyage-3-lite ($0.06/1M tokens) | Best structured-data quality at lowest cost; 512 dimensions |
 | LLM | Claude Sonnet 4.6 | Best clinical reasoning benchmarks; HIPAA BAA available |
 | Reasoning scope | Per-patient only | Cross-patient comparison is clinically inappropriate |
 | Patient data compliance | Treat as PHI; sign Anthropic BAA | Small population (~2K patients) makes anonymisation insufficient |
 | Env loading | python-dotenv in api/main.py | API server reads project root .env at startup |
+| Fall risk | Removed from this codebase | Owned and maintained by a separate team member |
 
 ---
 
@@ -142,12 +143,12 @@ api/
   routers/
     patients.py            — GET /api/patients, GET /api/patient/{sn}
     predict.py             — POST /api/predict/outcomes, /dosage
-    fall_risk.py           — POST /api/predict/fall-risk
     wearable.py            — wearable enrollment + features
     import_data.py         — POST /api/import/seed, /import/file
     webhooks.py            — POST /webhooks/terra
     sessions.py            — POST /api/patient/{sn}/session (runs PredictionService +
                              InsightService + RetrainService on every new session)
+                             GET /api/patient/{sn}/predictions/latest
     ask.py                 — POST /api/patient/{sn}/ask (AI Q&A)
     report.py              — GET /api/patient/{sn}/report.pdf (PDF export)
     admin.py               — POST /api/admin/reload-models (hot-swap model files)
@@ -155,7 +156,8 @@ api/
     ingest.py              — IngestPipeline, IngestSummary, RowError
     insight.py             — InsightService (Claude Sonnet 4.6 + Voyage RAG)
     voyage.py              — VoyageEmbedder (voyage-3-lite, 512 dims, 5s timeout)
-    prediction.py          — PredictionService (runs all 4 models, saves SessionPrediction row)
+    prediction.py          — PredictionService (runs regression/classifier/dropout/dosage,
+                             saves SessionPrediction row; fall risk excluded)
     retrain.py             — RetrainService.check_and_trigger() (threshold-based background spawn)
     terra.py               — Terra API client
     wearable_features.py   — rolling wearable feature computation
@@ -167,9 +169,9 @@ web/
     globals.css            — design system tokens + .btn:disabled style
     layout.tsx / page.tsx
   components/
-    fall-risk/             — FallRiskForm, FallRiskResults
-    pages/                 — FallRiskPage, OverviewPage, CohortsPage, ClinicalPage
-    clinical/              — InsightCard, MetricChart, QAPanel, TimelineTab
+    pages/                 — OverviewPage, CohortsPage, ClinicalPage
+    clinical/              — InsightCard, MetricChart, QAPanel, TimelineTab, AITab,
+                             PredictionChips (model signals chips in AI tab)
     ui/                    — Card, Drawer, Field, KPI, Pill, Tabs, Icons
   lib/
     api.ts / types.ts / constants.ts
@@ -197,8 +199,6 @@ models/
   regression_xgb.joblib
   dropout_xgb.joblib
   dosage_frequency.joblib
-  fall_risk_xgb.joblib
-  fall_risk_medians.joblib
 ```
 
 ---
@@ -263,11 +263,10 @@ Gates whether RAISE data can be merged with QTX for model retraining. Two gates 
 
 Two learning loops are now connected. Every `POST /api/patient/{sn}/session` call:
 
-1. **Runs `PredictionService`** — builds feature vectors from ORM objects, calls all 4 models (regression, classifier, dropout, fall risk + dosage), persists one `session_predictions` row.
+1. **Runs `PredictionService`** — builds feature vectors from ORM objects, calls 4 models (regression, classifier, dropout, dosage; fall risk excluded — owned by separate team), persists one `session_predictions` row.
 2. **Passes predictions to `InsightService`** — Claude's prompt now includes a `model_predictions` block:
    ```
    "model_predictions": {
-     "fall_risk": "HIGH (0.87) [threshold > 0.50]",
      "predicted_composite_improvement": 0.42,
      "responder_probability": 0.71,
      "dropout_risk": "LOW (0.12)",
@@ -280,8 +279,8 @@ Two learning loops are now connected. Every `POST /api/patient/{sn}/session` cal
 ### Scheduled retrain job (`scripts/18_scheduled_retrain.py`)
 
 - Loads all QTX sessions from DB (excludes RAISE rows)
-- Retrains regression (XGBRegressor) + fall risk (XGBClassifier with proxy label) with 5-fold CV
-- Saves new models only if CV metrics hold or improve vs. `retrain_state.json` baseline
+- Retrains regression model (XGBRegressor) only with 5-fold CV — fall risk excluded
+- Saves new model only if CV metrics hold or improve vs. `retrain_state.json` baseline
 - Calls `POST /api/admin/reload-models` (with `X-Api-Key` header) to hot-swap models in the running API
 - State persisted in `retrain_state.json` (gitignored, project root)
 
@@ -302,8 +301,17 @@ Calls `deps.load_all()` in place — `deps.models` is a mutable dict so no serve
 - `GET /api/patient/{sn}/report.pdf` — WeasyPrint renders `templates/patient_report.html` as a PDF clinical summary.
 - **Requires:** `brew install pango` (libpango system library). Already installed on this machine.
 
+### Prediction Chips (AI tab)
+`PredictionChips` component renders a compact chip row at the top of the AI tab in the patient drawer, showing the latest `SessionPrediction` values:
+- Predicted improvement (signed float)
+- Responder probability (%)
+- Dropout risk — LOW / HIGH (amber chip when > 50%)
+- Dosage recommendation
+
+Fetched from `GET /api/patient/{sn}/predictions/latest`. Silently absent if no prediction row exists yet (patient has no sessions).
+
 ### Clinical sub-components (Sub-project 3/4)
-`InsightCard`, `MetricChart`, `QAPanel`, `TimelineTab` are scaffolded in `web/components/clinical/` — ready to be wired to the AI + timeline endpoints.
+`InsightCard`, `MetricChart`, `QAPanel`, `TimelineTab`, `AITab`, `PredictionChips` all live in `web/components/clinical/`.
 
 ---
 
@@ -319,6 +327,7 @@ Calls `deps.load_all()` in place — `deps.models` is a mutable dict so no serve
 - **`scripts/17` shift test uses `usage_frequency` as a shift feature** — consider excluding pure programme-label columns from `SHIFT_FEATURES` so the shift test detects clinical differences only.
 - **Model calibration tracking** — `session_predictions.predicted_composite_improvement` is persisted but not yet compared against actuals. A future script could measure model drift per cohort.
 - **Admin endpoint production auth** — currently uses the same `QTX_API_KEY` as all other routes. Consider a separate `QTX_ADMIN_KEY` for the reload endpoint before production.
+- **Fall risk** — entirely removed from this codebase. Owned by a separate team member. The `session_predictions` table retains `fall_risk_score` and `fall_risk_label` columns (they simply stay NULL).
 
 ---
 
@@ -328,4 +337,4 @@ The two core learning loops are live. Likely next priorities:
 
 1. **Fix RAISE merge gates** — normalise `usage_frequency` in RAISE rows so `script 17` can complete a full covariate shift evaluation on clinical features only.
 2. **Model calibration dashboard** — query `session_predictions` vs actual `composite_improvement` to surface per-cohort prediction error over time.
-3. **Prediction visibility in the frontend** — surface `SessionPrediction` values in the patient drawer's AI tab so clinicians can see what the model predicted alongside what Claude flagged.
+3. **Prediction chips are live** — `PredictionChips` in the AI tab already shows model signals. Next step: add a small "last updated" timestamp from `predicted_at` to make staleness visible to clinicians.
