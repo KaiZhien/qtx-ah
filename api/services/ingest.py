@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -189,7 +189,7 @@ class IngestPipeline:
             "primary_indication": _coerce(row.get("primary_indication")),
             "cohort": _coerce(row.get("cohort")),
             "record_type": str(_coerce(row.get("record_type")) or "Active"),
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
         for col in _PATIENT_FLAG_COLS:
             patient_data[col] = _bool(row.get(col, False))

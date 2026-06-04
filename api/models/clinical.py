@@ -90,8 +90,8 @@ class Patient(Base):
     baseline_sppb: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     post_sppb: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Session(Base):
@@ -165,7 +165,7 @@ class Session(Base):
     breadth_of_response: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     is_dropout: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
 
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     ingested_from: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
@@ -182,7 +182,7 @@ class PatientCondition(Base):
     condition_group: Mapped[str] = mapped_column(String(50), nullable=False)
     condition_label: Mapped[str] = mapped_column(String(100), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="tag_regex")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class PatientTrend(Base):
@@ -204,7 +204,7 @@ class PatientTrend(Base):
     magnitude: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
     first_value: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
     last_value: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
-    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class PatientInsight(Base):
@@ -222,7 +222,7 @@ class PatientInsight(Base):
     question: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(50), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
 
 
