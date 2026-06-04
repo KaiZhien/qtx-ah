@@ -60,6 +60,7 @@ psql qtxah -c "GRANT ALL ON SCHEMA public TO qtx;"
 **`quantumtx-ah/.env`** (API server — gitignored):
 ```
 QTX_API_KEY=<32-byte hex>
+QTX_ADMIN_KEY=<separate 32-byte hex>
 DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah
 LOG_LEVEL=INFO
 TERRA_WEBHOOK_SECRET=
@@ -326,7 +327,7 @@ Fetched from `GET /api/patient/{sn}/predictions/latest`. Silently absent if no p
 - **RAISE covariate shift gates currently failing** — `usage_frequency = "Once weekly (BIXEPS)"` makes RAISE rows trivially distinguishable. Fix: normalise RAISE `usage_frequency` values to match QTX taxonomy (e.g. "Once / week") before running `script 17` again.
 - **`scripts/17` shift test uses `usage_frequency` as a shift feature** — consider excluding pure programme-label columns from `SHIFT_FEATURES` so the shift test detects clinical differences only.
 - **Model calibration tracking** — `session_predictions.predicted_composite_improvement` is persisted but not yet compared against actuals. A future script could measure model drift per cohort.
-- **Admin endpoint production auth** — currently uses the same `QTX_API_KEY` as all other routes. Consider a separate `QTX_ADMIN_KEY` for the reload endpoint before production.
+- ~~**Admin endpoint production auth**~~ — resolved: `POST /api/admin/reload-models` now requires `X-Admin-Key: QTX_ADMIN_KEY`, separate from the frontend-facing `QTX_API_KEY`.
 - **Fall risk** — entirely removed from this codebase. Owned by a separate team member. The `session_predictions` table retains `fall_risk_score` and `fall_risk_label` columns (they simply stay NULL).
 
 ---
