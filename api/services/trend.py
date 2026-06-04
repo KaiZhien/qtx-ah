@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session as DBSession
 
@@ -121,7 +121,7 @@ class TrendEngine:
                     magnitude=magnitude,
                     first_value=first_val,
                     last_value=last_val,
-                    computed_at=datetime.utcnow(),
+                    computed_at=datetime.now(timezone.utc),
                 ))
             else:
                 existing.direction     = direction
@@ -129,7 +129,7 @@ class TrendEngine:
                 existing.magnitude     = magnitude
                 existing.first_value   = first_val
                 existing.last_value    = last_val
-                existing.computed_at   = datetime.utcnow()
+                existing.computed_at   = datetime.now(timezone.utc)
 
             self._db.flush()
 
