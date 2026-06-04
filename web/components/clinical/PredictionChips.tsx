@@ -32,9 +32,8 @@ export function formatRelative(isoString: string): string {
   const days = Math.floor(hours / 24);
   if (days < 1) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
 
-  const months = Math.floor(days / 30);
   if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
-
+  const months = Math.floor(days / 30);
   return `${months} month${months === 1 ? "" : "s"} ago`;
 }
 
@@ -97,7 +96,7 @@ export function PredictionChips({ predictions }: PredictionChipsProps) {
           </span>
         )}
       </div>
-      {predicted_at !== null && (predicted_composite_improvement !== null || responder_probability !== null || dropout_probability !== null || dosage_recommendation !== null) && (
+      {predicted_at !== null && (predicted_composite_improvement !== null || responder_probability !== null || dropout_probability !== null || !!dosage_recommendation) && (
         <div style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 4 }}>
           Updated {formatRelative(predicted_at)}
         </div>
