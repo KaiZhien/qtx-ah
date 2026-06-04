@@ -4,6 +4,9 @@ import React from "react";
 import type { InsightRow } from "@/lib/types";
 import { askQuestion, downloadPatientPdf } from "@/lib/api";
 
+const PREPARE_SESSION_PROMPT =
+  "Summarise this patient's last session, highlight any metrics that crossed a clinical threshold, and list what I should prepare or watch for in today's session.";
+
 interface QAPanelProps {
   sn: string;
   onAnswer: (insight: InsightRow) => void;
@@ -15,8 +18,8 @@ export function QAPanel({ sn, onAnswer, onPdfDownload }: QAPanelProps) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  async function handleAsk() {
-    const q = question.trim();
+  async function handleAsk(overrideQuestion?: string) {
+    const q = (overrideQuestion ?? question).trim();
     if (!q) return;
     setLoading(true);
     setError(null);
@@ -48,6 +51,14 @@ export function QAPanel({ sn, onAnswer, onPdfDownload }: QAPanelProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <button
+        className="btn"
+        onClick={() => handleAsk(PREPARE_SESSION_PROMPT)}
+        disabled={loading}
+      >
+        Prepare session
+      </button>
+
       <textarea
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
