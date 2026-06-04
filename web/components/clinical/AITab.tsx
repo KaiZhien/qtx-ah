@@ -2,9 +2,10 @@
 
 import React from "react";
 import type { InsightRow } from "@/lib/types";
-import { fetchInsights } from "@/lib/api";
+import { fetchInsights, fetchLatestPredictions, type LatestPredictions } from "@/lib/api";
 import { InsightCard } from "./InsightCard";
 import { QAPanel } from "./QAPanel";
+import { PredictionChips } from "./PredictionChips";
 
 interface AITabProps {
   sn: string;
@@ -14,12 +15,19 @@ export function AITab({ sn }: AITabProps) {
   const [insights, setInsights] = React.useState<InsightRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [predictions, setPredictions] = React.useState<LatestPredictions | null>(null);
 
   React.useEffect(() => {
     setLoading(true);
     setError(null);
-    fetchInsights(sn)
-      .then(setInsights)
+    Promise.all([
+      fetchInsights(sn),
+      fetchLatestPredictions(sn),
+    ])
+      .then(([ins, preds]) => {
+        setInsights(ins);
+        setPredictions(preds);
+      })
       .catch(() => setError("Could not load insights."))
       .finally(() => setLoading(false));
   }, [sn]);
@@ -30,6 +38,16 @@ export function AITab({ sn }: AITabProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Model signals */}
+      {predictions && (
+        <div>
+          <div className="filter-label" style={{ marginBottom: 8 }}>
+            Model signals
+          </div>
+          <PredictionChips predictions={predictions} />
+        </div>
+      )}
+
       {/* Q&A */}
       <div>
         <div className="filter-label" style={{ marginBottom: 10 }}>

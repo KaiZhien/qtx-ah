@@ -50,11 +50,6 @@ Answer the question in 2-4 sentences based only on this patient's data above."""
 def _format_predictions(predictions: dict) -> dict:
     """Format model prediction dict for inclusion in timeline JSON sent to Claude."""
     result: dict = {}
-    fr_score = predictions.get("fall_risk_score")
-    fr_label = predictions.get("fall_risk_label")
-    if fr_score is not None:
-        label_str = "HIGH" if fr_label else "LOW"
-        result["fall_risk"] = f"{label_str} ({fr_score:.2f}) [threshold > 0.50]"
     pci = predictions.get("predicted_composite_improvement")
     if pci is not None:
         result["predicted_composite_improvement"] = round(float(pci), 2)
@@ -196,8 +191,6 @@ class InsightService:
             if row is None:
                 return None
             return {
-                "fall_risk_score": float(row.fall_risk_score) if row.fall_risk_score is not None else None,
-                "fall_risk_label": row.fall_risk_label,
                 "predicted_composite_improvement": float(row.predicted_composite_improvement) if row.predicted_composite_improvement is not None else None,
                 "responder_probability": float(row.responder_probability) if row.responder_probability is not None else None,
                 "dropout_probability": float(row.dropout_probability) if row.dropout_probability is not None else None,

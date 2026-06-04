@@ -60,14 +60,22 @@ export async function predictDosage(intake: DosageIntake): Promise<DosageResult>
   return res.json();
 }
 
-export async function predictFallRisk(input: FallRiskInput): Promise<FallRiskResult> {
-  const res = await fetch("/api/predict/fall-risk", {
-    method: "POST",
-    headers: apiHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(input),
+export interface LatestPredictions {
+  predicted_composite_improvement: number | null;
+  responder_probability: number | null;
+  dropout_probability: number | null;
+  dosage_recommendation: string | null;
+  predicted_at: string | null;
+}
+
+export async function fetchLatestPredictions(sn: string): Promise<LatestPredictions | null> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/predictions/latest`, {
+    headers: apiHeaders(),
   });
-  if (!res.ok) throw new Error(`predictFallRisk: ${res.status}`);
-  return res.json();
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || Object.keys(data).length === 0) return null;
+  return data as LatestPredictions;
 }
 
 export async function fetchWearableFeatures(patientId: string): Promise<WearableFeatures> {

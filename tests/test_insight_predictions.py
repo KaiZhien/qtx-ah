@@ -13,8 +13,6 @@ import models.clinical  # noqa: F401
 import models.wearable  # noqa: F401
 
 _FAKE_PREDS = {
-    "fall_risk_score": 0.87,
-    "fall_risk_label": True,
     "predicted_composite_improvement": 0.42,
     "responder_probability": 0.71,
     "dropout_probability": 0.12,
@@ -76,7 +74,7 @@ def test_generate_session_insight_includes_predictions_in_prompt(monkeypatch):
     p = _make_db_patient(db, "TP001")
     InsightService(db).generate_session_insight(_FAKE_TIMELINE, p.id, 1, predictions=_FAKE_PREDS)
     assert "model_predictions" in captured["msg"]
-    assert "HIGH" in captured["msg"]
+    assert "dosage_recommendation" in captured["msg"]
     db.close()
 
 
@@ -100,28 +98,24 @@ def test_system_prompt_includes_prediction_instruction():
     assert "model predictions" in _SYSTEM_PROMPT.lower()
 
 
-def test_format_predictions_high_fall_risk():
-    """_format_predictions returns HIGH label when fall_risk_label is True."""
+def test_format_predictions_includes_dropout_risk():
+    """_format_predictions includes dropout_risk label when dropout_probability is present."""
     from services.insight import _format_predictions
-    result = _format_predictions({"fall_risk_score": 0.87, "fall_risk_label": True,
-                                   "predicted_composite_improvement": 0.42,
-                                   "responder_probability": 0.71,
-                                   "dropout_probability": 0.12,
-                                   "dosage_recommendation": "Twice / week"})
-    assert "HIGH" in result.get("fall_risk", "")
+    result = _format_predictions({"dropout_probability": 0.72, "dosage_recommendation": "Twice / week"})
+    assert "HIGH" in result.get("dropout_risk", "")
 
 
-def test_format_predictions_low_fall_risk():
-    """_format_predictions returns LOW label when fall_risk_label is False."""
+def test_format_predictions_low_dropout():
+    """_format_predictions shows LOW for dropout when probability <= 0.5."""
     from services.insight import _format_predictions
-    result = _format_predictions({"fall_risk_score": 0.20, "fall_risk_label": False})
-    assert "LOW" in result.get("fall_risk", "")
+    result = _format_predictions({"dropout_probability": 0.20})
+    assert "LOW" in result.get("dropout_risk", "")
 
 
 def test_format_predictions_skips_none_fields():
     """_format_predictions omits keys where value is None."""
     from services.insight import _format_predictions
-    result = _format_predictions({"fall_risk_score": None, "fall_risk_label": None,
+    result = _format_predictions({"predicted_composite_improvement": None,
                                    "dosage_recommendation": "Once / week"})
-    assert "fall_risk" not in result
+    assert "predicted_composite_improvement" not in result
     assert result.get("dosage_recommendation") == "Once / week"

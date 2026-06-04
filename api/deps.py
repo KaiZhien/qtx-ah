@@ -51,12 +51,10 @@ def load_all() -> None:
     # --- ML models (fatal if missing) ---
     missing: list[str] = []
     model_files = {
-        "classifier":        MODELS_DIR / "classifier_xgb.joblib",
-        "regression":        MODELS_DIR / "regression_xgb.joblib",
-        "dropout":           MODELS_DIR / "dropout_xgb.joblib",
-        "dosage":            MODELS_DIR / "dosage_frequency.joblib",
-        "fall_risk":         MODELS_DIR / "fall_risk_xgb.joblib",
-        "fall_risk_medians": MODELS_DIR / "fall_risk_medians.joblib",
+        "classifier": MODELS_DIR / "classifier_xgb.joblib",
+        "regression": MODELS_DIR / "regression_xgb.joblib",
+        "dropout":    MODELS_DIR / "dropout_xgb.joblib",
+        "dosage":     MODELS_DIR / "dosage_frequency.joblib",
     }
     for name, path in model_files.items():
         try:

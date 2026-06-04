@@ -247,3 +247,38 @@ def get_timeline(
         "sessions": [_session_to_dict(s) for s in sessions],
         "trends":   [_trend_to_dict(t) for t in trends],
     }
+
+
+@router.get("/patient/{sn}/predictions/latest")
+def get_latest_predictions(
+    sn: str,
+    db: DBSession = Depends(get_db),
+) -> dict:
+    """Return the most recent SessionPrediction row for a patient, or {} if none exists."""
+    _check_db_ready()
+
+    from models.clinical import SessionPrediction
+
+    patient = db.query(Patient).filter_by(sn=sn).first()
+    if patient is None:
+        raise HTTPException(status_code=404, detail=f"Patient sn={sn!r} not found")
+
+    row = (
+        db.query(SessionPrediction)
+        .filter_by(patient_id=patient.id)
+        .order_by(SessionPrediction.predicted_at.desc())
+        .first()
+    )
+    if row is None:
+        return {}
+
+    def _fv(v):
+        return float(v) if v is not None else None
+
+    return {
+        "predicted_composite_improvement": _fv(row.predicted_composite_improvement),
+        "responder_probability":           _fv(row.responder_probability),
+        "dropout_probability":             _fv(row.dropout_probability),
+        "dosage_recommendation":           row.dosage_recommendation,
+        "predicted_at":                    row.predicted_at.isoformat() if row.predicted_at else None,
+    }

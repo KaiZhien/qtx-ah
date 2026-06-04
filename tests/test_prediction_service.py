@@ -112,11 +112,6 @@ def _make_models():
     drop = MagicMock()
     drop.feature_names_in_ = np.array(features)
     drop.predict_proba.return_value = np.array([[0.88, 0.12]])
-    fr_features = ["age", "gender_M", "has_oa", "has_diabetes", "has_stroke",
-                   "has_parkinsons", "has_frailty", "has_hypertension", "pre_5xsst_s", "pre_vas"]
-    fr = MagicMock()
-    fr.feature_names_in_ = np.array(fr_features)
-    fr.predict_proba.return_value = np.array([[0.13, 0.87]])
     dos = MagicMock()
     dos.feature_names_in_ = np.array(["age", "gender_M", "joined_with_pain_Y",
                                        "hl_knee_issue", "hl_leg_issue", "hl_back_spine_issue",
@@ -127,8 +122,7 @@ def _make_models():
                                        "inflammatory_burden", "elderly_frailty", "muscle_atrophy_risk",
                                        "pain_with_knee"])
     dos.predict.return_value = np.array([1])
-    return {"regression": reg, "classifier": clf, "dropout": drop,
-            "fall_risk": fr, "fall_risk_medians": {"pre_5xsst_s": 15.0, "pre_vas": 4.0}, "dosage": dos}
+    return {"regression": reg, "classifier": clf, "dropout": drop, "dosage": dos}
 
 
 # ── _build_feature_vector_from_orm ───────────────────────────────────────────
@@ -176,8 +170,8 @@ def test_run_returns_dict_with_all_keys():
     from services.prediction import PredictionService
     result = PredictionService(MagicMock(), _make_models()).run(_make_patient(), _make_session())
     assert result is not None
-    for key in ["fall_risk_score", "fall_risk_label", "predicted_composite_improvement",
-                "responder_probability", "dropout_probability", "dosage_recommendation"]:
+    for key in ["predicted_composite_improvement", "responder_probability",
+                "dropout_probability", "dosage_recommendation"]:
         assert key in result
 
 
@@ -207,20 +201,3 @@ def test_run_individual_model_failure_yields_none_field():
     assert result["responder_probability"] is not None
 
 
-def test_run_fall_risk_label_true_when_score_above_half():
-    from services.prediction import PredictionService
-    db = MagicMock()
-    models = _make_models()
-    models["fall_risk"].predict_proba.return_value = np.array([[0.13, 0.87]])
-    result = PredictionService(db, models).run(_make_patient(), _make_session())
-    assert result["fall_risk_label"] is True
-    assert abs(result["fall_risk_score"] - 0.87) < 1e-6
-
-
-def test_run_fall_risk_label_false_when_score_below_half():
-    from services.prediction import PredictionService
-    db = MagicMock()
-    models = _make_models()
-    models["fall_risk"].predict_proba.return_value = np.array([[0.80, 0.20]])
-    result = PredictionService(db, models).run(_make_patient(), _make_session())
-    assert result["fall_risk_label"] is False

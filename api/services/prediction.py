@@ -168,32 +168,6 @@ class PredictionService:
             predictions["dropout_probability"] = None
 
         try:
-            fr = self._models["fall_risk"]
-            medians = self._models["fall_risk_medians"]
-            fr_features = list(fr.feature_names_in_)
-            fr_row = {
-                "age": _f(patient.age),
-                "gender_M": 1.0 if (patient.gender or "").upper() == "M" else 0.0,
-                "has_oa": _f(patient.has_oa),
-                "has_diabetes": _f(patient.has_diabetes),
-                "has_stroke": _f(patient.has_stroke),
-                "has_parkinsons": _f(patient.has_parkinsons),
-                "has_frailty": _f(patient.has_frailty),
-                "has_hypertension": _f(patient.has_hypertension),
-                "pre_5xsst_s": float(session.pre_5xsst_s) if session.pre_5xsst_s is not None else medians.get("pre_5xsst_s", 15.0),
-                "pre_vas": float(session.pre_vas) if session.pre_vas is not None else medians.get("pre_vas", 4.0),
-            }
-            X_fr = pd.DataFrame([{feat: float(fr_row.get(feat, 0.0)) for feat in fr_features}], columns=fr_features)
-            fr_score = float(fr.predict_proba(X_fr)[0][1])
-            predictions["fall_risk_score"] = fr_score
-            predictions["fall_risk_label"] = fr_score > 0.50
-            model_versions["fall_risk"] = "fall_risk_xgb.joblib"
-        except Exception as exc:
-            logger.warning("Fall risk inference failed: %s", exc)
-            predictions["fall_risk_score"] = None
-            predictions["fall_risk_label"] = None
-
-        try:
             dos = self._models["dosage"]
             X = _build_dosage_vector_from_orm(patient, session, list(dos.feature_names_in_))
             dos_class = int(dos.predict(X)[0])
@@ -207,8 +181,6 @@ class PredictionService:
             id=uuid.uuid4(),
             session_id=session.id,
             patient_id=patient.id,
-            fall_risk_score=predictions.get("fall_risk_score"),
-            fall_risk_label=predictions.get("fall_risk_label"),
             predicted_composite_improvement=predictions.get("predicted_composite_improvement"),
             responder_probability=predictions.get("responder_probability"),
             dropout_probability=predictions.get("dropout_probability"),

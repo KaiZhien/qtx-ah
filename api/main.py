@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import deps
-from routers import patients, predict, fall_risk, wearable, webhooks, import_data, sessions, ask, report, admin
+from routers import patients, predict, wearable, webhooks, import_data, sessions, ask, report, admin
 
 
 @asynccontextmanager
@@ -50,7 +50,6 @@ async def api_key_middleware(request: Request, call_next):
 
 app.include_router(patients.router, prefix="/api")
 app.include_router(predict.router, prefix="/api")
-app.include_router(fall_risk.router, prefix="/api")
 app.include_router(wearable.router, prefix="/api")
 app.include_router(webhooks.router)
 app.include_router(import_data.router, prefix="/api")
