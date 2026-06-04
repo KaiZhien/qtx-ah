@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -42,6 +43,7 @@ GROUP BY p.cohort
 
 class CalibrationService:
     _cache: dict = {"computed_at": None, "metrics": {}}
+    _cache_lock: threading.Lock = threading.Lock()
 
     @classmethod
     def _read_state(cls) -> dict:
@@ -62,9 +64,10 @@ class CalibrationService:
         min_n = int(os.environ.get("CALIBRATION_MIN_COHORT_N", "20"))
 
         now = monotonic()
-        computed_at = cls._cache["computed_at"]
-        if computed_at is not None and (now - computed_at) < _CACHE_TTL_SECONDS:
-            return cls._cache["metrics"]
+        with cls._cache_lock:
+            computed_at = cls._cache["computed_at"]
+            if computed_at is not None and (now - computed_at) < _CACHE_TTL_SECONDS:
+                return cls._cache["metrics"]
 
         rows = db.execute(_SQL).fetchall()
         metrics: dict[str, dict] = {}
@@ -78,8 +81,8 @@ class CalibrationService:
                 "bias": float(bias) if bias is not None else 0.0,
             }
 
-        cls._cache["computed_at"] = now
-        cls._cache["metrics"] = metrics
+        with cls._cache_lock:
+            cls._cache = {"computed_at": now, "metrics": metrics}
         return metrics
 
     @classmethod
@@ -105,7 +108,7 @@ class CalibrationService:
                 if baseline_mae == 0:
                     continue
                 drift = (m["mae"] - baseline_mae) / baseline_mae
-                if drift > drift_threshold:
+                if drift >= drift_threshold:
                     logger.warning(
                         "Calibration drift detected for cohort %s: drift=%.3f > threshold=%.3f — spawning retrain",
                         cohort, drift, drift_threshold,
@@ -113,8 +116,10 @@ class CalibrationService:
                     if not spawned:
                         try:
                             env = os.environ.copy()
+                            existing_pythonpath = os.environ.get("PYTHONPATH", "")
                             env["PYTHONPATH"] = (
                                 str(_ROOT / "src") + os.pathsep + str(_ROOT / "api")
+                                + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
                             )
                             subprocess.Popen(
                                 [sys.executable, str(_RETRAIN_SCRIPT)],
@@ -126,7 +131,7 @@ class CalibrationService:
                         except Exception as exc:
                             logger.warning("Failed to spawn retrain subprocess: %s", exc)
         except Exception as exc:
-            logger.warning("CalibrationService.check_and_trigger failed: %s", exc)
+            logger.exception("CalibrationService.check_and_trigger failed: %s", exc)
 
     @classmethod
     def get_report(cls, db) -> dict:
@@ -140,14 +145,12 @@ class CalibrationService:
         cohort_rows = []
         for cohort, m in sorted(metrics.items(), key=lambda x: -x[1]["mae"]):
             baseline_mae = baseline.get(cohort)
-            if baseline_mae is None:
+            if baseline_mae is None or baseline_mae == 0:
                 status = "NO_BASELINE"
                 drift_pct = None
             else:
-                drift_pct = (m["mae"] - baseline_mae) / baseline_mae * 100 if baseline_mae else None
-                if drift_pct is None:
-                    status = "NO_BASELINE"
-                elif drift_pct < 15:
+                drift_pct = (m["mae"] - baseline_mae) / baseline_mae * 100
+                if drift_pct < 15:
                     status = "OK"
                 elif drift_pct < 30:
                     status = "WARNING"
@@ -159,7 +162,7 @@ class CalibrationService:
                 "n": m["n"],
                 "current_mae": round(m["mae"], 4),
                 "baseline_mae": round(baseline_mae, 4) if cohort in baseline else None,
-                "drift_pct": round(drift_pct, 2) if baseline_mae else None,
+                "drift_pct": round(drift_pct, 2) if drift_pct is not None else None,
                 "status": status,
             })
 
