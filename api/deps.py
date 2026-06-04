@@ -1,7 +1,11 @@
 """Global singletons loaded once at startup."""
 from __future__ import annotations
 
+import hmac
+import os
+
 import joblib
+from fastapi import HTTPException, Request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # quantumtx-ah/
@@ -9,6 +13,16 @@ MODELS_DIR = ROOT / "models"
 
 models: dict = {}
 _db_ready: bool = False  # True once DB is reachable and has patient rows
+
+
+def verify_api_key(request: Request) -> None:
+    """FastAPI dependency — raises 401 if X-Api-Key header is missing or wrong."""
+    expected = os.environ.get("QTX_API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=500, detail="QTX_API_KEY is not configured on the server")
+    provided = request.headers.get("X-Api-Key", "") or request.query_params.get("key", "")
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def load_all() -> None:

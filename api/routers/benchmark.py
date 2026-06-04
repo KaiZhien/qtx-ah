@@ -6,11 +6,12 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import text
 import deps
 from db import get_db
+from deps import verify_api_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-@router.get("/patient/{sn}/benchmark")
+@router.get("/patient/{sn}/benchmark", dependencies=[Depends(verify_api_key)])
 def get_benchmark(sn: str, db: DBSession = Depends(get_db)) -> dict:
     """Return patient's composite improvement percentile rank within their cohort."""
     if not deps._db_ready:

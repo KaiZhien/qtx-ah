@@ -107,7 +107,7 @@ def _load_qtx_sessions() -> pd.DataFrame:
         d["n_flags"] = sum(1 for k in d if k.startswith("has_") and d.get(k))
         d["n_groups"] = sum(1 for k in d if k.startswith("grp_") and d.get(k))
         d["n_regions"] = sum(1 for k in d if k.startswith("rgn_") and d.get(k))
-        d["session_number"] = float(d.get("session_number") or 1)
+        d["session_number"] = float(d["session_number"] if d.get("session_number") is not None else 1)
         d["prior_avg_composite_improvement"] = float(d.get("prior_avg_composite_improvement") or 0.0)
         d["trend_tug_magnitude"] = float(d.get("trend_tug_magnitude") or 0.0)
         records.append(d)

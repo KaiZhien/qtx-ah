@@ -7,7 +7,10 @@ import uuid
 from datetime import datetime, timezone
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
+
+from models.clinical import Session as ClinicalSession, PatientTrend
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +39,6 @@ def _f(val, default: float = 0.0) -> float:
 
 def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
     """Compute longitudinal features that require DB access."""
-    from models.clinical import Session as ClinicalSession, PatientTrend
-    from sqlalchemy import func
-
     # prior_avg_composite_improvement
     prior_avg = db.query(func.avg(ClinicalSession.composite_improvement)).filter(
         ClinicalSession.patient_id == patient.id,
@@ -46,11 +46,13 @@ def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
         ClinicalSession.composite_improvement.isnot(None),
     ).scalar()
 
-    # trend_tug_magnitude
-    tug_trend = db.query(PatientTrend).filter(
-        PatientTrend.patient_id == patient.id,
-        PatientTrend.metric.ilike('%tug%'),
-    ).first()
+    # trend_tug_magnitude — order by computed_at DESC for determinism (matches training query)
+    tug_trend = (
+        db.query(PatientTrend)
+        .filter(PatientTrend.patient_id == patient.id, PatientTrend.metric.ilike('%tug%'))
+        .order_by(PatientTrend.computed_at.desc())
+        .first()
+    )
 
     return {
         "session_number": float(session.session_number or 1),

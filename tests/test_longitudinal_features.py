@@ -193,6 +193,7 @@ def test_get_longitudinal_features_defaults_when_no_prior_sessions():
     # Mock DB that returns None for avg query scalar
     mock_query = MagicMock()
     mock_query.filter.return_value = mock_query
+    mock_query.order_by.return_value = mock_query
     mock_query.scalar.return_value = None  # no prior sessions
     mock_query.first.return_value = None   # no tug trend
 
@@ -223,6 +224,7 @@ def test_get_longitudinal_features_uses_db_values():
         call_count += 1
         q = MagicMock()
         q.filter.return_value = q
+        q.order_by.return_value = q
         if call_count == 1:
             # First call: ClinicalSession avg
             q.scalar.return_value = 0.42
