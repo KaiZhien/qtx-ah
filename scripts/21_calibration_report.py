@@ -19,7 +19,6 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "api"))
 
 import os
-import math
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -48,7 +47,7 @@ def compute_cohort_metrics(df: pd.DataFrame) -> pd.DataFrame:
         actual = cohort_data["actual"].values
 
         mae = np.mean(np.abs(predicted - actual))
-        rmse = math.sqrt(np.mean((predicted - actual) ** 2))
+        rmse = np.sqrt(np.mean((predicted - actual) ** 2))
         bias = np.mean(predicted - actual)
 
         metrics.append({
@@ -75,7 +74,9 @@ def compute_monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
 
     # Extract year-month from predicted_at
     df = df.copy()
-    df["month"] = pd.to_datetime(df["predicted_at"]).dt.to_period("M")
+    df["predicted_at"] = pd.to_datetime(df["predicted_at"], errors="coerce")
+    df = df.dropna(subset=["predicted_at"])
+    df["month"] = df["predicted_at"].dt.to_period("M")
 
     metrics = []
     for month in sorted(df["month"].dropna().unique()):
@@ -87,7 +88,7 @@ def compute_monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
         actual = month_data["actual"].values
 
         mae = np.mean(np.abs(predicted - actual))
-        rmse = math.sqrt(np.mean((predicted - actual) ** 2))
+        rmse = np.sqrt(np.mean((predicted - actual) ** 2))
 
         metrics.append({
             "month": str(month),
@@ -171,6 +172,8 @@ def main() -> None:
                 f"{row['rmse']:>8.3f}"
             )
     print("=" * 70)
+
+    engine.dispose()
 
 
 if __name__ == "__main__":
