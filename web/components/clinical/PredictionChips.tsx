@@ -20,6 +20,7 @@ function signed(v: number | null): string {
 export function formatRelative(isoString: string): string {
   const now = Date.now();
   const then = new Date(isoString).getTime();
+  if (isNaN(then)) return "unknown";
   const diffMs = now - then;
 
   const minutes = Math.floor(diffMs / 60000);
@@ -69,7 +70,7 @@ export function PredictionChips({ predictions }: PredictionChipsProps) {
   const dropoutHigh = dropout_probability !== null && dropout_probability > 0.5;
 
   return (
-    <div>
+    <div style={{ display: "contents" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
         {predicted_composite_improvement !== null && (
           <span style={chipStyle}>
@@ -96,7 +97,7 @@ export function PredictionChips({ predictions }: PredictionChipsProps) {
           </span>
         )}
       </div>
-      {predicted_at !== null && (
+      {predicted_at !== null && (predicted_composite_improvement !== null || responder_probability !== null || dropout_probability !== null || dosage_recommendation !== null) && (
         <div style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 4 }}>
           Updated {formatRelative(predicted_at)}
         </div>
