@@ -127,11 +127,12 @@ def _read_state() -> dict:
 
 
 def _write_state(session_count: int, metrics: dict) -> None:
-    STATE_PATH.write_text(json.dumps({
-        "last_retrain_session_count": session_count,
-        "last_retrain_at": datetime.now(timezone.utc).isoformat(),
-        "last_metrics": metrics,
-    }, indent=2))
+    state = _read_state()  # read existing (preserves calibration_baseline and other keys)
+    state["last_retrain_session_count"] = session_count
+    state["last_retrain_at"] = datetime.now(timezone.utc).isoformat()
+    state["last_metrics"] = metrics
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
 
 
 def _compute_calibration_baseline() -> dict[str, float]:

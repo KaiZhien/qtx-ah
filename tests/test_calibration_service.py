@@ -18,6 +18,7 @@ from services.calibration import CalibrationService
 @pytest.fixture(autouse=True)
 def reset_cache():
     CalibrationService._cache = {"computed_at": None, "metrics": {}}
+    CalibrationService._last_spawn_at = None
 
 
 # ── get_report tests ──────────────────────────────────────────────────────────

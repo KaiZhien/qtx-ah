@@ -53,7 +53,9 @@ export function ModelHealthCard() {
   const [report, setReport] = useState<CalibrationReport | null | undefined>(undefined);
 
   useEffect(() => {
-    fetchCalibration().then((r) => setReport(r));
+    fetchCalibration()
+      .then(setReport)
+      .catch(() => setReport(null));
   }, []);
 
   // Loading

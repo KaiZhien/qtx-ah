@@ -44,6 +44,8 @@ GROUP BY p.cohort
 class CalibrationService:
     _cache: dict = {"computed_at": None, "metrics": {}}
     _cache_lock: threading.Lock = threading.Lock()
+    _last_spawn_at: float | None = None
+    _SPAWN_COOLDOWN_SECONDS: int = 3600
 
     @classmethod
     def _read_state(cls) -> dict:
@@ -92,6 +94,10 @@ class CalibrationService:
         Non-blocking — any exception is caught and logged, never raises.
         """
         try:
+            now = monotonic()
+            if cls._last_spawn_at is not None and (now - cls._last_spawn_at) < cls._SPAWN_COOLDOWN_SECONDS:
+                return  # already spawned recently, skip
+
             metrics = cls.compute_cohort_metrics(db)
             state = cls._read_state()
             baseline: dict[str, float] = state.get("calibration_baseline", {})
@@ -128,6 +134,7 @@ class CalibrationService:
                                 stderr=subprocess.DEVNULL,
                             )
                             spawned = True
+                            cls._last_spawn_at = monotonic()
                         except Exception as exc:
                             logger.warning("Failed to spawn retrain subprocess: %s", exc)
         except Exception as exc:
