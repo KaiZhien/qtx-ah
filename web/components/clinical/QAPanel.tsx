@@ -56,7 +56,7 @@ export function QAPanel({ sn, onAnswer, onPdfDownload }: QAPanelProps) {
         onClick={() => handleAsk(PREPARE_SESSION_PROMPT)}
         disabled={loading}
       >
-        Prepare session
+        {loading ? "Preparing..." : "Prepare session"}
       </button>
 
       <textarea
