@@ -96,7 +96,7 @@ export interface CalibrationReport {
 }
 
 export async function fetchCalibration(): Promise<CalibrationReport | null> {
-  const res = await fetch("/api/calibration/report", {
+  const res = await fetch("/api/calibration", {
     headers: apiHeaders(),
   });
   if (!res.ok) return null;
