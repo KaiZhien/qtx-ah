@@ -1,9 +1,9 @@
 # QTX-AH Handoff — Clinical Intelligence System
 
-**Date:** 2026-06-02
+**Date:** 2026-06-04
 **Branch:** main
-**Commit:** 0b195c8
-**Status:** Sub-projects 1–4 complete. All 329 tests passing. PDF download verified end-to-end.
+**Commit:** 7b86434
+**Status:** Sub-projects 1–4 complete. RAISE eldercare dataset ingested (162 patients). Dual-loop ML+AI integration live. 423 tests passing.
 
 ---
 
@@ -18,7 +18,7 @@ Replaced the static `data/processed/dashboard_data.parquet` with PostgreSQL (+ p
 Per-patient longitudinal model. Each new clinic visit creates a new session row. Trend signals computed automatically on each new session entry (e.g. "gait speed improving", "TUG plateaued for 3 sessions"). Clinician observations stored alongside measurements.
 
 ### Sub-project 3 — AI Reasoning Layer ✅ COMPLETE
-Claude Sonnet 4.6 + Voyage-3-lite embeddings. Reasons **purely over THIS patient's own data** — no cross-patient comparison (clinically inappropriate). Two modes: (a) proactive session insights, (b) clinician Q&A with semantic retrieval of past insights. BAA with Anthropic required before sending patient data in production.
+Claude Sonnet 4.6 + Voyage-3-lite embeddings (512 dimensions). Reasons **purely over THIS patient's own data** — no cross-patient comparison (clinically inappropriate). Two modes: (a) proactive session insights, (b) clinician Q&A with semantic retrieval of past insights. BAA with Anthropic required before sending patient data in production.
 
 ### Sub-project 4 — Frontend + PDF Reporting ✅ COMPLETE
 Timeline tab, AI tab (Q&A + insight history), MetricChart, InsightCard, QAPanel all wired to live API. PDF export (`GET /api/patient/{sn}/report.pdf`) verified end-to-end.
@@ -76,7 +76,7 @@ Both keys must match exactly.
 
 ### Seed the database and run migrations (one-time after fresh setup)
 ```bash
-# 1. Seed patient data
+# 1. Seed QTX patient data (1,715 patients)
 DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
 PYTHONPATH=src .venv/bin/python3.14 scripts/11_seed_database.py
 ```
@@ -84,18 +84,32 @@ Expected: `Inserted: 1,715 / Errors: 0`
 
 ```bash
 # 2. Add notes column (migration 12)
-DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
 PYTHONPATH=api .venv/bin/python3.14 scripts/12_migrate_add_notes_column.py
-```
 
-```bash
 # 3. Add Voyage embedding column + IVFFlat index to patient_insights (migration 13)
 #    Required for AI Q&A retrieval and PDF report generation.
 #    Skipping this causes 500 errors on GET /api/patient/{sn}/report.pdf.
-DATABASE_URL=postgresql+psycopg2://qtx:secret@localhost:5432/qtxah \
 PYTHONPATH=api .venv/bin/python3.14 scripts/13_migrate_add_embeddings.py
 ```
 Expected: `Migration 13 complete.`
+
+```bash
+# 4. Add Tandem stand columns — pre_tandem_s on patients, post_tandem_s on sessions (migration 15)
+PYTHONPATH=src:api .venv/bin/python3.14 scripts/15_migrate_add_tandem.py
+
+# 5. Ingest RAISE eldercare dataset — 162 patients across 3 centres (script 16)
+#    Source file: 'Raise combined data (4 centres).xlsx'
+#    Patients land in DB with ingested_from = 'Raise combined data (4 centres).xlsx'
+PYTHONPATH=src:api .venv/bin/python3.14 scripts/16_ingest_raise_data.py
+```
+Expected: `Ingested 162 rows, 0 errors`
+
+```bash
+# 6. Add session_predictions table (migration 19)
+#    Required for dual-loop ML+AI integration (PredictionService writes here on every session).
+PYTHONPATH=src:api .venv/bin/python3.14 scripts/19_migrate_add_session_predictions.py
+```
+Expected: `Migration 19 complete.`
 
 ### Run everything
 ```bash
@@ -110,7 +124,7 @@ make dev   # starts API (port 8000) + Next.js (port 3000) concurrently
 
 **Test command:**
 ```bash
-PYTHONPATH=src .venv/bin/pytest tests/ api/test_api.py -v
+PYTHONPATH=src:api .venv/bin/pytest tests/ -v
 ```
 
 **Import convention (critical):** All `api/` files use bare imports (`from db import get_db`). `api/` has no `__init__.py`. All test files that exercise API code must add `api/` to `sys.path`.
@@ -122,7 +136,8 @@ api/
   deps.py                  — ML model loading, _db_ready flag
   main.py                  — FastAPI app, lifespan, dotenv load, all routers
   models/
-    clinical.py            — Patient, Session, PatientCondition ORM models
+    clinical.py            — Patient, Session, PatientCondition, PatientInsight,
+                             SessionPrediction ORM models
     wearable.py            — WearableEnrollment, WearableActivity, etc.
   routers/
     patients.py            — GET /api/patients, GET /api/patient/{sn}
@@ -131,11 +146,17 @@ api/
     wearable.py            — wearable enrollment + features
     import_data.py         — POST /api/import/seed, /import/file
     webhooks.py            — POST /webhooks/terra
-    sessions.py            — patient session management
+    sessions.py            — POST /api/patient/{sn}/session (runs PredictionService +
+                             InsightService + RetrainService on every new session)
     ask.py                 — POST /api/patient/{sn}/ask (AI Q&A)
     report.py              — GET /api/patient/{sn}/report.pdf (PDF export)
+    admin.py               — POST /api/admin/reload-models (hot-swap model files)
   services/
     ingest.py              — IngestPipeline, IngestSummary, RowError
+    insight.py             — InsightService (Claude Sonnet 4.6 + Voyage RAG)
+    voyage.py              — VoyageEmbedder (voyage-3-lite, 512 dims, 5s timeout)
+    prediction.py          — PredictionService (runs all 4 models, saves SessionPrediction row)
+    retrain.py             — RetrainService.check_and_trigger() (threshold-based background spawn)
     terra.py               — Terra API client
     wearable_features.py   — rolling wearable feature computation
     report.py              — WeasyPrint PDF generation (requires libpango)
@@ -146,37 +167,31 @@ web/
     globals.css            — design system tokens + .btn:disabled style
     layout.tsx / page.tsx
   components/
-    fall-risk/
-      FallRiskForm.tsx     — self-report form with step1Valid() gate
-      FallRiskResults.tsx  — risk score + factors + CTA panel
-    pages/
-      FallRiskPage.tsx     — shimmer skeleton loading state + results layout
-      OverviewPage.tsx
-      CohortsPage.tsx
-      ClinicalPage.tsx
-    clinical/
-      InsightCard.tsx      — AI insight display card (Sub-project 3/4)
-      MetricChart.tsx      — longitudinal metric sparkline
-      QAPanel.tsx          — clinician Q&A interface
-      TimelineTab.tsx      — per-patient session timeline
+    fall-risk/             — FallRiskForm, FallRiskResults
+    pages/                 — FallRiskPage, OverviewPage, CohortsPage, ClinicalPage
+    clinical/              — InsightCard, MetricChart, QAPanel, TimelineTab
     ui/                    — Card, Drawer, Field, KPI, Pill, Tabs, Icons
   lib/
-    api.ts                 — all fetch helpers (predictFallRisk, etc.)
-    types.ts               — shared TypeScript types
-    constants.ts
+    api.ts / types.ts / constants.ts
 scripts/
   11_seed_database.py              — seed Postgres from dashboard_data.parquet
   12_migrate_add_notes_column.py   — adds notes column to sessions
-  13_migrate_add_embeddings.py     — adds embedding vector(1024) + IVFFlat index to patient_insights
+  13_migrate_add_embeddings.py     — adds embedding vector(512) + IVFFlat index to patient_insights
+  14_eda_raise_data.py             — EDA report for RAISE dataset (informational only)
+  15_migrate_add_tandem.py         — adds pre_tandem_s (patients) + post_tandem_s (sessions)
+  16_ingest_raise_data.py          — ingests 162 RAISE patients into PostgreSQL
+  17_raise_model_evaluation.py     — covariate shift test + conditional retraining gate
+  18_scheduled_retrain.py          — background retrain job (spawned by RetrainService)
+  19_migrate_add_session_predictions.py — adds session_predictions table
 tests/
-  (existing)
   test_clinical_schema.py, test_ingest.py, test_patients_db.py,
   test_fall_risk_api.py, test_fall_risk_wearable.py, test_models.py,
-  test_dosage.py, test_wearable_*.py, test_sessions_api.py, test_ask_api.py
-  (new)
+  test_dosage.py, test_wearable_*.py, test_sessions_api.py, test_ask_api.py,
   test_import_api.py, test_middleware.py, test_orm_comprehensive.py,
   test_ingest_comprehensive.py, test_report_api.py, test_report_service.py,
-  test_trend_comprehensive.py
+  test_trend_comprehensive.py, test_voyage.py, test_insight.py,
+  test_raise_ingest.py, test_raise_evaluation.py,
+  test_prediction_service.py, test_insight_predictions.py, test_retrain_service.py
 models/
   classifier_xgb.joblib
   regression_xgb.joblib
@@ -225,6 +240,57 @@ POST /api/import/file  ──▶  qtx pipeline → IngestPipeline.upsert(df)
 
 ---
 
+## RAISE Eldercare Dataset Pipeline ✅ COMPLETE
+
+162 patients across 3 centres (METTA, LB, PH) from the BIXEPS eldercare programme, ingested via a 3-step pipeline:
+
+1. **EDA** (`scripts/14_eda_raise_data.py`) — distributions, centre comparison, data quality report. Key finding: METTA has extreme pre-TUG values (mean 36s vs ~11s at LB/PH), indicating heavy frailty severity.
+2. **Migration** (`scripts/15_migrate_add_tandem.py`) — adds `pre_tandem_s` to `patients` and `post_tandem_s` to `sessions`.
+3. **Ingestion** (`scripts/16_ingest_raise_data.py`) — creates Patient + Session rows. RAISE patients identified by `sessions.ingested_from ILIKE '%raise%'`.
+
+### Covariate shift analysis (`scripts/17_raise_model_evaluation.py`)
+
+Gates whether RAISE data can be merged with QTX for model retraining. Two gates must both pass before any retraining occurs:
+
+- **Gate 1 — AUC < 0.70**: XGBoost binary classifier trained to predict dataset origin. AUC ≥ 0.70 means populations are too distinguishable to safely merge. Current result: **AUC = 1.000 (FAIL)** — `usage_frequency = "Once weekly (BIXEPS)"` is unique to all RAISE rows, making them trivially separable.
+- **Gate 2 — Confound SHAP < 15%**: Checks that `cohort` + `usage_frequency` don't dominate SHAP importance (i.e. separation is clinical, not programmatic). Current result: **76.8% (FAIL)**.
+
+**Implication:** RAISE data cannot yet be merged with QTX for training. Both gates will pass if `usage_frequency` is normalised to match QTX values (e.g. "Once / week") and RAISE's clinical profile is diversified beyond METTA-only patients.
+
+---
+
+## Dual-Loop ML+AI Integration ✅ COMPLETE
+
+Two learning loops are now connected. Every `POST /api/patient/{sn}/session` call:
+
+1. **Runs `PredictionService`** — builds feature vectors from ORM objects, calls all 4 models (regression, classifier, dropout, fall risk + dosage), persists one `session_predictions` row.
+2. **Passes predictions to `InsightService`** — Claude's prompt now includes a `model_predictions` block:
+   ```
+   "model_predictions": {
+     "fall_risk": "HIGH (0.87) [threshold > 0.50]",
+     "predicted_composite_improvement": 0.42,
+     "responder_probability": 0.71,
+     "dropout_risk": "LOW (0.12)",
+     "dosage_recommendation": "Twice / week"
+   }
+   ```
+   Claude is instructed to flag when actual measurements diverge significantly from predictions.
+3. **Calls `RetrainService.check_and_trigger()`** — non-blocking; spawns `scripts/18_scheduled_retrain.py` as a background subprocess when `session_count - last_retrain_count >= 50` (configurable via `RETRAIN_THRESHOLD` env var).
+
+### Scheduled retrain job (`scripts/18_scheduled_retrain.py`)
+
+- Loads all QTX sessions from DB (excludes RAISE rows)
+- Retrains regression (XGBRegressor) + fall risk (XGBClassifier with proxy label) with 5-fold CV
+- Saves new models only if CV metrics hold or improve vs. `retrain_state.json` baseline
+- Calls `POST /api/admin/reload-models` (with `X-Api-Key` header) to hot-swap models in the running API
+- State persisted in `retrain_state.json` (gitignored, project root)
+
+### Admin hot-reload (`POST /api/admin/reload-models`)
+
+Calls `deps.load_all()` in place — `deps.models` is a mutable dict so no server restart required. Protected by the same `QTX_API_KEY` middleware as all other routes.
+
+---
+
 ## Sub-project 4 — Frontend + PDF Reporting (partially scaffolded)
 
 ### Fall Risk Predictor
@@ -248,12 +314,18 @@ POST /api/import/file  ──▶  qtx pipeline → IngestPipeline.upsert(df)
 - **Walking cadence in fall risk adjuster** — `wearable_cadence_avg_30d` computed but not wired into score.
 - **`POST /api/import/file` pipeline** — function signatures are illustrative; wire to actual `src/qtx/` pipeline when ready.
 - **Anthropic BAA** — required before sending real patient data to Claude in production.
-- **`datetime.utcnow()` in `api/services/trend.py`** — still emits deprecation warnings (lines 124, 132); low priority but worth cleaning up.
+- **`datetime.utcnow()` in `api/services/trend.py`** — still emits deprecation warnings (lines 124, 132); low priority.
+- **RAISE covariate shift gates currently failing** — `usage_frequency = "Once weekly (BIXEPS)"` makes RAISE rows trivially distinguishable. Fix: normalise RAISE `usage_frequency` values to match QTX taxonomy (e.g. "Once / week") before running `script 17` again.
+- **`scripts/17` shift test uses `usage_frequency` as a shift feature** — consider excluding pure programme-label columns from `SHIFT_FEATURES` so the shift test detects clinical differences only.
+- **Model calibration tracking** — `session_predictions.predicted_composite_improvement` is persisted but not yet compared against actuals. A future script could measure model drift per cohort.
+- **Admin endpoint production auth** — currently uses the same `QTX_API_KEY` as all other routes. Consider a separate `QTX_ADMIN_KEY` for the reload endpoint before production.
 
 ---
 
 ## Next Steps
 
-> "I want to design Sub-project 2 of the clinical intelligence system described in HANDOFF.md — the patient knowledge graph and trend computation layer."
+The two core learning loops are live. Likely next priorities:
 
-Use the `superpowers:brainstorming` skill at the start of the session to design before implementing.
+1. **Fix RAISE merge gates** — normalise `usage_frequency` in RAISE rows so `script 17` can complete a full covariate shift evaluation on clinical features only.
+2. **Model calibration dashboard** — query `session_predictions` vs actual `composite_improvement` to surface per-cohort prediction error over time.
+3. **Prediction visibility in the frontend** — surface `SessionPrediction` values in the patient drawer's AI tab so clinicians can see what the model predicted alongside what Claude flagged.
