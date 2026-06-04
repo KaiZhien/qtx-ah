@@ -170,11 +170,14 @@ def main() -> None:
         try:
             import os as _os
             import urllib.request
-            admin_key = _os.environ.get("QTX_ADMIN_KEY") or _os.environ.get("QTX_API_KEY", "")
-            req = urllib.request.Request(RELOAD_URL, method="POST",
-                                         headers={"X-Admin-Key": admin_key})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                print(f"  Hot-reload: {resp.read().decode()}")
+            admin_key = _os.environ.get("QTX_ADMIN_KEY", "")
+            if not admin_key:
+                print("  WARNING: QTX_ADMIN_KEY is not set — skipping hot-reload")
+            else:
+                req = urllib.request.Request(RELOAD_URL, method="POST",
+                                             headers={"X-Admin-Key": admin_key})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    print(f"  Hot-reload: {resp.read().decode()}")
         except Exception as exc:
             print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
     else:
