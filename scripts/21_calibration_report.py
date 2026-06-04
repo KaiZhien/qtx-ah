@@ -110,14 +110,20 @@ def main() -> None:
         SELECT
             p.cohort,
             sp.predicted_composite_improvement AS predicted,
-            s.composite_improvement AS actual,
+            s.composite_improvement            AS actual,
             sp.predicted_at
-        FROM session_predictions sp
-        JOIN sessions s ON s.id = sp.session_id
-        JOIN patients p ON p.id = sp.patient_id
-        WHERE sp.predicted_composite_improvement IS NOT NULL
-          AND s.composite_improvement IS NOT NULL
-          AND (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+        FROM (
+            SELECT DISTINCT ON (session_id)
+                   session_id, patient_id,
+                   predicted_composite_improvement, predicted_at
+            FROM   session_predictions
+            WHERE  predicted_composite_improvement IS NOT NULL
+            ORDER  BY session_id, predicted_at DESC
+        ) sp
+        JOIN sessions s ON s.id  = sp.session_id
+        JOIN patients p ON p.id  = sp.patient_id
+        WHERE  s.composite_improvement IS NOT NULL
+          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
     """)
 
     print("Querying session_predictions ...")
