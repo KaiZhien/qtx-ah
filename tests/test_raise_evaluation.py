@@ -71,33 +71,37 @@ def _make_shap_df(rows: list[tuple[str, float]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["feature", "mean_abs_shap"])
 
 
-def test_shap_gate_passes_when_confound_low():
+def test_shap_gate_passes_below_threshold():
+    """Test that shap_gate correctly passes when confound mass is below 15% threshold."""
     shap_df = _make_shap_df([
-        ("age", 0.60), ("pre_tug_s", 0.30), ("cohort_Pain", 0.05), ("usage_frequency_weekly", 0.05)
+        ("feature_a", 0.60), ("feature_b", 0.30), ("confound_col_variant1", 0.05), ("confound_col_variant2", 0.05)
     ])
-    passes, pct = shap_gate(shap_df, ["cohort", "usage_frequency"])
+    passes, pct = shap_gate(shap_df, ["confound_col"])
     assert passes is True
     assert abs(pct - 0.10) < 1e-9
 
 
-def test_shap_gate_fails_when_confound_high():
+def test_shap_gate_fails_above_threshold():
+    """Test that shap_gate correctly fails when confound mass exceeds 15% threshold."""
     shap_df = _make_shap_df([
-        ("age", 0.20), ("cohort_Pain", 0.50), ("usage_frequency_bixeps", 0.30)
+        ("feature_a", 0.20), ("confound_col_variant1", 0.50), ("confound_col_variant2", 0.30)
     ])
-    passes, pct = shap_gate(shap_df, ["cohort", "usage_frequency"])
+    passes, pct = shap_gate(shap_df, ["confound_col"])
     assert passes is False
     assert pct > 0.15
 
 
 def test_shap_gate_exact_feature_name_match():
-    shap_df = _make_shap_df([("cohort", 0.10), ("age", 0.90)])
-    passes, pct = shap_gate(shap_df, ["cohort"])
+    """Test that shap_gate matches exact feature names (prefix not required)."""
+    shap_df = _make_shap_df([("confound_col", 0.10), ("feature_a", 0.90)])
+    passes, pct = shap_gate(shap_df, ["confound_col"])
     assert abs(pct - 0.10) < 1e-9
 
 
 def test_shap_gate_zero_total_returns_pass():
-    shap_df = _make_shap_df([("cohort", 0.0), ("age", 0.0)])
-    passes, pct = shap_gate(shap_df, ["cohort"])
+    """Test that shap_gate passes when all SHAP values are zero."""
+    shap_df = _make_shap_df([("confound_col", 0.0), ("feature_a", 0.0)])
+    passes, pct = shap_gate(shap_df, ["confound_col"])
     assert passes is True
     assert pct == 0.0
 
@@ -113,6 +117,19 @@ def test_shap_gate_primary_indication_confound():
     passes, pct = shap_gate(shap_df, ["primary_indication"])
     assert passes is True
     assert abs(pct - 0.10) < 1e-9  # 0.07 + 0.03 = 0.10, total = 1.0, so 10%
+
+
+def test_shap_gate_primary_indication_confound_fails():
+    """Verify shap_gate fails when primary_indication_* SHAP mass exceeds 15% threshold."""
+    shap_df = _make_shap_df([
+        ("age", 0.50),
+        ("baseline_sppb", 0.20),
+        ("primary_indication_Pain", 0.15),
+        ("primary_indication_Neurological", 0.15),
+    ])
+    passes, pct = shap_gate(shap_df, ["primary_indication"])
+    assert passes is False
+    assert abs(pct - 0.30) < 1e-9  # 0.15 + 0.15 = 0.30, total = 1.0, so 30%
 
 
 # ── should_save_models ────────────────────────────────────────────────────────
