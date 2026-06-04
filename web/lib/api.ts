@@ -163,6 +163,18 @@ export async function askQuestion(
   return res.json();
 }
 
+export interface BenchmarkResult {
+  cohort_percentile: number | null;
+}
+
+export async function fetchBenchmark(sn: string): Promise<BenchmarkResult | null> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/benchmark`, {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export function downloadPatientPdf(sn: string): void {
   const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
   window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf?key=${key}`, "_blank");

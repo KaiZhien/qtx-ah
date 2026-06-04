@@ -5,6 +5,7 @@ import type { LatestPredictions } from "@/lib/api";
 
 interface PredictionChipsProps {
   predictions: LatestPredictions;
+  cohortPercentile?: number | null;
 }
 
 function pct(v: number | null): string {
@@ -63,7 +64,7 @@ const warnChip: React.CSSProperties = {
   color: "var(--ink-1)",
 };
 
-export function PredictionChips({ predictions }: PredictionChipsProps) {
+export function PredictionChips({ predictions, cohortPercentile }: PredictionChipsProps) {
   const { predicted_composite_improvement, responder_probability, dropout_probability, dosage_recommendation, predicted_at } = predictions;
 
   const dropoutHigh = dropout_probability !== null && dropout_probability > 0.5;
@@ -75,6 +76,11 @@ export function PredictionChips({ predictions }: PredictionChipsProps) {
           <span style={chipStyle}>
             <span style={labelStyle}>Predicted improvement</span>
             {signed(predicted_composite_improvement)}
+            {cohortPercentile != null && (
+              <span style={{ ...labelStyle, marginLeft: 4 }}>
+                (cohort p{cohortPercentile})
+              </span>
+            )}
           </span>
         )}
         {responder_probability !== null && (
