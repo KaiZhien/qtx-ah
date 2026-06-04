@@ -26,7 +26,13 @@ _SYSTEM_PROMPT = (
     "Reason only from the data provided. Do not compare this patient to others. "
     "Be concise and clinically relevant. Never speculate beyond what the data supports. "
     "Where model predictions are provided, reference them explicitly — flag when actual "
-    "measurements diverge significantly from what was predicted."
+    "measurements diverge significantly from what was predicted. "
+    "Clinical reference thresholds (apply when interpreting session data): "
+    "TUG MCID = 3.5 s, fall-risk flag > 12 s; "
+    "5xSTS MCID = 2.3 s; "
+    "Gait speed frailty threshold < 0.6 m/s; "
+    "VAS pain MCID = 1.5–2 points (0–10 scale); "
+    "SPPB MCID = 1 point."
 )
 
 _SESSION_SUMMARY_TEMPLATE = """\
