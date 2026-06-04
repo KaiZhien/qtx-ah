@@ -174,28 +174,43 @@ def test_sst_change_pct_present_and_correct(seeded_db):
     assert sdict["sst_change_pct"] == pytest.approx(-0.2045)
 
 
-def test_pre_normal_gs_ms_present_and_correct(seeded_db):
+def test_pre_normal_gs_present_and_correct(seeded_db):
     sdict = _get_timeline(seeded_db)["sessions"][0]
-    assert "pre_normal_gs_ms" in sdict
-    assert sdict["pre_normal_gs_ms"] == pytest.approx(850.0)
+    assert "pre_normal_gs" in sdict
+    assert sdict["pre_normal_gs"] == pytest.approx(850.0)
 
 
-def test_post_normal_gs_ms_present_and_correct(seeded_db):
+def test_post_normal_gs_present_and_correct(seeded_db):
     sdict = _get_timeline(seeded_db)["sessions"][0]
-    assert "post_normal_gs_ms" in sdict
-    assert sdict["post_normal_gs_ms"] == pytest.approx(980.0)
+    assert "post_normal_gs" in sdict
+    assert sdict["post_normal_gs"] == pytest.approx(980.0)
 
 
-def test_pre_fast_gs_ms_present_and_correct(seeded_db):
+def test_pre_fast_gs_present_and_correct(seeded_db):
     sdict = _get_timeline(seeded_db)["sessions"][0]
-    assert "pre_fast_gs_ms" in sdict
-    assert sdict["pre_fast_gs_ms"] == pytest.approx(1100.0)
+    assert "pre_fast_gs" in sdict
+    assert sdict["pre_fast_gs"] == pytest.approx(1100.0)
 
 
-def test_post_fast_gs_ms_present_and_correct(seeded_db):
+def test_post_fast_gs_present_and_correct(seeded_db):
     sdict = _get_timeline(seeded_db)["sessions"][0]
-    assert "post_fast_gs_ms" in sdict
-    assert sdict["post_fast_gs_ms"] == pytest.approx(1250.0)
+    assert "post_fast_gs" in sdict
+    assert sdict["post_fast_gs"] == pytest.approx(1250.0)
+
+
+def test_normal_gs_change_pct_present(seeded_db):
+    sdict = _get_timeline(seeded_db)["sessions"][0]
+    assert "normal_gs_change_pct" in sdict
+
+
+def test_fast_gs_change_pct_present(seeded_db):
+    sdict = _get_timeline(seeded_db)["sessions"][0]
+    assert "fast_gs_change_pct" in sdict
+
+
+def test_sppb_change_present(seeded_db):
+    sdict = _get_timeline(seeded_db)["sessions"][0]
+    assert "sppb_change" in sdict
 
 
 def test_baseline_sppb_present_and_correct(seeded_db):
@@ -211,8 +226,9 @@ def test_all_new_fields_are_floats_or_none(seeded_db):
         "pre_vas", "vas_change",
         "pre_tug_s", "tug_change_pct",
         "pre_5xsst_s", "post_5xsst_s", "sst_change_pct",
-        "pre_normal_gs_ms", "post_normal_gs_ms",
-        "pre_fast_gs_ms", "post_fast_gs_ms",
+        "pre_normal_gs", "post_normal_gs",
+        "pre_fast_gs", "post_fast_gs",
+        "normal_gs_change_pct", "fast_gs_change_pct",
     ]
     for field in numeric_fields:
         val = sdict[field]
@@ -258,8 +274,8 @@ def test_null_pre_fields_return_none_not_missing(engine):
     db.close()
 
     sdict = tl["sessions"][0]
-    for field in ("pre_vas", "pre_tug_s", "pre_5xsst_s", "pre_normal_gs_ms",
-                  "pre_fast_gs_ms", "baseline_sppb", "vas_change",
+    for field in ("pre_vas", "pre_tug_s", "pre_5xsst_s", "pre_normal_gs",
+                  "pre_fast_gs", "baseline_sppb", "vas_change",
                   "tug_change_pct", "sst_change_pct"):
         assert field in sdict, f"Field {field!r} missing from sdict"
         assert sdict[field] is None, f"Expected None for {field!r}, got {sdict[field]!r}"
