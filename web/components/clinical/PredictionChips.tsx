@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import type { LatestPredictions } from "@/lib/api";
+import type { LatestPredictions, ShapContribution } from "@/lib/api";
 
 interface PredictionChipsProps {
   predictions: LatestPredictions;
@@ -65,7 +65,7 @@ const warnChip: React.CSSProperties = {
 };
 
 export function PredictionChips({ predictions, cohortPercentile }: PredictionChipsProps) {
-  const { predicted_composite_improvement, responder_probability, dropout_probability, dosage_recommendation, predicted_at } = predictions;
+  const { predicted_composite_improvement, responder_probability, dropout_probability, dosage_recommendation, predicted_at, shap_top5 } = predictions;
 
   const dropoutHigh = dropout_probability !== null && dropout_probability > 0.5;
 
@@ -105,6 +105,21 @@ export function PredictionChips({ predictions, cohortPercentile }: PredictionChi
       {predicted_at !== null && (predicted_composite_improvement !== null || responder_probability !== null || dropout_probability !== null || !!dosage_recommendation) && (
         <div style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 4 }}>
           Updated {formatRelative(predicted_at)}
+        </div>
+      )}
+      {shap_top5 && shap_top5.length > 0 && (
+        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>
+          <div style={{ fontWeight: 500, marginBottom: 3, color: "var(--ink-4)" }}>
+            Top drivers
+          </div>
+          {shap_top5.map(({ feature, contribution }: ShapContribution) => (
+            <div key={feature} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ color: contribution >= 0 ? "var(--success, #22c55e)" : "var(--danger, #ef4444)", fontWeight: 500 }}>
+                {contribution >= 0 ? "+" : ""}{contribution.toFixed(3)}
+              </span>
+              <span style={{ color: "var(--ink-3)" }}>{feature.replace(/_/g, " ")}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

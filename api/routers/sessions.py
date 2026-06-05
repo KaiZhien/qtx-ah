@@ -283,4 +283,5 @@ def get_latest_predictions(
         "dropout_probability":             _fv(row.dropout_probability),
         "dosage_recommendation":           row.dosage_recommendation,
         "predicted_at":                    row.predicted_at.isoformat() if row.predicted_at else None,
+        "shap_top5":                       row.shap_top5,
     }

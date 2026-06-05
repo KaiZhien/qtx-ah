@@ -32,6 +32,22 @@ _HAS_COLS = [
 _DOSAGE_LABEL_MAP = {0: "Once / week", 1: "Twice / week", 2: "L+R 10 (both legs)"}
 
 
+def _compute_shap_top5(model, X: pd.DataFrame) -> list[dict] | None:
+    """Return top-5 feature contributions as [{feature, contribution}]."""
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+        shap_vals = explainer.shap_values(X)
+        if isinstance(shap_vals, list):
+            shap_vals = shap_vals[0]
+        contributions = list(zip(X.columns.tolist(), shap_vals[0].tolist()))
+        contributions.sort(key=lambda x: abs(x[1]), reverse=True)
+        return [{"feature": f, "contribution": round(c, 4)} for f, c in contributions[:5]]
+    except Exception as exc:
+        logger.warning("SHAP computation failed: %s", exc)
+        return None
+
+
 def _f(val, default: float = 0.0) -> float:
     """Safe float conversion — returns default for None."""
     return float(val) if val is not None else default
@@ -174,12 +190,14 @@ class PredictionService:
 
         try:
             reg = self._models["regression"]
-            X = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_), extra=longitudinal)
-            predictions["predicted_composite_improvement"] = float(reg.predict(X)[0])
+            X_reg = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_), extra=longitudinal)
+            predictions["predicted_composite_improvement"] = float(reg.predict(X_reg)[0])
+            predictions["shap_top5"] = _compute_shap_top5(reg, X_reg)
             model_versions["regression"] = "regression_xgb.joblib"
         except Exception as exc:
             logger.warning("Regression inference failed: %s", exc)
             predictions["predicted_composite_improvement"] = None
+            predictions["shap_top5"] = None
 
         try:
             clf = self._models["classifier"]
@@ -218,6 +236,7 @@ class PredictionService:
             dropout_probability=predictions.get("dropout_probability"),
             dosage_recommendation=predictions.get("dosage_recommendation"),
             model_versions=model_versions,
+            shap_top5=predictions.get("shap_top5"),
             predicted_at=datetime.now(timezone.utc),
         )
         self._db.add(row)
