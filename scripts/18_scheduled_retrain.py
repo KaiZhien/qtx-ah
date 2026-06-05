@@ -326,6 +326,7 @@ def main() -> None:
 
     # --- Gate and save ---
     all_metrics: dict = {}
+    any_model_saved = False
 
     if reg_result is None:
         print("  Regression retrain returned no result — insufficient data.")
@@ -336,6 +337,7 @@ def main() -> None:
             print("  Metrics held or improved — saving regression model ...")
             joblib.dump(reg_model, MODELS_DIR / "regression_xgb.joblib")
             print("  Saved: regression_xgb.joblib")
+            any_model_saved = True
             all_metrics.update(new_reg_metrics)
             calibration_baseline = _compute_calibration_baseline()
             if calibration_baseline:
@@ -344,19 +346,6 @@ def main() -> None:
                 with open(STATE_PATH, "w") as f:
                     json.dump(state, f, indent=2)
                 print(f"  Calibration baseline updated: {len(calibration_baseline)} cohorts")
-            try:
-                import os as _os
-                import urllib.request
-                admin_key = _os.environ.get("QTX_ADMIN_KEY", "")
-                if not admin_key:
-                    print("  WARNING: QTX_ADMIN_KEY is not set — skipping hot-reload")
-                else:
-                    req = urllib.request.Request(RELOAD_URL, method="POST",
-                                                 headers={"X-Admin-Key": admin_key})
-                    with urllib.request.urlopen(req, timeout=5) as resp:
-                        print(f"  Hot-reload: {resp.read().decode()}")
-            except Exception as exc:
-                print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
         else:
             print("  Regression metrics did not improve — not saving.")
             all_metrics.update(old_metrics)
@@ -369,6 +358,7 @@ def main() -> None:
             print("  Classifier AUC held or improved — saving ...")
             joblib.dump(clf_result[1], MODELS_DIR / "classifier_xgb.joblib")
             print("  Saved: classifier_xgb.joblib")
+            any_model_saved = True
         else:
             print(f"  Classifier AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
         all_metrics["classifier_auc_mean"] = auc
@@ -381,11 +371,28 @@ def main() -> None:
             print("  Dropout AUC held or improved — saving ...")
             joblib.dump(drop_result[1], MODELS_DIR / "dropout_xgb.joblib")
             print("  Saved: dropout_xgb.joblib")
+            any_model_saved = True
         else:
             print(f"  Dropout AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
         all_metrics["dropout_auc_mean"] = auc
 
     _write_state(session_count, all_metrics)
+
+    if any_model_saved:
+        try:
+            import os as _os
+            import urllib.request
+            admin_key = _os.environ.get("QTX_ADMIN_KEY", "")
+            if not admin_key:
+                print("  WARNING: QTX_ADMIN_KEY is not set — skipping hot-reload")
+            else:
+                req = urllib.request.Request(RELOAD_URL, method="POST",
+                                             headers={"X-Admin-Key": admin_key})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    print(f"  Hot-reload: {resp.read().decode()}")
+        except Exception as exc:
+            print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
+
     print("=== Retrain complete ===")
 
 

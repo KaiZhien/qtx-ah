@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pandas as pd
+import shap
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
 
@@ -31,12 +32,16 @@ _HAS_COLS = [
 ]
 _DOSAGE_LABEL_MAP = {0: "Once / week", 1: "Twice / week", 2: "L+R 10 (both legs)"}
 
+_shap_explainer_cache: dict[int, shap.TreeExplainer] = {}
+
 
 def _compute_shap_top5(model, X: pd.DataFrame) -> list[dict] | None:
     """Return top-5 feature contributions as [{feature, contribution}]."""
     try:
-        import shap
-        explainer = shap.TreeExplainer(model)
+        key = id(model)
+        if key not in _shap_explainer_cache:
+            _shap_explainer_cache[key] = shap.TreeExplainer(model)
+        explainer = _shap_explainer_cache[key]
         shap_vals = explainer.shap_values(X)
         if isinstance(shap_vals, list):
             shap_vals = shap_vals[0]

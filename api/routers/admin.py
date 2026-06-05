@@ -7,6 +7,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import deps
+from services.prediction import _shap_explainer_cache
 
 router = APIRouter()
 
@@ -25,6 +26,7 @@ def require_admin_key(request: Request) -> None:
 def reload_models() -> dict:
     """Reload all ML model files from disk into the running process."""
     deps.load_all()
+    _shap_explainer_cache.clear()
     loaded = [
         "classifier_xgb.joblib", "regression_xgb.joblib",
         "dropout_xgb.joblib", "dosage_frequency.joblib",
