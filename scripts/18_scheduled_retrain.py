@@ -117,6 +117,29 @@ def _load_qtx_sessions() -> pd.DataFrame:
     return df
 
 
+def _build_training_matrix(df: pd.DataFrame, feature_names: list) -> np.ndarray:
+    """Build a numeric training matrix matching feature_names.
+
+    Handles prefix-encoded categoricals (cohort_, gender_, usage_frequency_).
+    Missing features filled with 0.0.
+    """
+    cat_cols = ["cohort", "usage_frequency", "gender"]
+    present = [c for c in cat_cols if c in df.columns]
+    if present:
+        df_enc = pd.get_dummies(df, columns=present, dtype=float)
+    else:
+        df_enc = df.copy()
+
+    rows = []
+    for feat in feature_names:
+        if feat in df_enc.columns:
+            rows.append(df_enc[feat].astype(float).fillna(0.0))
+        else:
+            rows.append(pd.Series([0.0] * len(df_enc), index=df_enc.index))
+
+    return pd.DataFrame(dict(zip(feature_names, rows))).values
+
+
 def _retrain_regression(df: pd.DataFrame):
     df_m = df[df["composite_improvement"].notna()].copy()
     if len(df_m) < 20:
@@ -137,6 +160,76 @@ def _retrain_regression(df: pd.DataFrame):
     model.fit(X, y)
     return {"rmse_mean": float(np.mean(rmse_scores)), "r2_mean": float(np.mean(r2_scores)), "n": len(df_m)}, model
 
+
+
+def _retrain_classifier(df: pd.DataFrame, existing_model):
+    """Retrain the responder classifier.
+
+    Uses existing_model.feature_names_in_ to determine feature set.
+    Returns (metrics, model) or None if insufficient data.
+    """
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.metrics import roc_auc_score
+    from sklearn.base import clone
+    from xgboost import XGBClassifier
+
+    df_m = df[df["overall_responder"].notna()].copy()
+    if len(df_m) < 20:
+        print(f"  WARNING: only {len(df_m)} rows with overall_responder — skipping classifier retrain")
+        return None
+
+    feature_names = list(existing_model.feature_names_in_)
+    X = _build_training_matrix(df_m, feature_names)
+    y = df_m["overall_responder"].astype(int).values
+
+    model = XGBClassifier(n_estimators=300, max_depth=4, learning_rate=0.05,
+                          subsample=0.8, tree_method="hist", random_state=42,
+                          n_jobs=-1, verbosity=0)
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    auc_scores = []
+    for tr, val in skf.split(X, y):
+        m = clone(model)
+        m.fit(X[tr], y[tr])
+        auc_scores.append(roc_auc_score(y[val], m.predict_proba(X[val])[:, 1]))
+
+    model.fit(X, y)
+    return {"auc_mean": float(np.mean(auc_scores)), "n": len(df_m)}, model
+
+
+def _retrain_dropout(df: pd.DataFrame, existing_model):
+    """Retrain the dropout classifier.
+
+    Uses existing_model.feature_names_in_ to determine feature set.
+    Returns (metrics, model) or None if insufficient data.
+    """
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.metrics import roc_auc_score
+    from sklearn.base import clone
+    from xgboost import XGBClassifier
+
+    df_m = df[df["is_dropout"].notna()].copy()
+    if len(df_m) < 20:
+        print(f"  WARNING: only {len(df_m)} rows with is_dropout — skipping dropout retrain")
+        return None
+
+    feature_names = list(existing_model.feature_names_in_)
+    X = _build_training_matrix(df_m, feature_names)
+    y = df_m["is_dropout"].astype(int).values
+
+    model = XGBClassifier(n_estimators=300, max_depth=4, learning_rate=0.05,
+                          subsample=0.8, tree_method="hist", random_state=42,
+                          n_jobs=-1, verbosity=0)
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    auc_scores = []
+    for tr, val in skf.split(X, y):
+        m = clone(model)
+        m.fit(X[tr], y[tr])
+        auc_scores.append(roc_auc_score(y[val], m.predict_proba(X[val])[:, 1]))
+
+    model.fit(X, y)
+    return {"auc_mean": float(np.mean(auc_scores)), "n": len(df_m)}, model
 
 
 def _read_state() -> dict:
@@ -206,45 +299,93 @@ def main() -> None:
     state = _read_state()
     old_metrics = state.get("last_metrics", {})
 
+    # --- Regression ---
     print("Retraining regression model ...")
     reg_result = _retrain_regression(df)
 
+    # --- Classifier ---
+    print("Retraining classifier model ...")
+    try:
+        # Safe: loads our own model files written by previous retrain runs in MODELS_DIR,
+        # never from user input or network sources.
+        clf_existing = joblib.load(MODELS_DIR / "classifier_xgb.joblib")
+        clf_result = _retrain_classifier(df, clf_existing)
+    except Exception as exc:
+        print(f"  WARNING: could not load classifier_xgb.joblib: {exc} — skipping classifier retrain")
+        clf_result = None
+
+    # --- Dropout ---
+    print("Retraining dropout model ...")
+    try:
+        # Safe: same rationale as above — local models/ directory, written by this script.
+        drop_existing = joblib.load(MODELS_DIR / "dropout_xgb.joblib")
+        drop_result = _retrain_dropout(df, drop_existing)
+    except Exception as exc:
+        print(f"  WARNING: could not load dropout_xgb.joblib: {exc} — skipping dropout retrain")
+        drop_result = None
+
+    # --- Gate and save ---
+    all_metrics: dict = {}
+
     if reg_result is None:
-        print("Retrain aborted — insufficient data.")
-        return
-
-    new_reg_metrics, reg_model = reg_result
-    print(f"  Regression: RMSE={new_reg_metrics['rmse_mean']:.4f}, R²={new_reg_metrics['r2_mean']:.4f}")
-
-    if _metrics_improved_or_equal(old_metrics, new_reg_metrics):
-        print("Metrics held or improved — saving model ...")
-        joblib.dump(reg_model, MODELS_DIR / "regression_xgb.joblib")
-        print("  Saved: regression_xgb.joblib")
-        _write_state(session_count, new_reg_metrics)
-        calibration_baseline = _compute_calibration_baseline()
-        if calibration_baseline:
-            state = _read_state()
-            state["calibration_baseline"] = calibration_baseline
-            with open(STATE_PATH, "w") as f:
-                json.dump(state, f, indent=2)
-            print(f"  Calibration baseline updated: {len(calibration_baseline)} cohorts")
-        try:
-            import os as _os
-            import urllib.request
-            admin_key = _os.environ.get("QTX_ADMIN_KEY", "")
-            if not admin_key:
-                print("  WARNING: QTX_ADMIN_KEY is not set — skipping hot-reload")
-            else:
-                req = urllib.request.Request(RELOAD_URL, method="POST",
-                                             headers={"X-Admin-Key": admin_key})
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    print(f"  Hot-reload: {resp.read().decode()}")
-        except Exception as exc:
-            print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
+        print("  Regression retrain returned no result — insufficient data.")
     else:
-        print("Metrics did not improve — not saving model.")
-        _write_state(session_count, old_metrics)
+        new_reg_metrics, reg_model = reg_result
+        print(f"  Regression: RMSE={new_reg_metrics['rmse_mean']:.4f}, R²={new_reg_metrics['r2_mean']:.4f}")
+        if _metrics_improved_or_equal(old_metrics, new_reg_metrics):
+            print("  Metrics held or improved — saving regression model ...")
+            joblib.dump(reg_model, MODELS_DIR / "regression_xgb.joblib")
+            print("  Saved: regression_xgb.joblib")
+            all_metrics.update(new_reg_metrics)
+            calibration_baseline = _compute_calibration_baseline()
+            if calibration_baseline:
+                state = _read_state()
+                state["calibration_baseline"] = calibration_baseline
+                with open(STATE_PATH, "w") as f:
+                    json.dump(state, f, indent=2)
+                print(f"  Calibration baseline updated: {len(calibration_baseline)} cohorts")
+            try:
+                import os as _os
+                import urllib.request
+                admin_key = _os.environ.get("QTX_ADMIN_KEY", "")
+                if not admin_key:
+                    print("  WARNING: QTX_ADMIN_KEY is not set — skipping hot-reload")
+                else:
+                    req = urllib.request.Request(RELOAD_URL, method="POST",
+                                                 headers={"X-Admin-Key": admin_key})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        print(f"  Hot-reload: {resp.read().decode()}")
+            except Exception as exc:
+                print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
+        else:
+            print("  Regression metrics did not improve — not saving.")
+            all_metrics.update(old_metrics)
 
+    if clf_result is not None:
+        auc = clf_result[0]["auc_mean"]
+        old_auc = old_metrics.get("classifier_auc_mean", 0.0)
+        print(f"  Classifier AUC={auc:.4f} (baseline={old_auc:.4f})")
+        if auc >= old_auc - 1e-6:
+            print("  Classifier AUC held or improved — saving ...")
+            joblib.dump(clf_result[1], MODELS_DIR / "classifier_xgb.joblib")
+            print("  Saved: classifier_xgb.joblib")
+        else:
+            print(f"  Classifier AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
+        all_metrics["classifier_auc_mean"] = auc
+
+    if drop_result is not None:
+        auc = drop_result[0]["auc_mean"]
+        old_auc = old_metrics.get("dropout_auc_mean", 0.0)
+        print(f"  Dropout AUC={auc:.4f} (baseline={old_auc:.4f})")
+        if auc >= old_auc - 1e-6:
+            print("  Dropout AUC held or improved — saving ...")
+            joblib.dump(drop_result[1], MODELS_DIR / "dropout_xgb.joblib")
+            print("  Saved: dropout_xgb.joblib")
+        else:
+            print(f"  Dropout AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
+        all_metrics["dropout_auc_mean"] = auc
+
+    _write_state(session_count, all_metrics)
     print("=== Retrain complete ===")
 
 
