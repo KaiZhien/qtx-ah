@@ -7,7 +7,11 @@ import uuid
 from datetime import datetime, timezone
 
 import pandas as pd
+import shap
+from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
+
+from models.clinical import Session as ClinicalSession, PatientTrend
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +32,57 @@ _HAS_COLS = [
 ]
 _DOSAGE_LABEL_MAP = {0: "Once / week", 1: "Twice / week", 2: "L+R 10 (both legs)"}
 
+_shap_explainer_cache: dict[int, shap.TreeExplainer] = {}
+
+
+def _compute_shap_top5(model, X: pd.DataFrame) -> list[dict] | None:
+    """Return top-5 feature contributions as [{feature, contribution}]."""
+    try:
+        key = id(model)
+        if key not in _shap_explainer_cache:
+            _shap_explainer_cache[key] = shap.TreeExplainer(model)
+        explainer = _shap_explainer_cache[key]
+        shap_vals = explainer.shap_values(X)
+        if isinstance(shap_vals, list):
+            shap_vals = shap_vals[0]
+        contributions = list(zip(X.columns.tolist(), shap_vals[0].tolist()))
+        contributions.sort(key=lambda x: abs(x[1]), reverse=True)
+        return [{"feature": f, "contribution": round(c, 4)} for f, c in contributions[:5]]
+    except Exception as exc:
+        logger.warning("SHAP computation failed: %s", exc)
+        return None
+
 
 def _f(val, default: float = 0.0) -> float:
     """Safe float conversion — returns default for None."""
     return float(val) if val is not None else default
 
 
-def _build_feature_vector_from_orm(patient, session, feature_names: list[str]) -> pd.DataFrame:
+def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
+    """Compute longitudinal features that require DB access."""
+    # prior_avg_composite_improvement
+    prior_avg = db.query(func.avg(ClinicalSession.composite_improvement)).filter(
+        ClinicalSession.patient_id == patient.id,
+        ClinicalSession.session_number < session.session_number,
+        ClinicalSession.composite_improvement.isnot(None),
+    ).scalar()
+
+    # trend_tug_magnitude — order by computed_at DESC for determinism (matches training query)
+    tug_trend = (
+        db.query(PatientTrend)
+        .filter(PatientTrend.patient_id == patient.id, PatientTrend.metric.ilike('%tug%'))
+        .order_by(PatientTrend.computed_at.desc())
+        .first()
+    )
+
+    return {
+        "session_number": float(session.session_number or 1),
+        "prior_avg_composite_improvement": float(prior_avg) if prior_avg is not None else 0.0,
+        "trend_tug_magnitude": float(tug_trend.magnitude) if (tug_trend and tug_trend.magnitude is not None) else 0.0,
+    }
+
+
+def _build_feature_vector_from_orm(patient, session, feature_names: list[str], extra: dict | None = None) -> pd.DataFrame:
     """Build a single-row DataFrame from ORM Patient + Session objects."""
     row: dict[str, float] = {}
 
@@ -71,6 +119,9 @@ def _build_feature_vector_from_orm(patient, session, feature_names: list[str]) -
             row[col] = 1.0 if gender == col[len("gender_"):].upper() else 0.0
         elif col.startswith("primary_indication_"):
             row[col] = 0.0
+
+    if extra:
+        row.update(extra)
 
     for feat in feature_names:
         if feat not in row:
@@ -140,18 +191,22 @@ class PredictionService:
         predictions: dict = {}
         model_versions: dict = {}
 
+        longitudinal = _get_longitudinal_features(patient, session, self._db)
+
         try:
             reg = self._models["regression"]
-            X = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_))
-            predictions["predicted_composite_improvement"] = float(reg.predict(X)[0])
+            X_reg = _build_feature_vector_from_orm(patient, session, list(reg.feature_names_in_), extra=longitudinal)
+            predictions["predicted_composite_improvement"] = float(reg.predict(X_reg)[0])
+            predictions["shap_top5"] = _compute_shap_top5(reg, X_reg)
             model_versions["regression"] = "regression_xgb.joblib"
         except Exception as exc:
             logger.warning("Regression inference failed: %s", exc)
             predictions["predicted_composite_improvement"] = None
+            predictions["shap_top5"] = None
 
         try:
             clf = self._models["classifier"]
-            X = _build_feature_vector_from_orm(patient, session, list(clf.feature_names_in_))
+            X = _build_feature_vector_from_orm(patient, session, list(clf.feature_names_in_), extra=longitudinal)
             predictions["responder_probability"] = float(clf.predict_proba(X)[0][1])
             model_versions["classifier"] = "classifier_xgb.joblib"
         except Exception as exc:
@@ -160,7 +215,7 @@ class PredictionService:
 
         try:
             drop = self._models["dropout"]
-            X = _build_feature_vector_from_orm(patient, session, list(drop.feature_names_in_))
+            X = _build_feature_vector_from_orm(patient, session, list(drop.feature_names_in_), extra=longitudinal)
             predictions["dropout_probability"] = float(drop.predict_proba(X)[0][1])
             model_versions["dropout"] = "dropout_xgb.joblib"
         except Exception as exc:
@@ -186,6 +241,7 @@ class PredictionService:
             dropout_probability=predictions.get("dropout_probability"),
             dosage_recommendation=predictions.get("dosage_recommendation"),
             model_versions=model_versions,
+            shap_top5=predictions.get("shap_top5"),
             predicted_at=datetime.now(timezone.utc),
         )
         self._db.add(row)

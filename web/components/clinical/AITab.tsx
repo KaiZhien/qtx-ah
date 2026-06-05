@@ -2,7 +2,7 @@
 
 import React from "react";
 import type { InsightRow } from "@/lib/types";
-import { fetchInsights, fetchLatestPredictions, type LatestPredictions } from "@/lib/api";
+import { fetchInsights, fetchLatestPredictions, fetchBenchmark, type LatestPredictions } from "@/lib/api";
 import { InsightCard } from "./InsightCard";
 import { QAPanel } from "./QAPanel";
 import { PredictionChips } from "./PredictionChips";
@@ -16,6 +16,7 @@ export function AITab({ sn }: AITabProps) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [predictions, setPredictions] = React.useState<LatestPredictions | null>(null);
+  const [cohortPercentile, setCohortPercentile] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     setLoading(true);
@@ -23,10 +24,12 @@ export function AITab({ sn }: AITabProps) {
     Promise.all([
       fetchInsights(sn),
       fetchLatestPredictions(sn),
+      fetchBenchmark(sn),
     ])
-      .then(([ins, preds]) => {
+      .then(([ins, preds, bench]) => {
         setInsights(ins);
         setPredictions(preds);
+        setCohortPercentile(bench?.cohort_percentile ?? null);
       })
       .catch(() => setError("Could not load insights."))
       .finally(() => setLoading(false));
@@ -44,7 +47,7 @@ export function AITab({ sn }: AITabProps) {
           <div className="filter-label" style={{ marginBottom: 8 }}>
             Model signals
           </div>
-          <PredictionChips predictions={predictions} />
+          <PredictionChips predictions={predictions} cohortPercentile={cohortPercentile} />
         </div>
       )}
 

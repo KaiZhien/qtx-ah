@@ -60,12 +60,18 @@ export async function predictDosage(intake: DosageIntake): Promise<DosageResult>
   return res.json();
 }
 
+export interface ShapContribution {
+  feature: string;
+  contribution: number;
+}
+
 export interface LatestPredictions {
   predicted_composite_improvement: number | null;
   responder_probability: number | null;
   dropout_probability: number | null;
   dosage_recommendation: string | null;
   predicted_at: string | null;
+  shap_top5: ShapContribution[] | null;
 }
 
 export async function fetchLatestPredictions(sn: string): Promise<LatestPredictions | null> {
@@ -160,6 +166,18 @@ export async function askQuestion(
     body: JSON.stringify({ question }),
   });
   if (!res.ok) throw new Error(`askQuestion: ${res.status}`);
+  return res.json();
+}
+
+export interface BenchmarkResult {
+  cohort_percentile: number | null;
+}
+
+export async function fetchBenchmark(sn: string): Promise<BenchmarkResult | null> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/benchmark`, {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) return null;
   return res.json();
 }
 
