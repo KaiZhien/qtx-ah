@@ -1,0 +1,217 @@
+"""Anomaly detection service for post-session clinical flag evaluation.
+
+AnomalyDetector evaluates four rules against the latest session data,
+trend signals, and ML predictions. When flags fire, it calls Claude to
+produce a brief clinical warning and persists the result as a
+PatientInsight row with insight_type="anomaly_warning".
+
+Stub mode: if ANTHROPIC_API_KEY is not set and flags fire, a placeholder
+string is persisted with model="stub". No exception is raised.
+
+No flags: check_and_warn returns None immediately; no DB write, no Claude call.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from sqlalchemy.orm import Session as DBSession
+
+from models.clinical import PatientInsight
+from services.insight import _SYSTEM_PROMPT
+from services.trend import TrendResult
+
+if TYPE_CHECKING:
+    from models.clinical import Patient, Session as ClinicalSession
+
+logger = logging.getLogger(__name__)
+
+_WARNING_TEMPLATE = """\
+Anomaly flags detected after session {session_number}:
+{flag_list}
+
+Session measurements: pre_tug={pre_tug_s}s, post_tug={post_tug_s}s,
+pre_vas={pre_vas}, post_vas={post_vas},
+composite_improvement={composite_improvement},
+responder_probability={responder_probability}.
+
+In 2-3 sentences, explain what these flags mean clinically and what the \
+treating physiotherapist should monitor or investigate at the next session. \
+Be specific to the flags listed above."""
+
+
+class AnomalyDetector:
+    STUB_RESPONSE = "[Anomaly detection unavailable — ANTHROPIC_API_KEY not configured]"
+    MODEL = "claude-sonnet-4-6"
+
+    def __init__(self, db: DBSession) -> None:
+        self._db = db
+        self._api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    # ------------------------------------------------------------------
+    # Pure rule evaluation — no I/O
+    # ------------------------------------------------------------------
+
+    def _detect_flags(
+        self,
+        patient: "Patient",
+        session: "ClinicalSession",
+        trends: list[TrendResult],
+        predictions: dict | None,
+    ) -> list[str]:
+        """Evaluate all four anomaly rules and return a list of flag strings.
+
+        This is a pure function: it reads arguments only and performs no I/O.
+        """
+        flags: list[str] = []
+
+        # Rule 1: metric_declining
+        for trend in trends:
+            if trend.direction == "declining":
+                flags.append(f"metric_declining:{trend.metric}")
+
+        # Rule 2: pain_worsened
+        if session.post_vas is not None and session.pre_vas is not None:
+            if float(session.post_vas) > float(session.pre_vas):
+                flags.append("pain_worsened")
+
+        # Rule 3: responder_mismatch
+        if (
+            session.composite_improvement is not None
+            and float(session.composite_improvement) < 0
+            and predictions is not None
+            and float(predictions.get("responder_probability", 0)) > 0.5
+        ):
+            flags.append("responder_mismatch")
+
+        # Rule 4: fall_risk_unregistered
+        if (
+            session.post_tug_s is not None
+            and float(session.post_tug_s) > 12.0
+            and patient.has_fall_risk is False
+        ):
+            flags.append("fall_risk_unregistered")
+
+        return flags
+
+    # ------------------------------------------------------------------
+    # Prompt construction
+    # ------------------------------------------------------------------
+
+    def _build_warning_prompt(
+        self,
+        flags: list[str],
+        session: "ClinicalSession",
+        predictions: dict | None,
+        session_number: int,
+    ) -> str:
+        """Format the Claude user message for anomaly warning generation."""
+        flag_list = "\n".join(f"- {f}" for f in flags)
+        responder_probability = (
+            predictions.get("responder_probability") if predictions else None
+        )
+        return _WARNING_TEMPLATE.format(
+            session_number=session_number,
+            flag_list=flag_list,
+            pre_tug_s=session.pre_tug_s,
+            post_tug_s=session.post_tug_s,
+            pre_vas=session.pre_vas,
+            post_vas=session.post_vas,
+            composite_improvement=session.composite_improvement,
+            responder_probability=responder_probability,
+        )
+
+    # ------------------------------------------------------------------
+    # Claude call — mirrors InsightService._call_claude exactly
+    # ------------------------------------------------------------------
+
+    def _call_claude(self, user_message: str) -> str:
+        """Call the Anthropic API and return the text response."""
+        import anthropic  # deferred so module loads without the package in stub mode
+
+        client = anthropic.Anthropic(api_key=self._api_key)
+        message = client.messages.create(
+            model=self.MODEL,
+            max_tokens=256,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return message.content[0].text
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _save_warning(
+        self,
+        patient_id: uuid.UUID,
+        content: str,
+        session_number: int,
+        model: str,
+    ) -> None:
+        """Persist a PatientInsight row with insight_type="anomaly_warning"."""
+        row = PatientInsight(
+            id=uuid.uuid4(),
+            patient_id=patient_id,
+            session_number=session_number,
+            insight_type="anomaly_warning",
+            question=None,
+            content=content,
+            model=model,
+            created_at=datetime.now(timezone.utc),
+            embedding=None,
+        )
+        self._db.add(row)
+        self._db.flush()
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def check_and_warn(
+        self,
+        patient: "Patient",
+        session: "ClinicalSession",
+        trends: list[TrendResult],
+        session_number: int,
+        predictions: dict | None,
+    ) -> str | None:
+        """Evaluate anomaly rules and, if flags fire, generate a clinical warning.
+
+        Returns:
+            The warning text (str) when flags fired and content was generated.
+            None when no flags fired — no DB write, no Claude call.
+
+        Must be called inside an open transaction — caller commits or rolls back.
+        """
+        flags = self._detect_flags(patient, session, trends, predictions)
+        if not flags:
+            return None
+
+        # Stub mode: persist placeholder and return without calling Claude
+        if not self._api_key:
+            self._save_warning(
+                patient_id=patient.id,
+                content=self.STUB_RESPONSE,
+                session_number=session_number,
+                model="stub",
+            )
+            return self.STUB_RESPONSE
+
+        user_message = self._build_warning_prompt(flags, session, predictions, session_number)
+        try:
+            content = self._call_claude(user_message)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+
+        self._save_warning(
+            patient_id=patient.id,
+            content=content,
+            session_number=session_number,
+            model=self.MODEL,
+        )
+        return content
