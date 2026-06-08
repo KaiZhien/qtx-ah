@@ -6,6 +6,14 @@ A reproducible, config-driven Python pipeline for analysing rehabilitation outco
 
 ---
 
+## Security
+
+All secrets (API keys, database credentials) are gitignored via `.env` — never committed. Copy `.env.example` to `.env` and fill in real values. A pre-commit hook at `.git/hooks/pre-commit` blocks accidental commits of `.env` files and Anthropic key patterns; re-install it after each fresh clone.
+
+**Before granting external access:** run BFG Repo Cleaner or `git filter-branch` to confirm no secrets exist in git history. See `HANDOFF.md → Environment files` for the full warning and instructions.
+
+---
+
 ## Current Results (v0.2.0, Approach B — iterative imputation + XGBoost)
 
 > Numbers from a full `make model` run on the 2024 AH dataset with 46-feature matrix and iterative MICE imputation. Both GBM and XGBoost estimators are trained; XGBoost is the recommended estimator. Update this section after retraining on new data.
