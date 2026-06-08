@@ -79,4 +79,4 @@ def get_benchmark(sn: str, db: DBSession = Depends(get_db)) -> dict:
         pf = float(p)
         benchmarks.append({"metric": key, "patient_value": float(v), "percentile": pf,
             "percentile_display": _ordinal(int(round(pf * 100))), "n_compared": int(m.get(n_col) or 0), "higher_is_better": higher})
-    return {"cohort": m["cohort"], "cohort_n": int(m["cohort_n"]), "cohort_percentile": cohort_percentile, "benchmarks": benchmarks}
+    return {"patient_sn": sn, "cohort": m["cohort"], "cohort_n": int(m["cohort_n"]), "cohort_percentile": cohort_percentile, "benchmarks": benchmarks}
