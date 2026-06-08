@@ -261,3 +261,76 @@ def test_ask_returns_502_when_claude_api_fails(client, monkeypatch):
         json={"question": "will this 502?"},
     )
     assert resp.status_code == 502
+
+
+# ── POST /api/patient/{sn}/prepare_session ────────────────────────────────────
+
+def test_prepare_session_returns_200_with_brief(client):
+    """First call returns 200 with brief and cached: false in stub mode."""
+    from services.insight import InsightService
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/prepare_session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "brief" in data
+    assert "cached" in data
+    assert "created_at" in data
+    assert data["brief"] == InsightService.STUB_RESPONSE
+    assert data["cached"] is False
+
+
+def test_prepare_session_second_call_returns_cached(client):
+    """Second call (same session_number) returns cached: true without regenerating."""
+    from unittest.mock import MagicMock, patch
+
+    # First call to seed the cache
+    client.post(f"/api/patient/{_PATIENT_SN}/prepare_session")
+
+    call_count = 0
+
+    def counting_generate(self, timeline, patient_id, session_number):
+        nonlocal call_count
+        call_count += 1
+        return "generated brief"
+
+    from services import insight as insight_mod
+    with patch.object(insight_mod.InsightService, "generate_pre_session_brief", counting_generate):
+        resp = client.post(f"/api/patient/{_PATIENT_SN}/prepare_session")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cached"] is True
+    assert call_count == 0
+
+
+def test_prepare_session_force_bypasses_cache(client, monkeypatch):
+    """?force=true skips cache and calls InsightService again."""
+    call_count = 0
+
+    original_generate = None
+
+    from services.insight import InsightService
+
+    original_generate = InsightService.generate_pre_session_brief
+
+    def counting_generate(self, timeline, patient_id, session_number):
+        nonlocal call_count
+        call_count += 1
+        return self.STUB_RESPONSE
+
+    monkeypatch.setattr(InsightService, "generate_pre_session_brief", counting_generate)
+
+    # Seed cache first (this uses the monkeypatched version too, but that's fine)
+    client.post(f"/api/patient/{_PATIENT_SN}/prepare_session")
+    count_after_first = call_count
+
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/prepare_session?force=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cached"] is False
+    assert call_count > count_after_first
+
+
+def test_prepare_session_unknown_patient_returns_404(client):
+    """Unknown patient SN returns 404."""
+    resp = client.post("/api/patient/UNKNOWN_99/prepare_session")
+    assert resp.status_code == 404

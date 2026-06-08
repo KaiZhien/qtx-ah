@@ -6,7 +6,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
@@ -20,6 +20,7 @@ from services.insight import InsightService
 from services.prediction import PredictionService
 from services.retrain import RetrainService
 from services.calibration import CalibrationService
+from services.wearable_features import get_patient_features as _get_wearable_features
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
 def create_session(
     sn: str,
     payload: NewSessionRequest,
+    background_tasks: BackgroundTasks,
     db: DBSession = Depends(get_db),
 ) -> dict:
     """Create a new session for an existing patient.
@@ -220,11 +222,11 @@ def create_session(
     except Exception as exc:
         logger.warning("Anomaly detection failed: %s", exc)
 
-    # Non-blocking retrain trigger — spawns background subprocess when threshold met
+    # Non-blocking retrain trigger — queues background task when threshold met
     try:
         session_count = db.query(func.count(ClinicalSession.id)).scalar() or 0
-        RetrainService().check_and_trigger(session_count)
-        CalibrationService.check_and_trigger(db)
+        RetrainService().check_and_trigger(session_count, background_tasks)
+        CalibrationService.check_and_trigger(db, background_tasks)
     except Exception as exc:
         logger.warning("Retrain trigger failed: %s", exc)
 
