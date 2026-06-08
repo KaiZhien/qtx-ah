@@ -19,6 +19,9 @@ export function AITab({ sn }: AITabProps) {
   const [predictions, setPredictions] = React.useState<LatestPredictions | null>(null);
   const [cohortPercentile, setCohortPercentile] = React.useState<number | null>(null);
   const [anomaly, setAnomaly] = React.useState<AnomalyWarning | null>(null);
+  const [plan, setPlan] = React.useState<TreatmentPlanResponse | null>(null);
+  const [planLoading, setPlanLoading] = React.useState(false);
+  const [planError, setPlanError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setLoading(true);

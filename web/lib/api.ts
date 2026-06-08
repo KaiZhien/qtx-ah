@@ -1,5 +1,6 @@
 import type {
   Filters,
+  BenchmarkResult,
   Patient,
   PatientProfile,
   PredictionResult,
@@ -203,6 +204,7 @@ export interface BenchmarkResult {
   cohort_percentile: number | null;
 }
 
+
 export async function fetchBenchmark(sn: string): Promise<BenchmarkResult | null> {
   const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/benchmark`, {
     headers: apiHeaders(),
@@ -289,5 +291,18 @@ export async function reloadModels(adminKey: string): Promise<{ status: string; 
     headers: { "X-Admin-Key": adminKey },
   });
   if (!res.ok) throw new Error(`reloadModels: ${res.status}`);
+  return res.json();
+}
+
+export async function suggestPlan(
+  sn: string,
+  body: PlanRequest = {}
+): Promise<TreatmentPlanResponse> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/suggest_plan`, {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`suggestPlan: ${res.status}`);
   return res.json();
 }
