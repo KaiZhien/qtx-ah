@@ -20,4 +20,7 @@ web/tsconfig.tsbuildinfo
 .superpowers/
 docs/superpowers/
 HANDOFF.md
+IMPLEMENTATION.md
+PROMPTS.md
+PROMPTS.pdf
 **/retrain_state.json
