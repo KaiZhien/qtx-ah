@@ -271,3 +271,19 @@ export interface TreatmentPlanResponse {
   plan: string;
   generated_at: string;
 }
+
+export type BenchmarkMetric = {
+  metric: string;
+  patient_value: number;
+  percentile: number;
+  percentile_display: string;
+  n_compared: number;
+  higher_is_better: boolean;
+};
+
+export type BenchmarkResult = {
+  cohort: string | null;
+  cohort_n: number;
+  cohort_percentile: number | null;
+  benchmarks: BenchmarkMetric[];
+};

@@ -1,5 +1,6 @@
 import type {
   Filters,
+  BenchmarkResult,
   Patient,
   PatientProfile,
   PredictionResult,
@@ -171,10 +172,6 @@ export async function askQuestion(
   });
   if (!res.ok) throw new Error(`askQuestion: ${res.status}`);
   return res.json();
-}
-
-export interface BenchmarkResult {
-  cohort_percentile: number | null;
 }
 
 export async function fetchBenchmark(sn: string): Promise<BenchmarkResult | null> {
