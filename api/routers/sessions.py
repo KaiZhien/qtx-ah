@@ -207,7 +207,17 @@ def create_session(
         predictions = PredictionService(db, deps.models).run(patient, session)
         db.commit()  # commit SessionPrediction row
 
+    wearable_feats: dict = {}
+    try:
+        wearable_feats = _get_wearable_features(str(patient.id), db)
+    except Exception as exc:
+        logger.warning("Wearable feature fetch failed: %s", exc)
+
     timeline = _build_timeline_dict(patient, db)
+    timeline["wearable"] = {
+        "cadence_avg_30d": wearable_feats.get("wearable_cadence_avg_30d"),
+        "steps_avg_7d": wearable_feats.get("wearable_steps_30d_avg"),
+    }
     insight_text = InsightService(db).generate_session_insight(
         timeline, patient.id, new_sn, predictions=predictions
     )
@@ -216,7 +226,8 @@ def create_session(
     # Step 3 — anomaly detection (non-blocking)
     try:
         AnomalyDetector(db).check_and_warn(
-            patient, session, trends, predictions, new_sn
+            patient, session, trends, predictions, new_sn,
+            wearable_feats=wearable_feats,
         )
         db.commit()
     except Exception as exc:
