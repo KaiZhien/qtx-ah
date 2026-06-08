@@ -125,3 +125,62 @@ def test_admin_key_env_var_unset_returns_503(monkeypatch):
         resp = c.post("/api/admin/reload-models")
     assert resp.status_code == 503
     assert "QTX_ADMIN_KEY" in resp.json()["detail"]
+
+
+def test_model_status_no_key_returns_401(monkeypatch):
+    """No X-Admin-Key → 401."""
+    monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
+    with _make_client() as c:
+        resp = c.get("/api/admin/model_status")
+    assert resp.status_code == 401
+
+
+def test_model_status_wrong_key_returns_401(monkeypatch):
+    """Wrong X-Admin-Key → 401."""
+    monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
+    with _make_client() as c:
+        resp = c.get("/api/admin/model_status", headers={"X-Admin-Key": "wrong"})
+    assert resp.status_code == 401
+
+
+def test_model_status_correct_key_returns_200(monkeypatch, tmp_path):
+    """Correct key → 200 with models + retrain_state + db_ready keys."""
+    import json
+    monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
+    state = {
+        "last_retrain_at": "2026-06-03T05:05:51Z",
+        "last_retrain_session_count": 100,
+        "last_metrics": {"rmse_mean": 0.7, "r2_mean": 0.02, "n": 100, "auc_roc_mean": 0.89},
+    }
+    state_file = tmp_path / "retrain_state.json"
+    state_file.write_text(json.dumps(state))
+    import routers.admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_RETRAIN_STATE_PATH", state_file)
+    monkeypatch.setattr(admin_mod, "_MODELS_DIR", tmp_path)
+    with _make_client() as c:
+        resp = c.get("/api/admin/model_status", headers={"X-Admin-Key": _TEST_ADMIN_KEY})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "models" in body
+    assert "retrain_state" in body
+    assert "db_ready" in body
+
+
+def test_trigger_retrain_no_key_returns_401(monkeypatch):
+    """No X-Admin-Key → 401."""
+    monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
+    with _make_client() as c:
+        resp = c.post("/api/admin/trigger_retrain")
+    assert resp.status_code == 401
+
+
+def test_trigger_retrain_correct_key_returns_200(monkeypatch):
+    """Correct key → 200 with retrain_scheduled status."""
+    monkeypatch.setenv("QTX_ADMIN_KEY", _TEST_ADMIN_KEY)
+    with _make_client() as c:
+        resp = c.post(
+            "/api/admin/trigger_retrain",
+            headers={"X-Admin-Key": _TEST_ADMIN_KEY},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "retrain_scheduled"
