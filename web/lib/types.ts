@@ -255,3 +255,9 @@ export type InsightRow = {
   model: string;
   created_at: string;
 };
+
+export interface AnomalyWarning {
+  session_number: number;
+  content: string;
+  created_at: string;
+}

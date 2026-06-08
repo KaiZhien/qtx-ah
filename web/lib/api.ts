@@ -10,6 +10,7 @@ import type {
   WearableFeatures,
   TimelineResponse,
   InsightRow,
+  AnomalyWarning,
 } from "./types";
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
@@ -179,6 +180,17 @@ export async function fetchBenchmark(sn: string): Promise<BenchmarkResult | null
   });
   if (!res.ok) return null;
   return res.json();
+}
+
+export async function fetchLatestAnomaly(sn: string): Promise<AnomalyWarning | null> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/anomalies/latest`, {
+    headers: apiHeaders(),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data) return null;
+  return data as AnomalyWarning;
 }
 
 export function downloadPatientPdf(sn: string): void {
