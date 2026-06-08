@@ -2,7 +2,11 @@ data/inputs/
 data/processed/
 data/audit/
 data/wearable.db
-models/*.joblib
+# Keep XGBoost + dosage models (required at startup, small enough to commit)
+# Ignore large GBM models (~130MB each)
+models/classifier_gbm.joblib
+models/regression_gbm.joblib
+models/dropout_gbm.joblib
 reports/
 __pycache__/
 *.pyc
