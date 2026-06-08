@@ -207,6 +207,17 @@ def create_session(
     )
     db.commit()  # commit PatientInsight row
 
+    # Step 3 — anomaly detection (non-blocking)
+    try:
+        from services.anomaly import AnomalyDetector
+        AnomalyDetector(db).check_and_warn(
+            patient, session, trends, predictions, new_sn
+        )
+        db.commit()
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Anomaly detection failed: %s", exc)
+
     # Non-blocking retrain trigger — spawns background subprocess when threshold met
     try:
         session_count = db.query(func.count(ClinicalSession.id)).scalar() or 0
