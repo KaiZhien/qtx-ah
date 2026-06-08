@@ -25,7 +25,6 @@ if str(_SRC) not in sys.path:
 
 
 def _run_upsert(df: pd.DataFrame, db: Session, source: str) -> dict:
-    """Run IngestPipeline and return a JSON-serialisable summary dict."""
     pipeline = IngestPipeline(db, source_filename=source)
     try:
         summary = pipeline.upsert(df)
@@ -45,11 +44,6 @@ def _run_upsert(df: pd.DataFrame, db: Session, source: str) -> dict:
 
 @router.post("/import/seed")
 def seed_from_parquet(db: Session = Depends(get_db)) -> dict:
-    """Seed the database from the local dashboard_data.parquet.
-
-    Safe to call multiple times (upserts). Intended for initial migration
-    and disaster-recovery re-seeding. Protected by X-Api-Key middleware.
-    """
     if not _PARQUET_PATH.exists():
         raise HTTPException(
             status_code=404,
@@ -64,7 +58,7 @@ async def import_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Accept a CSV or Excel file upload and ingest it into the database.
+    """Accept a CSV or Excel file upload and run it through the qtx pipeline.
 
     The file is written to a temp path, run through the src/qtx processing
     pipeline (load_raw -> normalise -> classify -> change_scores -> composite ->
