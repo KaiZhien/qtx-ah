@@ -104,9 +104,9 @@ def test_config_classifier_has_46_features():
     assert len(cfg["classifier_responder"]["features"]) == 46
 
 
-def test_config_regression_has_46_features():
+def test_config_regression_has_49_features():
     cfg = get_models_config()
-    assert len(cfg["regression_composite"]["features"]) == 46
+    assert len(cfg["regression_composite"]["features"]) == 49
 
 
 def test_config_dropout_has_46_features():

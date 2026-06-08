@@ -21,8 +21,26 @@ deps.load_all = lambda: None
 from main import app
 deps.load_all = _orig
 import contextlib
+import pytest
 from fastapi.testclient import TestClient
 from db import get_db
+
+
+@pytest.fixture(autouse=True)
+def _restore_api_key():
+    """Ensure QTX_API_KEY and get_db override are present for each test.
+
+    test_import_api.py clears both in its module-scoped fixture teardown;
+    this autouse fixture restores them before each benchmark test runs.
+    """
+    prev = os.environ.get("QTX_API_KEY")
+    os.environ["QTX_API_KEY"] = _KEY
+    yield
+    if prev is None:
+        os.environ.pop("QTX_API_KEY", None)
+    else:
+        os.environ["QTX_API_KEY"] = prev
+
 
 @contextlib.contextmanager
 def _client():
