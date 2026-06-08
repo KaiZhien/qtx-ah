@@ -48,6 +48,38 @@ class CalibrationService:
     _last_spawn_at: float | None = None
     _SPAWN_COOLDOWN_SECONDS: int = 3600
 
+    _SQL_CLASSIFIER_AUC = text("""
+        SELECT
+            sp.responder_probability,
+            s.overall_responder
+        FROM (
+            SELECT DISTINCT ON (session_id)
+                   session_id, responder_probability
+            FROM   session_predictions
+            WHERE  responder_probability IS NOT NULL
+            ORDER  BY session_id, predicted_at DESC
+        ) sp
+        JOIN sessions s ON s.id = sp.session_id
+        WHERE  s.overall_responder IS NOT NULL
+          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+    """)
+
+    _SQL_DROPOUT_AUC = text("""
+        SELECT
+            sp.dropout_probability,
+            s.is_dropout
+        FROM (
+            SELECT DISTINCT ON (session_id)
+                   session_id, dropout_probability
+            FROM   session_predictions
+            WHERE  dropout_probability IS NOT NULL
+            ORDER  BY session_id, predicted_at DESC
+        ) sp
+        JOIN sessions s ON s.id = sp.session_id
+        WHERE  s.is_dropout IS NOT NULL
+          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+    """)
+
     @classmethod
     def _read_state(cls) -> dict:
         if not _STATE_PATH.exists():
@@ -59,11 +91,7 @@ class CalibrationService:
 
     @classmethod
     def compute_cohort_metrics(cls, db) -> dict[str, dict]:
-        """Query session_predictions vs actuals, return per-cohort metrics.
-
-        Returns {cohort: {"mae": float, "n": int, "bias": float}} for cohorts
-        with n >= CALIBRATION_MIN_COHORT_N. Result is cached for _CACHE_TTL_SECONDS.
-        """
+        """Query session_predictions vs actuals, return per-cohort metrics."""
         min_n = int(os.environ.get("CALIBRATION_MIN_COHORT_N", "20"))
 
         now = monotonic()
@@ -133,6 +161,7 @@ class CalibrationService:
             logger.warning("classifier roc_auc_score failed: %s", exc)
             return None
 
+
     @classmethod
     def _compute_current_dropout_auc(cls, db) -> float | None:
         rows = db.execute(cls._SQL_DROPOUT_AUC).fetchall()
@@ -155,7 +184,7 @@ class CalibrationService:
         try:
             now = monotonic()
             if cls._last_spawn_at is not None and (now - cls._last_spawn_at) < cls._SPAWN_COOLDOWN_SECONDS:
-                return  # already spawned recently, skip
+                return
 
             metrics = cls.compute_cohort_metrics(db)
             state = cls._read_state()
@@ -250,8 +279,8 @@ class CalibrationService:
         current_classifier_auc = cls._compute_current_classifier_auc(db)
         current_dropout_auc = cls._compute_current_dropout_auc(db)
 
-        def _auc_row(model: str, baseline: float | None, current: float | None, n: int) -> dict:
-            if baseline is None:
+        def _auc_row(model: str, bl: float | None, current: float | None, n: int) -> dict:
+            if bl is None:
                 return {
                     "model": model,
                     "baseline_auc": None,
@@ -263,25 +292,25 @@ class CalibrationService:
             if current is None:
                 return {
                     "model": model,
-                    "baseline_auc": round(baseline, 4),
+                    "baseline_auc": round(bl, 4),
                     "current_auc": None,
                     "drift_pct": None,
                     "status": "INSUFFICIENT_DATA",
                     "n": n,
                 }
-            drift_pct = (current - baseline) / baseline * 100
+            drift_pct = (current - bl) / bl * 100
             if drift_pct > -5.0:
-                status = "OK"
+                auc_status = "OK"
             elif drift_pct > -10.0:
-                status = "WARNING"
+                auc_status = "WARNING"
             else:
-                status = "ALERT"
+                auc_status = "ALERT"
             return {
                 "model": model,
-                "baseline_auc": round(baseline, 4),
+                "baseline_auc": round(bl, 4),
                 "current_auc": round(current, 4),
                 "drift_pct": round(drift_pct, 2),
-                "status": status,
+                "status": auc_status,
                 "n": n,
             }
 

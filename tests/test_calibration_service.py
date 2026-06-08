@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -30,9 +31,8 @@ def test_get_report_no_baseline(tmp_path):
         "pediatric": {"mae": 7.0, "n": 25, "bias": -0.5},
     }
     db = MagicMock()
-
     state_file = tmp_path / "retrain_state.json"
-    state_file.write_text(json.dumps({}))  # no calibration_baseline key
+    state_file.write_text(json.dumps({}))
 
     with patch.object(CalibrationService, "compute_cohort_metrics", return_value=metrics), \
          patch("services.calibration._STATE_PATH", state_file):
@@ -46,10 +46,9 @@ def test_get_report_no_baseline(tmp_path):
 
 
 def test_get_report_ok_status(tmp_path):
-    """Drift < 15% → status is OK."""
+    """Drift < 15% -> status is OK."""
     metrics = {"adult": {"mae": 5.5, "n": 30, "bias": 0.2}}
     db = MagicMock()
-    # baseline_mae=5.0 → drift_pct = (5.5-5.0)/5.0*100 = 10.0 < 15 → OK
     state_file = tmp_path / "retrain_state.json"
     state_file.write_text(json.dumps({"calibration_baseline": {"adult": 5.0}}))
 
@@ -64,10 +63,9 @@ def test_get_report_ok_status(tmp_path):
 
 
 def test_get_report_warning_status(tmp_path):
-    """Drift 15-30% → status is WARNING."""
+    """Drift 15-30% -> status is WARNING."""
     metrics = {"adult": {"mae": 6.0, "n": 30, "bias": 0.5}}
     db = MagicMock()
-    # baseline_mae=5.0 → drift_pct = (6.0-5.0)/5.0*100 = 20.0 → WARNING
     state_file = tmp_path / "retrain_state.json"
     state_file.write_text(json.dumps({"calibration_baseline": {"adult": 5.0}}))
 
@@ -81,10 +79,9 @@ def test_get_report_warning_status(tmp_path):
 
 
 def test_get_report_alert_status(tmp_path):
-    """Drift >= 30% → status is ALERT."""
+    """Drift >= 30% -> status is ALERT."""
     metrics = {"adult": {"mae": 7.0, "n": 30, "bias": 1.2}}
     db = MagicMock()
-    # baseline_mae=5.0 → drift_pct = (7.0-5.0)/5.0*100 = 40.0 → ALERT
     state_file = tmp_path / "retrain_state.json"
     state_file.write_text(json.dumps({"calibration_baseline": {"adult": 5.0}}))
 
@@ -182,10 +179,9 @@ def test_spawn_retrain_subprocess_no_error_on_zero_exit(caplog):
 # ── boundary tests ────────────────────────────────────────────────────────────
 
 def test_get_report_warning_at_boundary(tmp_path):
-    """Exactly 15% drift → status is WARNING (not OK)."""
+    """Exactly 15% drift -> status is WARNING (not OK)."""
     metrics = {"adult": {"mae": 5.75, "n": 30, "bias": 0.3}}
     db = MagicMock()
-    # baseline_mae=5.0 → drift_pct = (5.75-5.0)/5.0*100 = 15.0 → WARNING
     state_file = tmp_path / "retrain_state.json"
     state_file.write_text(json.dumps({"calibration_baseline": {"adult": 5.0}}))
 
@@ -199,10 +195,9 @@ def test_get_report_warning_at_boundary(tmp_path):
 
 
 def test_get_report_alert_at_boundary(tmp_path):
-    """Exactly 30% drift → status is ALERT (not WARNING)."""
+    """Exactly 30% drift -> status is ALERT (not WARNING)."""
     metrics = {"adult": {"mae": 6.5, "n": 30, "bias": 0.5}}
     db = MagicMock()
-    # baseline_mae=5.0 → drift_pct = (6.5-5.0)/5.0*100 = 30.0 → ALERT
     state_file = tmp_path / "retrain_state.json"
     state_file.write_text(json.dumps({"calibration_baseline": {"adult": 5.0}}))
 

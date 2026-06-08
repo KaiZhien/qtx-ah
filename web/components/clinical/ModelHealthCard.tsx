@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { fetchCalibration, CalibrationReport, CohortCalibration } from "@/lib/api";
+import { fetchCalibration, CalibrationReport, CohortCalibration, ModelAucDrift } from "@/lib/api";
 import { formatRelative } from "@/components/clinical/PredictionChips";
 import { Card } from "@/components/ui/Card";
 
@@ -162,6 +162,51 @@ export function ModelHealthCard() {
           </tbody>
         </table>
       </div>
+      {report.model_auc_drift && report.model_auc_drift.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-3)", marginBottom: 8, letterSpacing: "0.03em", textTransform: "uppercase" }}>
+            Classifier AUC Drift
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Model</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>n</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Current AUC</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Baseline</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Drift</th>
+                <th style={{ ...thStyle }}> </th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.model_auc_drift.map((row: ModelAucDrift) => {
+                const friendlyName =
+                  row.model === "classifier" ? "Responder Classifier" : "Dropout Predictor";
+                const driftStr =
+                  row.drift_pct !== null
+                    ? `${row.drift_pct >= 0 ? "+" : ""}${row.drift_pct.toFixed(1)}%`
+                    : "—";
+                return (
+                  <tr key={row.model}>
+                    <td style={{ ...tdStyle, color: "var(--ink-1)", fontWeight: 500 }}>{friendlyName}</td>
+                    <td style={{ ...tdMono, textAlign: "right" }}>{row.n > 0 ? row.n.toLocaleString() : "—"}</td>
+                    <td style={{ ...tdMono, textAlign: "right" }}>
+                      {row.current_auc !== null ? row.current_auc.toFixed(3) : "—"}
+                    </td>
+                    <td style={{ ...tdMono, textAlign: "right" }}>
+                      {row.baseline_auc !== null ? row.baseline_auc.toFixed(3) : "—"}
+                    </td>
+                    <td style={{ ...tdMono, textAlign: "right" }}>{driftStr}</td>
+                    <td style={{ ...tdStyle }}>
+                      <span style={pillStyle(row.status)}>{row.status}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div
         style={{
           display: "flex",
