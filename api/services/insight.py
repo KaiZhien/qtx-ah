@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session as DBSession
 logger = logging.getLogger(__name__)
 
 from models.clinical import PatientInsight
+from services.claude_client import call_claude as _call_claude_fn
 from services.voyage import VoyageEmbedder
 
 _SYSTEM_PROMPT = (
@@ -92,15 +93,7 @@ class InsightService:
 
     def _call_claude(self, user_message: str) -> str:
         """Call the Anthropic API and return the text response."""
-        import anthropic  # deferred so module loads without the package in stub mode
-        client = anthropic.Anthropic(api_key=self._api_key)
-        message = client.messages.create(
-            model=self.MODEL,
-            max_tokens=1024,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        return message.content[0].text
+        return _call_claude_fn(user_message, _SYSTEM_PROMPT, max_tokens=1024)
 
     def _save_insight(
         self,

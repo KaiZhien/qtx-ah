@@ -187,9 +187,9 @@ export async function fetchLatestAnomaly(sn: string): Promise<AnomalyWarning | n
     headers: apiHeaders(),
   });
   if (res.status === 404) return null;
-  if (!res.ok) return null;
+  if (!res.ok) throw new Error(`fetchLatestAnomaly failed: ${res.status}`);
   const data = await res.json();
-  if (!data) return null;
+  if (data === null) return null;
   return data as AnomalyWarning;
 }
 

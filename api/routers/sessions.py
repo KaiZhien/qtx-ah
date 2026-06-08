@@ -1,6 +1,7 @@
 """Session creation and patient timeline endpoints."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import Any
@@ -13,11 +14,14 @@ from sqlalchemy.orm import Session as DBSession
 import deps
 from db import get_db
 from models.clinical import Patient, Session as ClinicalSession, PatientTrend, PatientInsight
+from services.anomaly import AnomalyDetector
 from services.trend import TrendEngine
 from services.insight import InsightService
 from services.prediction import PredictionService
 from services.retrain import RetrainService
 from services.calibration import CalibrationService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -209,14 +213,12 @@ def create_session(
 
     # Step 3 — anomaly detection (non-blocking)
     try:
-        from services.anomaly import AnomalyDetector
         AnomalyDetector(db).check_and_warn(
             patient, session, trends, predictions, new_sn
         )
         db.commit()
     except Exception as exc:
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Anomaly detection failed: %s", exc)
+        logger.warning("Anomaly detection failed: %s", exc)
 
     # Non-blocking retrain trigger — spawns background subprocess when threshold met
     try:
@@ -224,8 +226,7 @@ def create_session(
         RetrainService().check_and_trigger(session_count)
         CalibrationService.check_and_trigger(db)
     except Exception as exc:
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Retrain trigger failed: %s", exc)
+        logger.warning("Retrain trigger failed: %s", exc)
 
     return {
         "sn":             sn,

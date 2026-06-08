@@ -34,7 +34,7 @@ def get_latest_anomaly(
     row = (
         db.query(PatientInsight)
         .filter_by(patient_id=patient.id, insight_type="anomaly_warning")
-        .order_by(PatientInsight.session_number.desc())
+        .order_by(PatientInsight.session_number.desc(), PatientInsight.created_at.desc())
         .limit(1)
         .first()
     )

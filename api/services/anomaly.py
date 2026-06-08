@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.orm import Session as DBSession
 
 from models.clinical import PatientInsight
+from services.claude_client import call_claude as _call_claude_fn
 from services.insight import _SYSTEM_PROMPT
 from services.trend import TrendResult
 
@@ -33,7 +34,7 @@ _WARNING_TEMPLATE = """\
 Anomaly flags detected after session {session_number}:
 {flag_list}
 
-Session measurements: pre_tug={pre_tug_s}s, post_tug={post_tug_s}s,
+Session measurements: pre_tug={pre_tug_s}, post_tug={post_tug_s},
 pre_vas={pre_vas}, post_vas={post_vas},
 composite_improvement={composite_improvement},
 responder_probability={responder_probability}.
@@ -109,6 +110,9 @@ class AnomalyDetector:
         session_number: int,
     ) -> str:
         """Format the Claude user message for anomaly warning generation."""
+        def _fmt(val, unit=""):
+            return f"{val}{unit}" if val is not None else "N/A"
+
         flag_list = "\n".join(f"- {f}" for f in flags)
         responder_probability = (
             predictions.get("responder_probability") if predictions else None
@@ -116,30 +120,21 @@ class AnomalyDetector:
         return _WARNING_TEMPLATE.format(
             session_number=session_number,
             flag_list=flag_list,
-            pre_tug_s=session.pre_tug_s,
-            post_tug_s=session.post_tug_s,
-            pre_vas=session.pre_vas,
-            post_vas=session.post_vas,
-            composite_improvement=session.composite_improvement,
-            responder_probability=responder_probability,
+            pre_tug_s=_fmt(session.pre_tug_s, "s"),
+            post_tug_s=_fmt(session.post_tug_s, "s"),
+            pre_vas=_fmt(session.pre_vas),
+            post_vas=_fmt(session.post_vas),
+            composite_improvement=_fmt(session.composite_improvement),
+            responder_probability=_fmt(responder_probability),
         )
 
     # ------------------------------------------------------------------
-    # Claude call — mirrors InsightService._call_claude exactly
+    # Claude call — delegates to shared client helper
     # ------------------------------------------------------------------
 
     def _call_claude(self, user_message: str) -> str:
         """Call the Anthropic API and return the text response."""
-        import anthropic  # deferred so module loads without the package in stub mode
-
-        client = anthropic.Anthropic(api_key=self._api_key)
-        message = client.messages.create(
-            model=self.MODEL,
-            max_tokens=256,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        return message.content[0].text
+        return _call_claude_fn(user_message, _SYSTEM_PROMPT, max_tokens=256)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -204,14 +199,16 @@ class AnomalyDetector:
         user_message = self._build_warning_prompt(flags, session, predictions, session_number)
         try:
             content = self._call_claude(user_message)
+            model = self.MODEL
         except Exception as exc:
             logger.warning("AnomalyDetector Claude call failed: %s", exc)
-            return None
+            content = self.STUB_RESPONSE
+            model = "api_error"
 
         self._save_warning(
             patient_id=patient.id,
             content=content,
             session_number=session_number,
-            model=self.MODEL,
+            model=model,
         )
         return content

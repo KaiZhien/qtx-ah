@@ -257,7 +257,7 @@ export type InsightRow = {
 };
 
 export interface AnomalyWarning {
-  session_number: number;
+  session_number: number | null;
   content: string;
   created_at: string;
 }
