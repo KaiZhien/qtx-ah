@@ -261,3 +261,13 @@ export interface AnomalyWarning {
   content: string;
   created_at: string;
 }
+
+export interface PlanRequest {
+  session_focus?: string;
+  plan_sessions?: number;
+}
+
+export interface TreatmentPlanResponse {
+  plan: string;
+  generated_at: string;
+}
