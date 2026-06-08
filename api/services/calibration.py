@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
+from sklearn.metrics import roc_auc_score
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -87,11 +88,67 @@ class CalibrationService:
             cls._cache = {"computed_at": now, "metrics": metrics}
         return metrics
 
-    @classmethod
-    def check_and_trigger(cls, db) -> None:
-        """Check per-cohort drift and spawn retrain subprocess if threshold exceeded.
+    _SQL_CLASSIFIER_AUC = text("""
+        SELECT
+            sp.responder_probability,
+            s.overall_responder
+        FROM (
+            SELECT DISTINCT ON (session_id)
+                   session_id, responder_probability
+            FROM   session_predictions
+            WHERE  responder_probability IS NOT NULL
+            ORDER  BY session_id, predicted_at DESC
+        ) sp
+        JOIN sessions s ON s.id = sp.session_id
+        WHERE  s.overall_responder IS NOT NULL
+          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+    """)
 
-        Non-blocking — any exception is caught and logged, never raises.
+    _SQL_DROPOUT_AUC = text("""
+        SELECT
+            sp.dropout_probability,
+            s.is_dropout
+        FROM (
+            SELECT DISTINCT ON (session_id)
+                   session_id, dropout_probability
+            FROM   session_predictions
+            WHERE  dropout_probability IS NOT NULL
+            ORDER  BY session_id, predicted_at DESC
+        ) sp
+        JOIN sessions s ON s.id = sp.session_id
+        WHERE  s.is_dropout IS NOT NULL
+          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
+    """)
+
+    @classmethod
+    def _compute_current_classifier_auc(cls, db) -> float | None:
+        rows = db.execute(cls._SQL_CLASSIFIER_AUC).fetchall()
+        if len(rows) < 20:
+            return None
+        y_score = [row.responder_probability for row in rows]
+        y_true = [row.overall_responder for row in rows]
+        try:
+            return float(roc_auc_score(y_true, y_score))
+        except Exception:
+            return None
+
+    @classmethod
+    def _compute_current_dropout_auc(cls, db) -> float | None:
+        rows = db.execute(cls._SQL_DROPOUT_AUC).fetchall()
+        if len(rows) < 20:
+            return None
+        y_score = [row.dropout_probability for row in rows]
+        y_true = [row.is_dropout for row in rows]
+        try:
+            return float(roc_auc_score(y_true, y_score))
+        except Exception:
+            return None
+
+    @classmethod
+    def check_and_trigger(cls, db, background_tasks) -> None:
+        """Check per-cohort drift and queue retrain via BackgroundTasks if threshold exceeded.
+
+        Returns immediately; any exception is caught and logged, never raises.
         """
         try:
             now = monotonic()
@@ -104,7 +161,6 @@ class CalibrationService:
             drift_threshold = float(os.environ.get("CALIBRATION_DRIFT_THRESHOLD", "0.30"))
             min_n = int(os.environ.get("CALIBRATION_MIN_COHORT_N", "20"))
 
-            spawned = False
             for cohort, m in metrics.items():
                 if m["n"] < min_n:
                     continue
@@ -116,29 +172,37 @@ class CalibrationService:
                 drift = (m["mae"] - baseline_mae) / baseline_mae
                 if drift >= drift_threshold:
                     logger.warning(
-                        "Calibration drift detected for cohort %s: drift=%.3f > threshold=%.3f — spawning retrain",
+                        "Calibration drift detected for cohort %s: drift=%.3f > threshold=%.3f — queuing retrain",
                         cohort, drift, drift_threshold,
                     )
-                    if not spawned:
-                        try:
-                            env = os.environ.copy()
-                            existing_pythonpath = os.environ.get("PYTHONPATH", "")
-                            env["PYTHONPATH"] = (
-                                str(_ROOT / "src") + os.pathsep + str(_ROOT / "api")
-                                + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
-                            )
-                            subprocess.Popen(
-                                [sys.executable, str(_RETRAIN_SCRIPT)],
-                                env=env,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            spawned = True
-                            cls._last_spawn_at = monotonic()
-                        except Exception as exc:
-                            logger.warning("Failed to spawn retrain subprocess: %s", exc)
+                    background_tasks.add_task(cls._spawn_retrain_subprocess)
+                    cls._last_spawn_at = monotonic()
+                    break  # only queue one retrain per call
         except Exception as exc:
             logger.exception("CalibrationService.check_and_trigger failed: %s", exc)
+
+    @classmethod
+    def _spawn_retrain_subprocess(cls) -> None:
+        """Run the retrain script in-process after the HTTP response completes."""
+        try:
+            env = os.environ.copy()
+            existing_pythonpath = os.environ.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                str(_ROOT / "src") + os.pathsep + str(_ROOT / "api")
+                + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+            )
+            result = subprocess.run(
+                [sys.executable, str(_RETRAIN_SCRIPT)],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if result.returncode != 0:
+                logger.error("Retrain script exited with non-zero code %d", result.returncode)
+            else:
+                logger.info("Calibration retrain script completed successfully")
+        except Exception as exc:
+            logger.error("Failed to spawn retrain subprocess: %s", exc)
 
     @classmethod
     def get_report(cls, db) -> dict:
@@ -173,10 +237,62 @@ class CalibrationService:
                 "status": status,
             })
 
+        classifier_baseline = state.get("classifier_auc_baseline")
+        dropout_baseline = state.get("dropout_auc_baseline")
+
+        clf_rows = db.execute(cls._SQL_CLASSIFIER_AUC).fetchall()
+        drop_rows = db.execute(cls._SQL_DROPOUT_AUC).fetchall()
+        clf_n = len(clf_rows)
+        drop_n = len(drop_rows)
+
+        current_classifier_auc = cls._compute_current_classifier_auc(db)
+        current_dropout_auc = cls._compute_current_dropout_auc(db)
+
+        def _auc_row(model: str, baseline: float | None, current: float | None, n: int) -> dict:
+            if baseline is None:
+                return {
+                    "model": model,
+                    "baseline_auc": None,
+                    "current_auc": round(current, 4) if current is not None else None,
+                    "drift_pct": None,
+                    "status": "NO_BASELINE",
+                    "n": n,
+                }
+            if current is None:
+                return {
+                    "model": model,
+                    "baseline_auc": round(baseline, 4),
+                    "current_auc": None,
+                    "drift_pct": None,
+                    "status": "NO_BASELINE",
+                    "n": n,
+                }
+            drift_pct = (current - baseline) / baseline * 100
+            if drift_pct > -5.0:
+                status = "OK"
+            elif drift_pct > -10.0:
+                status = "WARNING"
+            else:
+                status = "ALERT"
+            return {
+                "model": model,
+                "baseline_auc": round(baseline, 4),
+                "current_auc": round(current, 4),
+                "drift_pct": round(drift_pct, 2),
+                "status": status,
+                "n": n,
+            }
+
+        model_auc_drift = [
+            _auc_row("classifier", classifier_baseline, current_classifier_auc, clf_n),
+            _auc_row("dropout", dropout_baseline, current_dropout_auc, drop_n),
+        ]
+
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "drift_threshold": drift_threshold,
             "min_cohort_n": min_n,
             "total_matchable": sum(v["n"] for v in metrics.values()),
             "cohorts": cohort_rows,
+            "model_auc_drift": model_auc_drift,
         }

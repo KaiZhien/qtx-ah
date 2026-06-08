@@ -34,10 +34,11 @@ class RetrainService:
         except Exception:
             return {"last_retrain_session_count": 0}
 
-    def check_and_trigger(self, session_count: int) -> None:
-        """Spawn retrain job as background subprocess if threshold exceeded.
+    def check_and_trigger(self, session_count: int, background_tasks) -> None:
+        """Queue retrain job via BackgroundTasks if threshold exceeded.
 
-        Non-blocking — returns immediately. Safe to call on every session creation.
+        Returns immediately; the subprocess runs after the HTTP response is sent.
+        Safe to call on every session creation.
         """
         state = self._read_state()
         last_count = state.get("last_retrain_session_count", 0)
@@ -47,18 +48,26 @@ class RetrainService:
             return
 
         logger.info(
-            "Retrain threshold reached (delta=%d >= %d) — spawning background retrain",
+            "Retrain threshold reached (delta=%d >= %d) — queuing background retrain",
             delta, self._threshold,
         )
+        background_tasks.add_task(self._spawn_retrain_subprocess)
+
+    def _spawn_retrain_subprocess(self) -> None:
+        """Run the retrain script in-process after the HTTP response completes."""
         try:
             python = sys.executable
             env = os.environ.copy()
             env["PYTHONPATH"] = str(_ROOT / "src") + os.pathsep + str(_ROOT / "api")
-            subprocess.Popen(
+            result = subprocess.run(
                 [python, str(_RETRAIN_SCRIPT)],
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            if result.returncode != 0:
+                logger.error("Retrain script exited with non-zero code %d", result.returncode)
+            else:
+                logger.info("Retrain script completed successfully")
         except Exception as exc:
-            logger.warning("Failed to spawn retrain subprocess: %s", exc)
+            logger.error("Failed to spawn retrain subprocess: %s", exc)
