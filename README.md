@@ -1,6 +1,6 @@
 # QTX-AH — QuantumTX Alexandra Hospital Analytics Pipeline
 
-A reproducible, config-driven Python pipeline for analysing rehabilitation outcomes from QuantumTX's magnetic-mitohormesis therapy programme at Alexandra Hospital (AH) Singapore. Covers data ingestion → cleaning → phenotyping → outcomes → EDA → modelling → an interactive Streamlit dashboard.
+A reproducible, config-driven Python pipeline for analysing rehabilitation outcomes from QuantumTX's magnetic-mitohormesis therapy programme at Alexandra Hospital (AH) Singapore. Covers data ingestion → cleaning → phenotyping → outcomes → EDA → modelling → a Next.js clinical intelligence web app.
 
 > **Dataset:** 1,716 patient records (2024), six functional assessment blocks (VAS, TUG, 5×SST, Normal Gait Speed, Fast Gait Speed, SPPB), ~34.7% follow-up rate.
 
@@ -67,13 +67,12 @@ The terminal summary printed by `make model` shows N, AUC-ROC ± std, AUC-PR, Br
 4. [Pipeline Reference](#pipeline-reference)
 5. [Configuration System](#configuration-system)
 6. [Outputs & Reports](#outputs--reports)
-7. [Dashboard](#dashboard)
-8. [Modelling](#modelling)
-9. [Phenotype Rules](#phenotype-rules)
-10. [Adding a New Model](#adding-a-new-model)
-11. [Testing](#testing)
-12. [Data Dictionary](#data-dictionary)
-13. [Clinical Context](#clinical-context)
+7. [Modelling](#modelling)
+8. [Phenotype Rules](#phenotype-rules)
+9. [Adding a New Model](#adding-a-new-model)
+10. [Testing](#testing)
+11. [Data Dictionary](#data-dictionary)
+12. [Clinical Context](#clinical-context)
 
 ---
 
@@ -81,7 +80,7 @@ The terminal summary printed by `make model` shows N, AUC-ROC ± std, AUC-PR, Br
 
 QuantumTX Pte Ltd (NUS / ETH Zürich spinoff) commercialises magnetic-mitohormesis therapy — a non-invasive magnetic-field treatment that induces mitochondrial activation in skeletal muscle. The Alexandra Hospital demo centre runs a structured programme with pre- and post-functional assessments.
 
-This pipeline converts a hand-cleaned Excel workbook into a versioned, analyst-ready dataset, a trained set of predictive models, and a clinician-facing dashboard. Every threshold, rule, and assumption lives in `config/` — the clinical team can refine the phenotype taxonomy or MCID thresholds without touching Python.
+This pipeline converts a hand-cleaned Excel workbook into a versioned, analyst-ready dataset, a trained set of predictive models, and a clinician-facing web application. Every threshold, rule, and assumption lives in `config/` — the clinical team can refine the phenotype taxonomy or MCID thresholds without touching Python.
 
 ---
 
@@ -115,7 +114,6 @@ quantumtx-ah/
 │   └── utils/                # Config loader (YAML → dict, cached), Rich logging
 │
 ├── scripts/                  # One-off CLIs (01_ingest → 07_export_dashboard_data)
-├── dashboard/                # Streamlit app (app.py) + sanitised partner stub
 ├── notebooks/                # Exploration notebooks
 ├── reports/                  # Generated HTML reports (gitignored)
 ├── models/                   # Trained joblib artefacts (gitignored)
@@ -153,12 +151,14 @@ make all
 
 This executes the full pipeline end-to-end. Estimated runtime: 3–8 minutes depending on machine (model training dominates).
 
-### Run the dashboard
+### Start the web UI
 
 ```bash
-make dashboard
-# opens at http://localhost:8501
+make dev
+# API at http://localhost:8000, Next.js app at http://localhost:3000
 ```
+
+> The legacy Streamlit dashboard has been removed — use `make dev` to start the web UI.
 
 ---
 
@@ -277,7 +277,7 @@ regression_composite:
 | `data/processed/phenotyped.parquet` | + 48 phenotype columns (groups, regions, flags, cohort) |
 | `data/processed/outcomes.parquet` | + improvement scores, MCID flags, composite, responders |
 | `data/processed/featured.parquet` | Modelling-ready (imputed where configured, schema-validated) |
-| `data/processed/dashboard_data.parquet` | Slim 73-col subset for the dashboard |
+| `data/processed/dashboard_data.parquet` | Slim 73-col subset (legacy; used by `scripts/11_seed_database.py` for initial DB seed) |
 | `data/audit/clean_audit.csv` | Row-level audit trail for every cleaning transformation |
 | `reports/eda.html` | Self-contained interactive EDA (4.8 MB, Plotly, no CDN) |
 | `reports/missingness_profile.html` | Per-feature missingness × dropout vs. followup |
@@ -291,35 +291,6 @@ regression_composite:
 | `models/dropout_xgb.joblib` | XGBoost dropout predictor (baseline features → `is_dropout`) |
 
 All Parquet files are also version-stamped in `data/processed/snapshots/`.
-
----
-
-## Dashboard
-
-Start with:
-
-```bash
-make dashboard
-# or
-streamlit run dashboard/app.py
-```
-
-### Features
-
-**Sidebar filters** — cohort, usage frequency, age band, gender, record type. Reset button clears all.
-
-**KPI strip** — filtered N, % with follow-up, mean composite improvement, % overall responders.
-
-**Pre vs Post boxplots** — side-by-side for all 6 tests (paired observations only).
-
-**Comorbidity breakdown** — horizontal bar chart of mean composite improvement by `has_*` flag.
-
-**Intake Estimator** — enter a new patient's baseline values and comorbidity tags; the dashboard predicts:
-- Expected composite improvement
-- P(responder) — probability of meeting MCID on ≥2 tests
-- P(dropout) — probability of not completing follow-up
-
-> The Intake Estimator is a clinical decision-support tool, not a guarantee. Predictions are based on the training cohort and carry uncertainty.
 
 ---
 
