@@ -1,11 +1,12 @@
 "use client";
 
 import React from "react";
-import type { InsightRow } from "@/lib/types";
-import { fetchInsights, fetchLatestPredictions, fetchBenchmark, type LatestPredictions } from "@/lib/api";
+import type { InsightRow, AnomalyWarning } from "@/lib/types";
+import { fetchInsights, fetchLatestPredictions, fetchBenchmark, fetchLatestAnomaly, type LatestPredictions } from "@/lib/api";
 import { InsightCard } from "./InsightCard";
 import { QAPanel } from "./QAPanel";
 import { PredictionChips } from "./PredictionChips";
+import { AnomalyWarningCard } from "./AnomalyWarningCard";
 
 interface AITabProps {
   sn: string;
@@ -17,6 +18,7 @@ export function AITab({ sn }: AITabProps) {
   const [error, setError] = React.useState<string | null>(null);
   const [predictions, setPredictions] = React.useState<LatestPredictions | null>(null);
   const [cohortPercentile, setCohortPercentile] = React.useState<number | null>(null);
+  const [anomaly, setAnomaly] = React.useState<AnomalyWarning | null>(null);
 
   React.useEffect(() => {
     setLoading(true);
@@ -25,11 +27,13 @@ export function AITab({ sn }: AITabProps) {
       fetchInsights(sn),
       fetchLatestPredictions(sn),
       fetchBenchmark(sn),
+      fetchLatestAnomaly(sn),
     ])
-      .then(([ins, preds, bench]) => {
+      .then(([ins, preds, bench, anom]) => {
         setInsights(ins);
         setPredictions(preds);
         setCohortPercentile(bench?.cohort_percentile ?? null);
+        setAnomaly(anom);
       })
       .catch(() => setError("Could not load insights."))
       .finally(() => setLoading(false));
@@ -41,6 +45,9 @@ export function AITab({ sn }: AITabProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Anomaly warning */}
+      <AnomalyWarningCard warning={anomaly} />
+
       {/* Model signals */}
       {predictions && (
         <div>
