@@ -73,6 +73,7 @@ export interface LatestPredictions {
   dosage_recommendation: string | null;
   predicted_at: string | null;
   shap_top5: ShapContribution[] | null;
+  bias_correction: number | null;
 }
 
 export async function fetchLatestPredictions(sn: string): Promise<LatestPredictions | null> {

@@ -82,6 +82,25 @@ def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
     }
 
 
+
+
+def _compute_patient_bias(patient_id, db) -> float:
+    """Returns AVG(predicted - actual) from this patient's session history. 0.0 if <2 sessions."""
+    from models.clinical import SessionPrediction, Session as ClinicalSession
+    rows = (
+        db.query(SessionPrediction.predicted_composite_improvement, ClinicalSession.composite_improvement)
+        .join(ClinicalSession, SessionPrediction.session_id == ClinicalSession.id)
+        .filter(
+            SessionPrediction.patient_id == patient_id,
+            SessionPrediction.predicted_composite_improvement.isnot(None),
+            ClinicalSession.composite_improvement.isnot(None),
+        ).all()
+    )
+    if len(rows) < 2:
+        return 0.0
+    residuals = [float(pred) - float(actual) for pred, actual in rows]
+    return sum(residuals) / len(residuals)
+
 def _build_feature_vector_from_orm(patient, session, feature_names: list[str], extra: dict | None = None) -> pd.DataFrame:
     """Build a single-row DataFrame from ORM Patient + Session objects."""
     row: dict[str, float] = {}
@@ -199,6 +218,10 @@ class PredictionService:
             predictions["predicted_composite_improvement"] = float(reg.predict(X_reg)[0])
             predictions["shap_top5"] = _compute_shap_top5(reg, X_reg)
             model_versions["regression"] = "regression_xgb.joblib"
+            bias = _compute_patient_bias(patient.id, self._db)
+            if bias != 0.0:
+                predictions["predicted_composite_improvement"] = predictions["predicted_composite_improvement"] - bias
+                predictions["bias_correction_applied"] = round(bias, 4)
         except Exception as exc:
             logger.warning("Regression inference failed: %s", exc)
             predictions["predicted_composite_improvement"] = None
@@ -242,6 +265,7 @@ class PredictionService:
             dosage_recommendation=predictions.get("dosage_recommendation"),
             model_versions=model_versions,
             shap_top5=predictions.get("shap_top5"),
+            bias_correction=predictions.get("bias_correction_applied"),
             predicted_at=datetime.now(timezone.utc),
         )
         self._db.add(row)

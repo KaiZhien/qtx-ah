@@ -320,4 +320,5 @@ def get_latest_predictions(
         "dosage_recommendation":           row.dosage_recommendation,
         "predicted_at":                    row.predicted_at.isoformat() if row.predicted_at else None,
         "shap_top5":                       row.shap_top5,
+        "bias_correction":                 float(row.bias_correction) if row.bias_correction is not None else None,
     }

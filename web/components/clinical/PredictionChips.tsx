@@ -65,7 +65,7 @@ const warnChip: React.CSSProperties = {
 };
 
 export function PredictionChips({ predictions, cohortPercentile }: PredictionChipsProps) {
-  const { predicted_composite_improvement, responder_probability, dropout_probability, dosage_recommendation, predicted_at, shap_top5 } = predictions;
+  const { predicted_composite_improvement, responder_probability, dropout_probability, dosage_recommendation, predicted_at, shap_top5, bias_correction } = predictions;
 
   const dropoutHigh = dropout_probability !== null && dropout_probability > 0.5;
 
@@ -79,6 +79,11 @@ export function PredictionChips({ predictions, cohortPercentile }: PredictionChi
             {cohortPercentile != null && (
               <span style={{ ...labelStyle, marginLeft: 4 }}>
                 (cohort p{cohortPercentile})
+              </span>
+            )}
+            {bias_correction != null && (
+              <span style={{ ...labelStyle, marginLeft: 4, fontStyle: "italic" }}>
+                (personalised)
               </span>
             )}
           </span>

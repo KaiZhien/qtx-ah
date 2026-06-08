@@ -201,3 +201,71 @@ def test_run_individual_model_failure_yields_none_field():
     assert result["responder_probability"] is not None
 
 
+
+
+def test_compute_patient_bias_returns_zero_for_fewer_than_two_sessions():
+    from unittest.mock import MagicMock
+    from services.prediction import _compute_patient_bias
+    db = MagicMock()
+    db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.5, 0.4)]
+    assert _compute_patient_bias(uuid.uuid4(), db) == 0.0
+
+
+def test_compute_patient_bias_returns_zero_for_no_sessions():
+    from unittest.mock import MagicMock
+    from services.prediction import _compute_patient_bias
+    db = MagicMock()
+    db.query.return_value.join.return_value.filter.return_value.all.return_value = []
+    assert _compute_patient_bias(uuid.uuid4(), db) == 0.0
+
+
+def test_compute_patient_bias_averages_residuals():
+    from unittest.mock import MagicMock
+    from services.prediction import _compute_patient_bias
+    db = MagicMock()
+    db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.5, 0.4), (0.6, 0.3)]
+    result = _compute_patient_bias(uuid.uuid4(), db)
+    assert abs(result - 0.2) < 1e-9
+
+
+def test_compute_patient_bias_three_sessions():
+    from unittest.mock import MagicMock
+    from services.prediction import _compute_patient_bias
+    db = MagicMock()
+    db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.6, 0.5), (0.7, 0.5), (0.8, 0.5)]
+    result = _compute_patient_bias(uuid.uuid4(), db)
+    assert abs(result - 0.2) < 1e-9
+
+
+def test_run_applies_bias_correction():
+    from unittest.mock import MagicMock, patch
+    from services.prediction import PredictionService
+    db = MagicMock()
+    models = _make_models()
+    with patch("services.prediction._compute_patient_bias", return_value=0.05):
+        result = PredictionService(db, models).run(_make_patient(), _make_session())
+    assert result is not None
+    assert abs(result["predicted_composite_improvement"] - 0.37) < 1e-6
+
+
+def test_run_stores_bias_correction_in_predictions():
+    from unittest.mock import MagicMock, patch
+    from services.prediction import PredictionService
+    db = MagicMock()
+    models = _make_models()
+    with patch("services.prediction._compute_patient_bias", return_value=0.05):
+        result = PredictionService(db, models).run(_make_patient(), _make_session())
+    assert result is not None
+    assert result.get("bias_correction_applied") == 0.05
+
+
+def test_run_no_bias_correction_when_bias_zero():
+    from unittest.mock import MagicMock, patch
+    from services.prediction import PredictionService
+    db = MagicMock()
+    models = _make_models()
+    with patch("services.prediction._compute_patient_bias", return_value=0.0):
+        result = PredictionService(db, models).run(_make_patient(), _make_session())
+    assert result is not None
+    assert abs(result["predicted_composite_improvement"] - 0.42) < 1e-6
+    assert "bias_correction_applied" not in result

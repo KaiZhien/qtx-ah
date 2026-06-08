@@ -250,6 +250,7 @@ class SessionPrediction(Base):
     dosage_recommendation: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model_versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     shap_top5: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    bias_correction: Mapped[float | None] = mapped_column(Numeric(7, 4), nullable=True)
     predicted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
