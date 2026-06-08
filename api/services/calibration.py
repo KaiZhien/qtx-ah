@@ -125,7 +125,8 @@ class CalibrationService:
         y_true = [row.overall_responder for row in rows]
         try:
             return float(roc_auc_score(y_true, y_score))
-        except Exception:
+        except Exception as exc:
+            logger.warning("classifier roc_auc_score failed: %s", exc)
             return None
 
     @classmethod
@@ -137,7 +138,8 @@ class CalibrationService:
         y_true = [row.is_dropout for row in rows]
         try:
             return float(roc_auc_score(y_true, y_score))
-        except Exception:
+        except Exception as exc:
+            logger.warning("dropout roc_auc_score failed: %s", exc)
             return None
 
     @classmethod
@@ -257,7 +259,7 @@ class CalibrationService:
                     "baseline_auc": round(bl, 4),
                     "current_auc": None,
                     "drift_pct": None,
-                    "status": "NO_BASELINE",
+                    "status": "INSUFFICIENT_DATA",
                     "n": n,
                 }
             drift_pct = (current - bl) / bl * 100
