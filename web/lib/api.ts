@@ -11,6 +11,8 @@ import type {
   TimelineResponse,
   InsightRow,
   AnomalyWarning,
+  PlanRequest,
+  TreatmentPlanResponse,
 } from "./types";
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
@@ -73,6 +75,7 @@ export interface LatestPredictions {
   dosage_recommendation: string | null;
   predicted_at: string | null;
   shap_top5: ShapContribution[] | null;
+  bias_correction: number | null;
 }
 
 export async function fetchLatestPredictions(sn: string): Promise<LatestPredictions | null> {
@@ -94,12 +97,22 @@ export interface CohortCalibration {
   status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
 }
 
+export interface ModelAucDrift {
+  model: "classifier" | "dropout";
+  baseline_auc: number | null;
+  current_auc: number | null;
+  drift_pct: number | null;
+  status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
+  n: number;
+}
+
 export interface CalibrationReport {
   generated_at: string;
   drift_threshold: number;
   min_cohort_n: number;
   total_matchable: number;
   cohorts: CohortCalibration[];
+  model_auc_drift?: ModelAucDrift[];
 }
 
 export async function fetchCalibration(): Promise<CalibrationReport | null> {
@@ -170,6 +183,22 @@ export async function askQuestion(
   return res.json();
 }
 
+export interface PreSessionBrief {
+  brief: string;
+  cached: boolean;
+  created_at: string;
+}
+
+export async function prepareSession(sn: string, force?: boolean): Promise<PreSessionBrief> {
+  const url = `/api/patient/${encodeURIComponent(sn)}/prepare_session${force ? "?force=true" : ""}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: apiHeaders(),
+  });
+  if (!res.ok) throw new Error(`prepareSession: ${res.status}`);
+  return res.json();
+}
+
 export interface BenchmarkResult {
   cohort_percentile: number | null;
 }
@@ -191,6 +220,19 @@ export async function fetchLatestAnomaly(sn: string): Promise<AnomalyWarning | n
   const data = await res.json();
   if (data === null) return null;
   return data as AnomalyWarning;
+}
+
+export async function suggestPlan(
+  sn: string,
+  body: PlanRequest = {}
+): Promise<TreatmentPlanResponse> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/suggest_plan`, {
+    method: "POST",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`suggestPlan: ${res.status}`);
+  return res.json();
 }
 
 export function downloadPatientPdf(sn: string): void {

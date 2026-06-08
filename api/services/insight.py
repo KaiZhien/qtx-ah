@@ -44,7 +44,8 @@ _SYSTEM_PROMPT = (
     "Age response: 70–79-year-olds showed peak gait speed improvement (+0.194 m/s); 80+ patients still achieve meaningful SPPB gains "
     "(+0.418 pts) — advanced age alone is not a contraindication. "
     "SPPB ceiling: patients near SPPB 12 have limited improvement headroom — a stable score in this range is a positive finding, not a failure. "
-    "Tandem Balance Score (post_tandem_s): improvement correlates with reduced fall risk — note direction of change if data present."
+    "Tandem Balance Score (post_tandem_s): improvement correlates with reduced fall risk — note direction of change if data present. "
+    "Walking cadence (wearable, 30-day avg, if present): below 80 steps/min is associated with elevated fall risk — flag any value in this range."
 )
 
 _SESSION_SUMMARY_TEMPLATE = """\
@@ -63,6 +64,49 @@ Patient timeline data:
 Clinician question: {question}
 
 Answer the question in 2-4 sentences based only on this patient's data above."""
+
+_PRE_SESSION_BRIEF_TEMPLATE = """\
+Patient timeline data:
+{timeline_json}
+
+The patient is about to begin session {next_session_number}. Produce a pre-session briefing for the physiotherapist using EXACTLY this structure (include the bold headers verbatim):
+
+**Last Session Summary** (2 sentences max) — what happened in the most recent session
+**Current Trajectory** (2 sentences max) — which metrics are improving, plateauing, or declining
+**Watch For Today** — 3 bullet points listing the most important things to observe in today's session
+**Suggested Questions** — 2 bullet points listing specific questions to ask the patient at session start
+
+Be concise. Base every statement only on the data provided."""
+
+_TREATMENT_PLAN_TEMPLATE = """\
+Patient phenotype and context:
+{patient_json}
+
+Session timeline and trends:
+{timeline_json}
+
+ML prediction signals:
+{predictions_json}
+
+{focus_line}Generate a {plan_sessions}-session treatment plan using EXACTLY this structure (include the bold headers verbatim):
+
+**Session Focus:** [one sentence describing the overarching rehabilitation goal for this plan]
+
+**Session-by-Session Plan:**
+{session_bullets}
+
+**Key Metrics to Monitor:**
+- [metric] — target: [MCID-based value or directional goal]
+- [metric] — target: [MCID-based value or directional goal]
+- [metric] — target: [MCID-based value or directional goal]
+
+**Risk Flags:**
+- [phenotype-specific caution or contraindication]
+- [phenotype-specific caution or contraindication]
+
+**Dosage Recommendation:** [from model signal or clinical judgement if unavailable]
+
+Base every recommendation on the patient data and ML signals provided. Reference MCID thresholds where applicable."""
 
 
 def _format_predictions(predictions: dict) -> dict:
@@ -209,6 +253,103 @@ class InsightService:
         except Exception as exc:
             logger.warning("_get_latest_predictions failed: %s", exc)
             return None
+
+    def generate_pre_session_brief(
+        self,
+        timeline: dict,
+        patient_id: uuid.UUID,
+        session_number: int,
+    ) -> str:
+        """Generate a pre-session briefing and persist it.
+
+        session_number is the latest completed session; the brief is framed
+        around the upcoming (session_number + 1) session.
+        Must be called inside an open transaction — caller commits.
+        """
+        if not self._api_key:
+            self._save_insight(
+                patient_id=patient_id,
+                content=self.STUB_RESPONSE,
+                model="stub",
+                insight_type="pre_session_brief",
+                session_number=session_number,
+            )
+            return self.STUB_RESPONSE
+
+        user_message = _PRE_SESSION_BRIEF_TEMPLATE.format(
+            timeline_json=json.dumps(timeline, indent=2),
+            next_session_number=session_number + 1,
+        )
+        try:
+            content = _call_claude_fn(user_message, _SYSTEM_PROMPT, max_tokens=512)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+
+        self._save_insight(
+            patient_id=patient_id,
+            content=content,
+            model=self.MODEL,
+            insight_type="pre_session_brief",
+            session_number=session_number,
+        )
+        return content
+
+    def generate_treatment_plan(
+        self,
+        timeline: dict,
+        patient_id: uuid.UUID,
+        predictions: dict | None = None,
+        clinician_focus: str | None = None,
+        plan_sessions: int = 4,
+    ) -> str:
+        """Generate a structured treatment plan and persist it.
+
+        Returns the generated text (or STUB_RESPONSE if no API key).
+        Must be called inside an open transaction — caller commits.
+        """
+        patient_data = timeline.get("patient", {})
+        sessions_data = timeline.get("sessions", [])
+        trends_data = timeline.get("trends", [])
+
+        session_bullets = "\n".join(
+            f"- Session {i}: [specific focus and exercises]"
+            for i in range(1, plan_sessions + 1)
+        )
+        focus_line = f"Clinician focus: {clinician_focus}\n\n" if clinician_focus else ""
+
+        predictions_payload = _format_predictions(predictions) if predictions else {}
+
+        if not self._api_key:
+            self._save_insight(
+                patient_id=patient_id,
+                content=self.STUB_RESPONSE,
+                model="stub",
+                insight_type="treatment_plan",
+            )
+            return self.STUB_RESPONSE
+
+        user_message = _TREATMENT_PLAN_TEMPLATE.format(
+            patient_json=json.dumps(patient_data, indent=2),
+            timeline_json=json.dumps({"sessions": sessions_data, "trends": trends_data}, indent=2),
+            predictions_json=json.dumps(predictions_payload, indent=2),
+            focus_line=focus_line,
+            plan_sessions=plan_sessions,
+            session_bullets=session_bullets,
+        )
+        try:
+            content = _call_claude_fn(user_message, _SYSTEM_PROMPT, max_tokens=1500)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+
+        self._save_insight(
+            patient_id=patient_id,
+            content=content,
+            model=self.MODEL,
+            insight_type="treatment_plan",
+        )
+        return content
 
     def answer_question(
         self,
