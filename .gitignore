@@ -8,7 +8,6 @@ __pycache__/
 *.pyc
 .env
 .env.*
-.env.example
 .venv/
 dist/
 *.egg-info/
@@ -21,4 +20,4 @@ web/tsconfig.tsbuildinfo
 .superpowers/
 docs/superpowers/
 HANDOFF.md
-retrain_state.json
+**/retrain_state.json
