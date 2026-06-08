@@ -192,6 +192,28 @@ export function Sidebar({ page, setPage, filters, setFilters }: SidebarProps) {
 
       <div
         style={{
+          padding: "10px 18px",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        <a
+          href="/admin"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12.5,
+            color: "var(--ink-4)",
+            textDecoration: "none",
+            padding: "6px 0",
+          }}
+        >
+          <Icon.Gear /> Admin
+        </a>
+      </div>
+
+      <div
+        style={{
           marginTop: "auto",
           padding: "14px 18px",
           borderTop: "1px solid var(--line)",

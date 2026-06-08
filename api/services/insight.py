@@ -44,7 +44,8 @@ _SYSTEM_PROMPT = (
     "Age response: 70–79-year-olds showed peak gait speed improvement (+0.194 m/s); 80+ patients still achieve meaningful SPPB gains "
     "(+0.418 pts) — advanced age alone is not a contraindication. "
     "SPPB ceiling: patients near SPPB 12 have limited improvement headroom — a stable score in this range is a positive finding, not a failure. "
-    "Tandem Balance Score (post_tandem_s): improvement correlates with reduced fall risk — note direction of change if data present."
+    "Tandem Balance Score (post_tandem_s): improvement correlates with reduced fall risk — note direction of change if data present. "
+    "Walking cadence (wearable, 30-day avg, if present): below 80 steps/min is associated with elevated fall risk — flag any value in this range."
 )
 
 _SESSION_SUMMARY_TEMPLATE = """\

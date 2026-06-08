@@ -335,3 +335,69 @@ def test_check_and_warn_api_error_fallback(db_session, monkeypatch):
     ).one()
     assert row.model == "api_error"
     assert row.content == AnomalyDetector.STUB_RESPONSE
+
+
+# ── Rule 5 — LOW_CADENCE_RISK ─────────────────────────────────────────────────
+
+def test_detect_flags_low_cadence_fires():
+    """cadence_avg_30d=75 (below 80) → 'low_cadence_risk' flag."""
+    from services.anomaly import AnomalyDetector
+
+    patient = MagicMock(spec=False, has_fall_risk=True)
+    session = _make_session()
+    detector = AnomalyDetector(db=MagicMock())
+    flags = detector._detect_flags(
+        patient, session, trends=[], predictions=None,
+        wearable_feats={"wearable_cadence_avg_30d": 75.0},
+    )
+
+    assert "low_cadence_risk" in flags
+
+
+def test_detect_flags_low_cadence_no_fire_above_threshold():
+    """cadence_avg_30d=85 (at or above 80) → no 'low_cadence_risk' flag."""
+    from services.anomaly import AnomalyDetector
+
+    patient = MagicMock(spec=False, has_fall_risk=True)
+    session = _make_session()
+    detector = AnomalyDetector(db=MagicMock())
+    flags = detector._detect_flags(
+        patient, session, trends=[], predictions=None,
+        wearable_feats={"wearable_cadence_avg_30d": 85.0},
+    )
+
+    assert "low_cadence_risk" not in flags
+
+
+def test_detect_flags_low_cadence_none_value_no_fire():
+    """cadence_avg_30d=None → no 'low_cadence_risk' flag, no exception."""
+    from services.anomaly import AnomalyDetector
+
+    patient = MagicMock(spec=False, has_fall_risk=True)
+    session = _make_session()
+    detector = AnomalyDetector(db=MagicMock())
+    flags = detector._detect_flags(
+        patient, session, trends=[], predictions=None,
+        wearable_feats={"wearable_cadence_avg_30d": None},
+    )
+
+    assert "low_cadence_risk" not in flags
+
+
+def test_check_and_warn_backwards_compat_no_wearable_feats(monkeypatch):
+    """check_and_warn works correctly when wearable_feats is not passed (backwards compat)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from services.anomaly import AnomalyDetector
+
+    patient = MagicMock(spec=False, has_fall_risk=True)
+    session = _make_session()
+    detector = AnomalyDetector(db=MagicMock())
+    result = detector.check_and_warn(
+        patient=patient,
+        session=session,
+        trends=[],
+        predictions=None,
+        session_number=1,
+    )
+
+    assert result is None
