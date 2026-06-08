@@ -355,7 +355,7 @@ def test_detect_flags_low_cadence_fires():
 
 
 def test_detect_flags_low_cadence_no_fire_above_threshold():
-    """cadence_avg_30d=85 (at or above 80) → no 'low_cadence_risk' flag."""
+    """cadence_avg_30d=90 (at or above 80) → no 'low_cadence_risk' flag."""
     from services.anomaly import AnomalyDetector
 
     patient = MagicMock(spec=False, has_fall_risk=True)
@@ -363,7 +363,7 @@ def test_detect_flags_low_cadence_no_fire_above_threshold():
     detector = AnomalyDetector(db=MagicMock())
     flags = detector._detect_flags(
         patient, session, trends=[], predictions=None,
-        wearable_feats={"wearable_cadence_avg_30d": 85.0},
+        wearable_feats={"wearable_cadence_avg_30d": 90.0},
     )
 
     assert "low_cadence_risk" not in flags
