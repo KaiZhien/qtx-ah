@@ -1,4 +1,5 @@
 import type {
+  BenchmarkResult,
   Filters,
   BenchmarkResult,
   Patient,
@@ -198,10 +199,6 @@ export async function prepareSession(sn: string, force?: boolean): Promise<PreSe
   });
   if (!res.ok) throw new Error(`prepareSession: ${res.status}`);
   return res.json();
-}
-
-export interface BenchmarkResult {
-  cohort_percentile: number | null;
 }
 
 

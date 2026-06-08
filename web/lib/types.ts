@@ -272,6 +272,7 @@ export interface TreatmentPlanResponse {
   generated_at: string;
 }
 
+
 export type BenchmarkMetric = {
   metric: string;
   patient_value: number;
