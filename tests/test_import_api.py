@@ -197,13 +197,17 @@ def test_import_file_csv_pipeline_failure_returns_422(client):
         {
             "qtx": MagicMock(),
             "qtx.io": MagicMock(),
-            "qtx.io.load_raw": MagicMock(
-                load_raw_bytes=MagicMock(side_effect=pipeline_error)
-            ),
-            "qtx.pipeline": MagicMock(),
-            "qtx.pipeline.clean": MagicMock(),
-            "qtx.pipeline.phenotype": MagicMock(),
-            "qtx.pipeline.outcomes": MagicMock(),
+            "qtx.io.load_raw": MagicMock(),
+            "qtx.clean": MagicMock(),
+            "qtx.clean.normalise": MagicMock(normalise=MagicMock(side_effect=pipeline_error)),
+            "qtx.phenotype": MagicMock(),
+            "qtx.phenotype.classify": MagicMock(),
+            "qtx.outcomes": MagicMock(),
+            "qtx.outcomes.change_scores": MagicMock(),
+            "qtx.outcomes.composite": MagicMock(),
+            "qtx.outcomes.responders": MagicMock(),
+            "qtx.features": MagicMock(),
+            "qtx.features.build": MagicMock(),
         },
     ):
         resp = client.post(
@@ -341,4 +345,209 @@ def test_import_file_exactly_50mb_not_size_rejected(client):
     )
     assert resp.status_code != 413, (
         f"A file at exactly the limit should not be rejected for size, got 413: {resp.text}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 13: POST /api/import/file with valid CSV and mocked pipeline -> 200
+# ---------------------------------------------------------------------------
+def test_import_file_valid_csv_returns_200_with_inserted(client):
+    """Uploading a valid CSV with all pipeline stages mocked returns 200 and inserted > 0."""
+    import pandas as pd
+
+    sample_df = pd.DataFrame({"sn": ["T001"], "name": ["Test Patient"]})
+
+    mock_summary = MagicMock()
+    mock_summary.inserted = 1
+    mock_summary.updated = 0
+    mock_summary.skipped = 0
+    mock_summary.errors = []
+
+    pipeline_modules = {
+        "qtx": MagicMock(),
+        "qtx.io": MagicMock(),
+        "qtx.io.load_raw": MagicMock(load_raw=MagicMock(return_value=sample_df)),
+        "qtx.clean": MagicMock(),
+        "qtx.clean.normalise": MagicMock(normalise=MagicMock(return_value=sample_df)),
+        "qtx.phenotype": MagicMock(),
+        "qtx.phenotype.classify": MagicMock(classify=MagicMock(return_value=sample_df)),
+        "qtx.outcomes": MagicMock(),
+        "qtx.outcomes.change_scores": MagicMock(
+            compute_change_scores=MagicMock(return_value=sample_df)
+        ),
+        "qtx.outcomes.composite": MagicMock(
+            compute_composite=MagicMock(return_value=sample_df)
+        ),
+        "qtx.outcomes.responders": MagicMock(
+            compute_responders=MagicMock(return_value=sample_df)
+        ),
+        "qtx.features": MagicMock(),
+        "qtx.features.build": MagicMock(
+            build_feature_matrix=MagicMock(return_value=sample_df)
+        ),
+    }
+
+    with patch.dict(sys.modules, pipeline_modules):
+        with patch("routers.import_data.IngestPipeline") as MockPipeline:
+            MockPipeline.return_value.upsert.return_value = mock_summary
+            resp = client.post(
+                "/api/import/file",
+                files={"file": ("patients.csv", b"sn,name\nT001,Test Patient", "text/csv")},
+            )
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("inserted", 0) > 0, f"Expected inserted > 0, got: {body}"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: POST /api/import/file with malformed data -> 422 with error message
+# ---------------------------------------------------------------------------
+def test_import_file_malformed_data_returns_422_with_error(client):
+    """When the pipeline raises on bad data, the endpoint returns 422 with a message."""
+    pipeline_error = ValueError("Malformed data: required column sn not found")
+
+    pipeline_modules = {
+        "qtx": MagicMock(),
+        "qtx.io": MagicMock(),
+        "qtx.io.load_raw": MagicMock(),
+        "qtx.clean": MagicMock(),
+        "qtx.clean.normalise": MagicMock(
+            normalise=MagicMock(side_effect=pipeline_error)
+        ),
+        "qtx.phenotype": MagicMock(),
+        "qtx.phenotype.classify": MagicMock(),
+        "qtx.outcomes": MagicMock(),
+        "qtx.outcomes.change_scores": MagicMock(),
+        "qtx.outcomes.composite": MagicMock(),
+        "qtx.outcomes.responders": MagicMock(),
+        "qtx.features": MagicMock(),
+        "qtx.features.build": MagicMock(),
+    }
+
+    with patch.dict(sys.modules, pipeline_modules):
+        resp = client.post(
+            "/api/import/file",
+            files={"file": ("bad.csv", b"not,valid,columns\n1,2,3", "text/csv")},
+        )
+
+    assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+    detail = resp.json().get("detail", "")
+    assert "pipeline" in detail.lower() or "process" in detail.lower(), (
+        f"Expected pipeline error in detail, got: {detail!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Temp file is cleaned up after a successful import
+# ---------------------------------------------------------------------------
+def test_import_file_temp_file_cleaned_up_after_success(client):
+    """The temp file written before pipeline processing is removed after success."""
+    import pandas as pd
+    import routers.import_data as idata
+
+    sample_df = pd.DataFrame({"sn": ["T002"], "name": ["Cleanup Test"]})
+    created_paths: list[Path] = []
+
+    import tempfile as _tempfile_mod
+    original_ntf = _tempfile_mod.NamedTemporaryFile
+
+    def tracking_ntf(*args, **kwargs):
+        f = original_ntf(*args, **kwargs)
+        created_paths.append(Path(f.name))
+        return f
+
+    mock_summary = MagicMock()
+    mock_summary.inserted = 1
+    mock_summary.updated = 0
+    mock_summary.skipped = 0
+    mock_summary.errors = []
+
+    pipeline_modules = {
+        "qtx": MagicMock(),
+        "qtx.io": MagicMock(),
+        "qtx.io.load_raw": MagicMock(load_raw=MagicMock(return_value=sample_df)),
+        "qtx.clean": MagicMock(),
+        "qtx.clean.normalise": MagicMock(normalise=MagicMock(return_value=sample_df)),
+        "qtx.phenotype": MagicMock(),
+        "qtx.phenotype.classify": MagicMock(classify=MagicMock(return_value=sample_df)),
+        "qtx.outcomes": MagicMock(),
+        "qtx.outcomes.change_scores": MagicMock(
+            compute_change_scores=MagicMock(return_value=sample_df)
+        ),
+        "qtx.outcomes.composite": MagicMock(
+            compute_composite=MagicMock(return_value=sample_df)
+        ),
+        "qtx.outcomes.responders": MagicMock(
+            compute_responders=MagicMock(return_value=sample_df)
+        ),
+        "qtx.features": MagicMock(),
+        "qtx.features.build": MagicMock(
+            build_feature_matrix=MagicMock(return_value=sample_df)
+        ),
+    }
+
+    with patch.dict(sys.modules, pipeline_modules):
+        with patch.object(idata.tempfile, "NamedTemporaryFile", side_effect=tracking_ntf):
+            with patch("routers.import_data.IngestPipeline") as MockPipeline:
+                MockPipeline.return_value.upsert.return_value = mock_summary
+                resp = client.post(
+                    "/api/import/file",
+                    files={"file": ("patients.csv", b"sn,name\nT002,Cleanup Test", "text/csv")},
+                )
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert len(created_paths) == 1, "Expected exactly one temp file to be created"
+    assert not created_paths[0].exists(), (
+        f"Temp file {created_paths[0]} was not removed after success"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Temp file is cleaned up even after a pipeline failure
+# ---------------------------------------------------------------------------
+def test_import_file_temp_file_cleaned_up_after_failure(client):
+    """The temp file is removed even when the pipeline raises an exception."""
+    import routers.import_data as idata
+
+    created_paths: list[Path] = []
+    pipeline_error = RuntimeError("Simulated pipeline crash")
+
+    import tempfile as _tempfile_mod
+    original_ntf = _tempfile_mod.NamedTemporaryFile
+
+    def tracking_ntf(*args, **kwargs):
+        f = original_ntf(*args, **kwargs)
+        created_paths.append(Path(f.name))
+        return f
+
+    pipeline_modules = {
+        "qtx": MagicMock(),
+        "qtx.io": MagicMock(),
+        "qtx.io.load_raw": MagicMock(),
+        "qtx.clean": MagicMock(),
+        "qtx.clean.normalise": MagicMock(
+            normalise=MagicMock(side_effect=pipeline_error)
+        ),
+        "qtx.phenotype": MagicMock(),
+        "qtx.phenotype.classify": MagicMock(),
+        "qtx.outcomes": MagicMock(),
+        "qtx.outcomes.change_scores": MagicMock(),
+        "qtx.outcomes.composite": MagicMock(),
+        "qtx.outcomes.responders": MagicMock(),
+        "qtx.features": MagicMock(),
+        "qtx.features.build": MagicMock(),
+    }
+
+    with patch.dict(sys.modules, pipeline_modules):
+        with patch.object(idata.tempfile, "NamedTemporaryFile", side_effect=tracking_ntf):
+            resp = client.post(
+                "/api/import/file",
+                files={"file": ("patients.csv", b"sn,name\nT003,Crash Test", "text/csv")},
+            )
+
+    assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+    assert len(created_paths) == 1, "Expected exactly one temp file to be created"
+    assert not created_paths[0].exists(), (
+        f"Temp file {created_paths[0]} was not removed after pipeline failure"
     )
