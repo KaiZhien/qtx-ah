@@ -37,7 +37,8 @@ Anomaly flags detected after session {session_number}:
 Session measurements: pre_tug={pre_tug_s}, post_tug={post_tug_s},
 pre_vas={pre_vas}, post_vas={post_vas},
 composite_improvement={composite_improvement},
-responder_probability={responder_probability}.
+responder_probability={responder_probability},
+dropout_probability={dropout_probability}.{cadence_line}
 
 In 2-3 sentences, explain what these flags mean clinically and what the \
 treating physiotherapist should monitor or investigate at the next session. \
@@ -62,8 +63,9 @@ class AnomalyDetector:
         session: "ClinicalSession",
         trends: list[TrendResult],
         predictions: dict | None,
+        wearable_feats: dict | None = None,
     ) -> list[str]:
-        """Evaluate all four anomaly rules and return a list of flag strings.
+        """Evaluate all anomaly rules and return a list of flag strings.
 
         This is a pure function: it reads arguments only and performs no I/O.
         """
@@ -74,9 +76,9 @@ class AnomalyDetector:
             if trend.direction == "declining":
                 flags.append(f"metric_declining:{trend.metric}")
 
-        # Rule 2: pain_worsened
+        # Rule 2: pain_worsened — clinical threshold is a 1.0-point increase
         if session.post_vas is not None and session.pre_vas is not None:
-            if float(session.post_vas) > float(session.pre_vas):
+            if float(session.post_vas) > float(session.pre_vas) + 1.0:
                 flags.append("pain_worsened")
 
         # Rule 3: responder_mismatch
@@ -88,13 +90,26 @@ class AnomalyDetector:
         ):
             flags.append("responder_mismatch")
 
-        # Rule 4: fall_risk_unregistered
+        # Rule 4: high_dropout_risk
+        if (
+            predictions is not None
+            and float(predictions.get("dropout_probability", 0)) > 0.75
+        ):
+            flags.append("high_dropout_risk")
+
+        # Rule 5: fall_risk_unregistered
         if (
             session.post_tug_s is not None
             and float(session.post_tug_s) > 12.0
             and patient.has_fall_risk is False
         ):
             flags.append("fall_risk_unregistered")
+
+        # Rule 6: low_cadence_risk (wearable)
+        if wearable_feats is not None:
+            cadence = wearable_feats.get("wearable_cadence_avg_30d")
+            if cadence is not None and cadence < 80.0:
+                flags.append("low_cadence_risk")
 
         return flags
 
@@ -108,6 +123,7 @@ class AnomalyDetector:
         session: "ClinicalSession",
         predictions: dict | None,
         session_number: int,
+        wearable_feats: dict | None = None,
     ) -> str:
         """Format the Claude user message for anomaly warning generation."""
         def _fmt(val, unit=""):
@@ -117,6 +133,11 @@ class AnomalyDetector:
         responder_probability = (
             predictions.get("responder_probability") if predictions else None
         )
+        dropout_probability = (
+            predictions.get("dropout_probability") if predictions else None
+        )
+        cadence = wearable_feats.get("wearable_cadence_avg_30d") if wearable_feats else None
+        cadence_line = f"\ncadence_avg_30d={_fmt(cadence, ' steps/min')}," if cadence is not None else ""
         return _WARNING_TEMPLATE.format(
             session_number=session_number,
             flag_list=flag_list,
@@ -126,6 +147,8 @@ class AnomalyDetector:
             post_vas=_fmt(session.post_vas),
             composite_improvement=_fmt(session.composite_improvement),
             responder_probability=_fmt(responder_probability),
+            dropout_probability=_fmt(dropout_probability),
+            cadence_line=cadence_line,
         )
 
     # ------------------------------------------------------------------
@@ -173,6 +196,7 @@ class AnomalyDetector:
         trends: list[TrendResult],
         predictions: dict | None,
         session_number: int,
+        wearable_feats: dict | None = None,
     ) -> str | None:
         """Evaluate anomaly rules and, if flags fire, generate a clinical warning.
 
@@ -182,7 +206,7 @@ class AnomalyDetector:
 
         Must be called inside an open transaction — caller commits or rolls back.
         """
-        flags = self._detect_flags(patient, session, trends, predictions)
+        flags = self._detect_flags(patient, session, trends, predictions, wearable_feats)
         if not flags:
             return None
 
@@ -196,7 +220,7 @@ class AnomalyDetector:
             )
             return self.STUB_RESPONSE
 
-        user_message = self._build_warning_prompt(flags, session, predictions, session_number)
+        user_message = self._build_warning_prompt(flags, session, predictions, session_number, wearable_feats)
         try:
             content = self._call_claude(user_message)
             model = self.MODEL
