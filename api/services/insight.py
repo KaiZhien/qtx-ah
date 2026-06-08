@@ -32,7 +32,18 @@ _SYSTEM_PROMPT = (
     "5xSTS MCID = 2.3 s; "
     "Gait speed frailty threshold < 0.6 m/s; "
     "VAS pain MCID = 1.5–2 points (0–10 scale); "
-    "SPPB MCID = 1 point."
+    "SPPB MCID = 1 point. "
+    "Population-level response patterns (RAISE multi-centre validation, n=206, observational): "
+    "Frail patients (has_frailty=true or baseline SPPB ≤8) show ~5× greater SPPB improvement than higher-functioning patients — "
+    "frame expectations accordingly and highlight even modest gains in this group as clinically meaningful. "
+    "Diabetes (has_diabetes=true): diabetic patients showed significantly greater SPPB improvement (+1.25 pts, ANCOVA-adjusted p=0.015) "
+    "— flag as likely high-responder and note if results diverge from this pattern. "
+    "Dementia / cognitive impairment (has_neurological=true with dementia context): a non-significant directional decline "
+    "was observed in this subgroup (n=29) — monitor closely and explicitly note any functional regression. "
+    "Age response: 70–79-year-olds showed peak gait speed improvement (+0.194 m/s); 80+ patients still achieve meaningful SPPB gains "
+    "(+0.418 pts) — advanced age alone is not a contraindication. "
+    "SPPB ceiling: patients near SPPB 12 have limited improvement headroom — a stable score in this range is a positive finding, not a failure. "
+    "Tandem Balance Score (post_tandem_s): improvement correlates with reduced fall risk — note direction of change if data present."
 )
 
 _SESSION_SUMMARY_TEMPLATE = """\

@@ -44,6 +44,7 @@ def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
         return {
             "session_number":    s.session_number,
             "session_date":      s.session_date.isoformat() if s.session_date else None,
+            "usage_frequency":   s.usage_frequency,
             "notes":             s.notes,
             # Pre-session measurements
             "pre_vas":           _v(s.pre_vas),
@@ -59,6 +60,7 @@ def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
             "post_normal_gs":    _v(s.post_normal_gs_ms),
             "post_fast_gs":      _v(s.post_fast_gs_ms),
             "post_sppb":         s.post_sppb,
+            "post_tandem_s":     _v(s.post_tandem_s),
             # Change scores
             "vas_change":        _v(s.vas_change),
             "tug_change_pct":    _v(s.tug_change_pct),
@@ -87,9 +89,18 @@ def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
             "sn":                patient.sn,
             "name":              patient.name,
             "age":               patient.age,
+            "age_band":          patient.age_band,
             "gender":            patient.gender,
             "cohort":            patient.cohort,
             "primary_indication": patient.primary_indication,
+            "baseline_sppb":     patient.baseline_sppb,
+            "pre_tandem_s":      float(patient.pre_tandem_s) if patient.pre_tandem_s is not None else None,
+            # Key phenotype flags for RAISE-validated response patterns
+            "has_frailty":       patient.has_frailty,
+            "has_diabetes":      patient.has_diabetes,
+            "has_neurological":  patient.has_neurological,
+            "has_stroke":        patient.has_stroke,
+            "has_parkinsons":    patient.has_parkinsons,
         },
         "sessions": [_sdict(s) for s in sessions],
         "trends":   [_tdict(t) for t in trends],
