@@ -197,3 +197,55 @@ export function downloadPatientPdf(sn: string): void {
   const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
   window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf?key=${key}`, "_blank");
 }
+
+export interface ModelFileInfo {
+  size_mb: number;
+  modified_at: string;
+}
+
+export interface RetrainMetrics {
+  rmse_mean?: number;
+  mae_mean?: number;
+  r2_mean?: number;
+  auc_roc_mean?: number;
+  n?: number;
+}
+
+export interface RetrainState {
+  last_retrain_at?: string;
+  last_retrain_session_count?: number;
+  last_metrics?: RetrainMetrics;
+  error?: string;
+}
+
+export interface ModelStatusResponse {
+  models: Record<string, ModelFileInfo>;
+  retrain_state: RetrainState;
+  db_ready: boolean;
+}
+
+export async function getModelStatus(adminKey: string): Promise<ModelStatusResponse> {
+  const res = await fetch("/api/admin/model_status", {
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!res.ok) throw new Error(`getModelStatus: ${res.status}`);
+  return res.json();
+}
+
+export async function triggerRetrain(adminKey: string): Promise<{ status: string }> {
+  const res = await fetch("/api/admin/trigger_retrain", {
+    method: "POST",
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!res.ok) throw new Error(`triggerRetrain: ${res.status}`);
+  return res.json();
+}
+
+export async function reloadModels(adminKey: string): Promise<{ status: string; models_loaded: string[] }> {
+  const res = await fetch("/api/admin/reload-models", {
+    method: "POST",
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!res.ok) throw new Error(`reloadModels: ${res.status}`);
+  return res.json();
+}
