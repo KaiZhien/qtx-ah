@@ -94,12 +94,22 @@ export interface CohortCalibration {
   status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
 }
 
+export interface ModelAucDrift {
+  model: "classifier" | "dropout";
+  baseline_auc: number | null;
+  current_auc: number | null;
+  drift_pct: number | null;
+  status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
+  n: number;
+}
+
 export interface CalibrationReport {
   generated_at: string;
   drift_threshold: number;
   min_cohort_n: number;
   total_matchable: number;
   cohorts: CohortCalibration[];
+  model_auc_drift?: ModelAucDrift[];
 }
 
 export async function fetchCalibration(): Promise<CalibrationReport | null> {

@@ -359,6 +359,11 @@ def main() -> None:
             joblib.dump(clf_result[1], MODELS_DIR / "classifier_xgb.joblib")
             print("  Saved: classifier_xgb.joblib")
             any_model_saved = True
+            state = _read_state()
+            state["classifier_auc_baseline"] = float(auc)
+            with open(STATE_PATH, "w") as f:
+                json.dump(state, f, indent=2)
+            print(f"  Classifier AUC baseline updated: {auc:.4f}")
         else:
             print(f"  Classifier AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
         all_metrics["classifier_auc_mean"] = auc
@@ -372,6 +377,11 @@ def main() -> None:
             joblib.dump(drop_result[1], MODELS_DIR / "dropout_xgb.joblib")
             print("  Saved: dropout_xgb.joblib")
             any_model_saved = True
+            state = _read_state()
+            state["dropout_auc_baseline"] = float(auc)
+            with open(STATE_PATH, "w") as f:
+                json.dump(state, f, indent=2)
+            print(f"  Dropout AUC baseline updated: {auc:.4f}")
         else:
             print(f"  Dropout AUC={auc:.4f} < baseline {old_auc:.4f} — not saving")
         all_metrics["dropout_auc_mean"] = auc
