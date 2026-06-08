@@ -1,9 +1,9 @@
 # QTX-AH Handoff — Clinical Intelligence System
 
-**Date:** 2026-06-04
+**Date:** 2026-06-08
 **Branch:** main
-**Commit:** f818b7b
-**Status:** Sub-projects 1–4 complete. RAISE pipeline complete. Dual-loop ML+AI integration live. Calibration alerting + observability live. Admin auth hardened. 450+ tests passing.
+**Commit:** d32e4b9
+**Status:** Sub-projects 1–4 complete. RAISE pipeline complete. Dual-loop ML+AI integration live. Calibration alerting + observability live. Admin auth hardened. RAISE clinical findings integrated into AI reasoning layer. 483 tests passing.
 
 ---
 
@@ -358,6 +358,25 @@ Fetched from `GET /api/patient/{sn}/predictions/latest`.
 
 ---
 
+## RAISE Clinical Findings Integration (2026-06-08)
+
+RAISE multi-centre validation report (n=206, 4 centres) findings incorporated into the AI reasoning layer. These are population-level observational signals — Claude now has them as context when interpreting per-patient session data.
+
+**`api/services/insight.py` — `_SYSTEM_PROMPT` additions:**
+- **Diabetes = high-responder**: SPPB +1.25 pts, ANCOVA-adjusted p=0.015 (only RAISE finding to survive covariate adjustment). Claude flags diabetes patients as likely high-responders.
+- **Frailty differential**: frail patients (has_frailty / baseline SPPB ≤8) improve ~5× more than Normal. Claude frames even modest gains as clinically meaningful in this group.
+- **Dementia caution**: directional SPPB decline observed in n=29 (non-significant). Claude explicitly monitors regression in patients with cognitive impairment.
+- **Age window**: 70–79 group showed peak gait improvement (+0.194 m/s); 80+ still benefit (+0.418 SPPB pts). Advanced age is not a contraindication.
+- **SPPB ceiling**: stable score near 12 is a success — limited headroom, not treatment failure.
+- **Tandem Balance**: post_tandem_s improvement correlates with fall risk reduction.
+
+**`api/routers/ask.py` + `api/routers/sessions.py` — AI context payload enrichment:**
+- Patient dict now includes: `age_band`, `baseline_sppb`, `pre_tandem_s`, `has_frailty`, `has_diabetes`, `has_neurological`, `has_stroke`, `has_parkinsons`
+- Session dict now includes: `post_tandem_s`, `usage_frequency` (ask.py was missing), `sppb_change`, all change score percentages `tug_change_pct / sst_change_pct / vas_change / normal_gs_change_pct / fast_gs_change_pct` (sessions.py was missing these)
+- `GET /api/patient/{sn}/timeline` endpoint patient dict updated to match
+
+---
+
 ## Code Quality & Hygiene (2026-06-04)
 
 - **`datetime.utcnow()` deprecated calls** — eliminated across all 3 affected files (`api/models/clinical.py`, `api/services/ingest.py`, `api/services/trend.py`). All replaced with `datetime.now(timezone.utc)`. Column defaults use `lambda: datetime.now(timezone.utc)` for lazy evaluation.
@@ -371,8 +390,8 @@ Fetched from `GET /api/patient/{sn}/predictions/latest`.
 - **Walking cadence in fall risk adjuster** — `wearable_cadence_avg_30d` computed but not wired into score.
 - **`POST /api/import/file` pipeline** — function signatures are illustrative; wire to actual `src/qtx/` pipeline when ready.
 - **Anthropic BAA** — required before sending real patient data to Claude in production.
-- **RAISE covariate shift gates** — gates will be evaluable after script 20 backfill. Current AUC unknown post-fix; re-run `script 17` to confirm. If still failing, the clinical populations are genuinely distinct.
-- **Classifier + dropout retrain** — only regression retrains on schedule. `classifier_xgb.joblib` and `dropout_xgb.joblib` are frozen at initial training. Add `_retrain_classifier` and `_retrain_dropout` to `scripts/18`.
+- **RAISE covariate shift gates** — re-run `script 17` after `script 20` backfill to confirm AUC < 0.70. If still failing, clinical populations are genuinely distinct and RAISE data should not be merged into QTX training set.
+- **Classifier + dropout retrain** ✅ — `_retrain_classifier` and `_retrain_dropout` added to `scripts/18`. All four models now retrain on schedule.
 - **Fall risk** — entirely removed from this codebase. Owned by a separate team member. The `session_predictions` table retains `fall_risk_score` and `fall_risk_label` columns (they simply stay NULL).
 
 ---
@@ -396,13 +415,13 @@ Every patient view shows raw numbers with no reference point. `PERCENT_RANK()` w
 
 | Priority | Name | What | Builds on |
 |----------|------|------|-----------|
-| 🎯 | **Longitudinal features** | Add `session_number`, `prior_avg_composite_improvement`, `trend_tug_magnitude` to `REGRESSION_FEATURES` and `_build_feature_vector_from_orm` | `session_predictions`, `patient_trends`, `src/qtx/models/regression.py` |
-| 🎯 | **SHAP at inference** | Store top-5 (feature, contribution) pairs as `shap_top5 JSON` in `session_predictions`; render in `PredictionChips` | `shap.TreeExplainer` already used in `src/qtx/models/evaluate.py` |
-| 🎯 | **MCID thresholds in system prompt** | Add clinical definitions to `_SYSTEM_PROMPT` in `insight.py`: TUG (MCID=3.5s, >12s=fall risk), 5xSST (MCID=2.3s), gait (<0.6 m/s=frailty), VAS (MCID=1.5–2), SPPB (MCID=1) | `insight.py` `_SYSTEM_PROMPT`; zero architectural change |
-| | **Pre/post pairs in AI context** | Add `pre_vas`, `pre_tug_s`, `tug_change_pct`, `vas_change` etc. to `_sdict` in `ask.py` — currently omitted silently | `Session` ORM already stores these fields |
-| | **Retrain all four models** | Add `_retrain_classifier` and `_retrain_dropout` to `scripts/18` | `src/qtx/models/classifier.py`, `src/qtx/models/dropout.py` |
-| | **Cohort percentile on chips** | `PERCENT_RANK()` → `GET /api/patient/{sn}/benchmark` → render `(cohort p62)` next to predicted improvement | `sessions`, `patients` tables; `PredictionChips.tsx` |
-| | **"Prepare session" button** | Button in `PatientDrawerBody` header fires `ask` endpoint with pre-wired prompt | `api/routers/ask.py`, `QAPanel.tsx`; zero backend code |
+| ✅ | **Longitudinal features** | `session_number`, `prior_avg_composite_improvement`, `trend_tug_magnitude` added to regression feature vector | `session_predictions`, `patient_trends`, `src/qtx/models/regression.py` |
+| ✅ | **SHAP at inference** | Top-5 (feature, contribution) pairs stored as `shap_top5 JSON` in `session_predictions`; rendered in `PredictionChips` | `shap.TreeExplainer` in `evaluate.py` |
+| ✅ | **MCID + RAISE patterns in system prompt** | MCID thresholds + RAISE-validated response patterns (diabetes, frailty, dementia, age window, SPPB ceiling, tandem balance) added to `_SYSTEM_PROMPT` | `insight.py` |
+| ✅ | **Pre/post pairs + change scores in AI context** | `pre_vas`, `tug_change_pct`, `vas_change`, `sppb_change`, `post_tandem_s`, `usage_frequency`, phenotype flags, `age_band`, `baseline_sppb`, `pre_tandem_s` added to AI context payloads | `ask.py`, `sessions.py` |
+| ✅ | **Retrain all four models** | `_retrain_classifier` and `_retrain_dropout` added to `scripts/18` | `src/qtx/models/classifier.py`, `src/qtx/models/dropout.py` |
+| ✅ | **Cohort percentile on chips** | `PERCENT_RANK()` → `GET /api/patient/{sn}/benchmark` → `(cohort p62)` rendered in `PredictionChips` | `sessions`, `patients` tables; `PredictionChips.tsx` |
+| ✅ | **"Prepare session" button** | Button in `PatientDrawerBody` header fires `ask` endpoint with pre-wired prompt | `api/routers/ask.py`, `QAPanel.tsx` |
 
 ### Big Bets (1–3 months each)
 
@@ -424,4 +443,4 @@ At inference in `prediction.py`, query `AVG(predicted - actual)` from `session_p
 
 ### Immediate Next Step
 
-Add longitudinal trajectory features (`session_number`, `prior_avg_composite_improvement`, `trend_tug_magnitude`) to the regression feature vector. Highest-leverage single code change, directly addresses R²=0.022, no new data or infrastructure needed.
+Re-run `scripts/17_raise_model_evaluation.py` to confirm covariate shift AUC after the `script 20` backfill. If AUC < 0.70 and SHAP gate passes, RAISE data can be merged into QTX training set for the next scheduled retrain — expanding from 1,715 to 1,877 patients and improving model coverage of frail/elderly phenotypes.
