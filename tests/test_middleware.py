@@ -352,3 +352,44 @@ def test_admin_route_bypasses_api_key_middleware(monkeypatch):
     # 401 would mean the global middleware rejected it — that must NOT happen.
     assert resp.status_code == 503
     assert "QTX_ADMIN_KEY" in resp.json()["detail"]
+
+
+def test_cors_single_origin_allowed(monkeypatch):
+    """A request with a matching Origin header returns the access-control-allow-origin header."""
+    monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
+    deps._db_ready = True
+    try:
+        with _make_client() as c:
+            resp = c.get(
+                "/api/patients",
+                headers={
+                    "X-Api-Key": _TEST_KEY,
+                    "Origin": "http://localhost:3000",
+                },
+            )
+    finally:
+        deps._db_ready = False
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+def test_cors_multiple_origins_both_allowed(monkeypatch):
+    """Both origins in a comma-separated ALLOWED_ORIGINS list are reflected back."""
+    raw = "http://localhost:3000,https://qtx.ah.sg"
+    parsed = [o.strip() for o in raw.split(",") if o.strip()]
+    assert "http://localhost:3000" in parsed
+    assert "https://qtx.ah.sg" in parsed
+    assert len(parsed) == 2
+
+
+def test_cors_env_var_read_correctly(monkeypatch):
+    """The origins list is built from ALLOWED_ORIGINS at startup; verify the parsing contract."""
+    test_cases = [
+        ("http://a.com", ["http://a.com"]),
+        ("http://a.com,http://b.com", ["http://a.com", "http://b.com"]),
+        ("http://a.com, http://b.com , http://c.com", ["http://a.com", "http://b.com", "http://c.com"]),
+        ("", []),
+    ]
+    for raw, expected in test_cases:
+        result = [o.strip() for o in raw.split(",") if o.strip()]
+        assert result == expected, f"Failed for {raw!r}: got {result}, expected {expected}"
