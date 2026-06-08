@@ -78,9 +78,14 @@ def model_status() -> dict:
 def _run_retrain() -> None:
     """Background task: launch the scheduled retrain script."""
     script = _PROJECT_ROOT / "scripts" / "18_scheduled_retrain.py"
+    if not script.exists():
+        return
     subprocess.Popen(
         [sys.executable, str(script)],
         cwd=str(_PROJECT_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
