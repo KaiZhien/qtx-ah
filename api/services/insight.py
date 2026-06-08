@@ -83,6 +83,36 @@ def _format_predictions(predictions: dict) -> dict:
     return result
 
 
+
+_TREATMENT_PLAN_TEMPLATE = """Patient phenotype and context:
+{patient_json}
+
+Session timeline and trends:
+{timeline_json}
+
+ML prediction signals:
+{predictions_json}
+
+{focus_line}Generate a {plan_sessions}-session treatment plan using EXACTLY this structure (include the bold headers verbatim):
+
+**Session Focus:** [one sentence describing the overarching rehabilitation goal for this plan]
+
+**Session-by-Session Plan:**
+{session_bullets}
+
+**Key Metrics to Monitor:**
+- [metric] — target: [MCID-based value or directional goal]
+- [metric] — target: [MCID-based value or directional goal]
+- [metric] — target: [MCID-based value or directional goal]
+
+**Risk Flags:**
+- [phenotype-specific caution or contraindication]
+- [phenotype-specific caution or contraindication]
+
+**Dosage Recommendation:** [from model signal or clinical judgement if unavailable]
+
+Base every recommendation on the patient data and ML signals provided. Reference MCID thresholds where applicable."""
+
 class InsightService:
     STUB_RESPONSE = "[AI insights unavailable — ANTHROPIC_API_KEY not configured]"
     MODEL = "claude-sonnet-4-6"
@@ -274,3 +304,51 @@ class InsightService:
             embedding=embedding,
         )
         return content
+
+    def generate_treatment_plan(
+        self,
+        timeline: dict,
+        patient_id,
+        predictions: dict | None = None,
+        clinician_focus: str | None = None,
+        plan_sessions: int = 4,
+    ) -> str:
+        """Generate a structured treatment plan and persist it."""
+        patient_data = timeline.get("patient", {})
+        sessions_data = timeline.get("sessions", [])
+        trends_data = timeline.get("trends", [])
+        session_bullets = "\n".join(
+            f"- Session {i}: [specific focus and exercises]"
+            for i in range(1, plan_sessions + 1)
+        )
+        focus_line = f"Clinician focus: {clinician_focus}\n\n" if clinician_focus else ""
+        predictions_payload = _format_predictions(predictions) if predictions else {}
+        if not self._api_key:
+            self._save_insight(
+                patient_id=patient_id,
+                content=self.STUB_RESPONSE,
+                model="stub",
+                insight_type="treatment_plan",
+            )
+            return self.STUB_RESPONSE
+        user_message = _TREATMENT_PLAN_TEMPLATE.format(
+            patient_json=json.dumps(patient_data, indent=2),
+            timeline_json=json.dumps({"sessions": sessions_data, "trends": trends_data}, indent=2),
+            predictions_json=json.dumps(predictions_payload, indent=2),
+            focus_line=focus_line,
+            plan_sessions=plan_sessions,
+            session_bullets=session_bullets,
+        )
+        try:
+            content = _call_claude_fn(user_message, _SYSTEM_PROMPT, max_tokens=1500)
+        except Exception as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+        self._save_insight(
+            patient_id=patient_id,
+            content=content,
+            model=self.MODEL,
+            insight_type="treatment_plan",
+        )
+        return content
+
