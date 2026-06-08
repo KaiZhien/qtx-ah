@@ -146,7 +146,8 @@ def _retrain_regression(df: pd.DataFrame):
         print(f"  WARNING: only {len(df_m)} rows — skipping regression retrain")
         return None
     cols = [c for c in REGRESSION_FEATURES if c in df_m.columns]
-    X = df_m[cols].astype(float).values
+    # Keep as DataFrame so XGBoost records feature_names_in_ on the saved artifact.
+    X = df_m[cols].astype(float)
     y = df_m["composite_improvement"].astype(float).values
     model = XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05,
                          subsample=0.8, tree_method="hist", random_state=42, n_jobs=-1, verbosity=0)
@@ -154,7 +155,7 @@ def _retrain_regression(df: pd.DataFrame):
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     rmse_scores, r2_scores = [], []
     for tr, val in kf.split(X):
-        m = clone(model); m.fit(X[tr], y[tr]); preds = m.predict(X[val])
+        m = clone(model); m.fit(X.iloc[tr], y[tr]); preds = m.predict(X.iloc[val])
         rmse_scores.append(math.sqrt(mean_squared_error(y[val], preds)))
         r2_scores.append(r2_score(y[val], preds))
     model.fit(X, y)

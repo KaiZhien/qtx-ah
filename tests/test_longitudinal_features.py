@@ -244,3 +244,25 @@ def test_get_longitudinal_features_uses_db_values():
     assert result["session_number"] == 3.0
     assert result["prior_avg_composite_improvement"] == pytest.approx(0.42)
     assert result["trend_tug_magnitude"] == pytest.approx(0.25)
+
+
+# ── Model artifact feature_names_in_ ─────────────────────────────────────────
+
+def test_retrained_model_has_longitudinal_features_in_feature_names():
+    """After retraining, regression_xgb.joblib must include all three longitudinal feature names."""
+    import joblib
+
+    model_path = Path(__file__).resolve().parent.parent / "models" / "regression_xgb.joblib"
+    if not model_path.exists():
+        pytest.skip("regression_xgb.joblib not found")
+
+    # Trusted internal artifact: written exclusively by our own retrain script.
+    model = joblib.load(model_path)
+    feature_names = list(getattr(model, "feature_names_in_", []))
+
+    if not feature_names:
+        pytest.skip("Model does not expose feature_names_in_ (pre-retrain artifact)")
+
+    assert "session_number" in feature_names, f"session_number missing from model features: {feature_names}"
+    assert "prior_avg_composite_improvement" in feature_names, "prior_avg_composite_improvement missing from model"
+    assert "trend_tug_magnitude" in feature_names, "trend_tug_magnitude missing from model"

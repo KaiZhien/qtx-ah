@@ -51,6 +51,10 @@ regression_composite:
     - rgn_shoulder
     - rgn_upper_limb
     - rgn_trunk
+    # longitudinal session features
+    - session_number
+    - prior_avg_composite_improvement
+    - trend_tug_magnitude
     # categorical
     - primary_indication
   target: composite_improvement
