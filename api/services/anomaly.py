@@ -176,8 +176,8 @@ class AnomalyDetector:
         patient: "Patient",
         session: "ClinicalSession",
         trends: list[TrendResult],
-        session_number: int,
         predictions: dict | None,
+        session_number: int,
     ) -> str | None:
         """Evaluate anomaly rules and, if flags fire, generate a clinical warning.
 
@@ -205,8 +205,8 @@ class AnomalyDetector:
         try:
             content = self._call_claude(user_message)
         except Exception as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+            logger.warning("AnomalyDetector Claude call failed: %s", exc)
+            return None
 
         self._save_warning(
             patient_id=patient.id,
