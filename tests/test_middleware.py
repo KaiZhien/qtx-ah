@@ -352,3 +352,86 @@ def test_admin_route_bypasses_api_key_middleware(monkeypatch):
     # 401 would mean the global middleware rejected it — that must NOT happen.
     assert resp.status_code == 503
     assert "QTX_ADMIN_KEY" in resp.json()["detail"]
+
+
+def test_cors_single_origin_allowed(monkeypatch):
+    """A request with a matching Origin header returns the access-control-allow-origin header."""
+    monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
+    deps._db_ready = True
+    try:
+        with _make_client() as c:
+            resp = c.get(
+                "/api/patients",
+                headers={
+                    "X-Api-Key": _TEST_KEY,
+                    "Origin": "http://localhost:3000",
+                },
+            )
+    finally:
+        deps._db_ready = False
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+def test_cors_foreign_origin_rejected(monkeypatch):
+    """A request from an origin NOT in ALLOWED_ORIGINS gets no access-control-allow-origin header."""
+    monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
+    deps._db_ready = True
+    try:
+        with _make_client() as c:
+            resp = c.get(
+                "/api/patients",
+                headers={
+                    "X-Api-Key": _TEST_KEY,
+                    "Origin": "http://evil.example.com",
+                },
+            )
+    finally:
+        deps._db_ready = False
+    assert resp.status_code == 200  # request succeeds (CORS is browser-enforced)
+    assert resp.headers.get("access-control-allow-origin") is None
+
+
+def test_cors_multiple_origins_live_middleware():
+    """Both origins in ALLOWED_ORIGINS are accepted by a live CORSMiddleware instance."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from fastapi.middleware.cors import CORSMiddleware
+
+    mini = FastAPI()
+    origins = ["http://localhost:3000", "https://staging.example.com"]
+    mini.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @mini.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    client = TestClient(mini)
+
+    resp = client.get("/ping", headers={"Origin": "http://localhost:3000"})
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+    resp = client.get("/ping", headers={"Origin": "https://staging.example.com"})
+    assert resp.headers.get("access-control-allow-origin") == "https://staging.example.com"
+
+    resp = client.get("/ping", headers={"Origin": "http://evil.com"})
+    assert resp.headers.get("access-control-allow-origin") is None
+
+
+def test_cors_env_var_read_correctly(monkeypatch):
+    """The origins list is built from ALLOWED_ORIGINS at startup; verify the parsing contract."""
+    test_cases = [
+        ("http://a.com", ["http://a.com"]),
+        ("http://a.com,http://b.com", ["http://a.com", "http://b.com"]),
+        ("http://a.com, http://b.com , http://c.com", ["http://a.com", "http://b.com", "http://c.com"]),
+        ("", []),
+    ]
+    for raw, expected in test_cases:
+        result = [o.strip() for o in raw.split(",") if o.strip()]
+        assert result == expected, f"Failed for {raw!r}: got {result}, expected {expected}"

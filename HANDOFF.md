@@ -71,7 +71,10 @@ CALIBRATION_MIN_COHORT_N=20
 TERRA_WEBHOOK_SECRET=
 TERRA_DEV_ID=
 TERRA_API_KEY=
+ALLOWED_ORIGINS=http://localhost:3000
 ```
+
+`ALLOWED_ORIGINS` — comma-separated list of frontend origins the API will accept CORS requests from. Defaults to `http://localhost:3000` if unset. For production, set to the deployed frontend URL (e.g. `https://qtx.ah.sg`). Multiple origins: `ALLOWED_ORIGINS=https://qtx.ah.sg,https://staging.qtx.ah.sg`.
 
 **`quantumtx-ah/web/.env.local`** (Next.js — gitignored):
 ```
