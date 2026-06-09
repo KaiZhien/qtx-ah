@@ -68,7 +68,7 @@ def model_status() -> dict:
             retrain_state = {"error": "could not parse retrain_state.json"}
 
     try:
-        db_ready = deps.db is not None
+        db_ready = deps._db_ready
     except Exception:
         db_ready = False
 
