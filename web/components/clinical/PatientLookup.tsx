@@ -16,9 +16,9 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
 
   const list = q.trim()
     ? data.filter((p) =>
-        (p.id ?? "").toLowerCase().includes(q.toLowerCase()) ||
+        (p.name ?? "").toLowerCase().includes(q.toLowerCase()) ||
         (p.tags ?? "").toLowerCase().includes(q.toLowerCase()) ||
-        String(p.sn) === q.trim()
+        String(p.sn).includes(q.trim())
       ).slice(0, 14)
     : [];
 
@@ -37,7 +37,7 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
             className="input"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="e.g. AH-24-0042, 1042, knee OA"
+            placeholder="e.g. Bernard, 42, knee OA"
             style={{ paddingLeft: 36 }}
             autoFocus
           />
