@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import weasyprint
 from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.orm import Session as DBSession
 
@@ -112,4 +111,5 @@ class ReportService:
             generated_date=date.today().isoformat(),
         )
 
+        import weasyprint
         return weasyprint.HTML(string=html).write_pdf()
