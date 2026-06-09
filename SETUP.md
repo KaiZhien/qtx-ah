@@ -8,7 +8,7 @@
 
 ## Prerequisites
 
-- GitHub account with access to the `qtx-ah` repo
+- GitHub account with access to the `qtx-ah` repo (private repo — both Railway and Vercel support this)
 - Railway account — [railway.app](https://railway.app)
 - Vercel account — [vercel.com](https://vercel.com)
 - API keys:
@@ -40,8 +40,9 @@ Browser → Vercel (Next.js) → Railway (FastAPI) → Railway (PostgreSQL)
 
 1. Log in to [railway.app](https://railway.app)
 2. Click **New Project** → **Deploy from GitHub repo**
-3. Select the `qtx-ah` repository
-4. Railway will detect `requirements.txt` and `Procfile` automatically — no extra build config needed
+3. Railway will prompt you to install the **Railway GitHub App** — click **Configure GitHub App** and grant access to the `qtx-ah` repo specifically (no need to grant access to all repos)
+4. Select the `qtx-ah` repository
+5. Railway will detect `requirements.txt` and `Procfile` automatically — no extra build config needed
 
 ### 1.2 Add a PostgreSQL database
 
@@ -125,8 +126,9 @@ This inserts ~1,700 patients from the processed parquet file. Skip this if you p
 
 1. Log in to [vercel.com](https://vercel.com)
 2. Click **Add New Project** → import the `qtx-ah` repository
-3. Set **Root Directory** to `web`
-4. Leave the build command as-is (`next build`) — Vercel detects Next.js automatically
+3. Vercel will prompt you to install the **Vercel GitHub App** — grant access to the `qtx-ah` repo specifically
+4. Set **Root Directory** to `web`
+5. Leave the build command as-is (`next build`) — Vercel detects Next.js automatically
 
 ### 2.2 Set environment variables
 
