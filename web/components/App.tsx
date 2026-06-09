@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import type { Patient, Filters, Tweaks } from "@/lib/types";
 import {
   COHORTS,
@@ -84,6 +85,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 };
 
 export function App() {
+  const router = useRouter();
   // Routing
   const [page, setPage] = useState<string>("overview");
 
@@ -233,12 +235,12 @@ export function App() {
       <Drawer
         open={!!drawerPatient}
         onClose={closeDrawer}
-        title={drawerPatient ? drawerPatient.id : ""}
+        title={drawerPatient ? (drawerPatient.name ?? `Patient ${drawerPatient.sn}`) : ""}
         subtitle="Patient record"
         footer={
           <>
             <button className="btn" onClick={closeDrawer}>Close</button>
-            <button className="btn primary">Open full chart</button>
+            <button className="btn primary" onClick={() => drawerPatient && router.push(`/patient/${drawerPatient.sn}`)}>Open full chart</button>
           </>
         }
       >
