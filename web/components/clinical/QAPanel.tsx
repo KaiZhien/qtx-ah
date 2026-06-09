@@ -186,7 +186,7 @@ export function QAPanel({ sn, onAnswer, onPdfDownload }: QAPanelProps) {
 
       <button
         className="btn primary"
-        onClick={handleAsk}
+        onClick={() => handleAsk()}
         disabled={loading || !question.trim()}
       >
         {loading ? "Asking..." : "Ask"}
