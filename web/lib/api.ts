@@ -1,7 +1,6 @@
 import type {
   BenchmarkResult,
   Filters,
-  BenchmarkResult,
   Patient,
   PatientProfile,
   PredictionResult,
