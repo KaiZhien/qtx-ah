@@ -9,6 +9,7 @@ export type PatientTestKey =
 export type Patient = {
   sn: number;
   id: string;
+  name?: string;
   initials: string;
   age: number;
   age_band: "<50" | "50-59" | "60-69" | "70-79" | "80+";
