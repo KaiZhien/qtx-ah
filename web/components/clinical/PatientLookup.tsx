@@ -16,7 +16,7 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
 
   const list = q.trim()
     ? data.filter((p) =>
-        p.id.toLowerCase().includes(q.toLowerCase()) ||
+        (p.id ?? "").toLowerCase().includes(q.toLowerCase()) ||
         (p.tags ?? "").toLowerCase().includes(q.toLowerCase()) ||
         String(p.sn) === q.trim()
       ).slice(0, 14)
