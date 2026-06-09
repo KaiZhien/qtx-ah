@@ -221,19 +221,6 @@ export async function fetchLatestAnomaly(sn: string): Promise<AnomalyWarning | n
   return data as AnomalyWarning;
 }
 
-export async function suggestPlan(
-  sn: string,
-  body: PlanRequest = {}
-): Promise<TreatmentPlanResponse> {
-  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/suggest_plan`, {
-    method: "POST",
-    headers: apiHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`suggestPlan: ${res.status}`);
-  return res.json();
-}
-
 export function downloadPatientPdf(sn: string): void {
   const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
   window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf?key=${key}`, "_blank");
