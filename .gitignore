@@ -1,5 +1,6 @@
 data/inputs/
-data/processed/
+data/processed/*
+!data/processed/dashboard_data.parquet
 data/audit/
 data/wearable.db
 # Keep XGBoost + dosage models (required at startup, small enough to commit)
