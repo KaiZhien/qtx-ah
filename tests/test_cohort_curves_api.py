@@ -188,6 +188,63 @@ def test_grp_flag_in_response():
     assert r.json()["grp_flag"] == "grp_joint_disease"
 
 
+def test_cohort_curves_null_percentiles_returned_without_error():
+    """A curve point with null p25/p50/p75 must not cause a 500 and must appear in the response."""
+    rows = [_make_row(session_number=1, p25=None, p50=None, p75=None, n=5)]
+    with _client() as c:
+        app.dependency_overrides[get_db] = lambda: _db_with_rows(rows)
+        try:
+            r = c.get(
+                "/api/cohort/grp_frailty_sarcopenia/response_curves",
+                headers={"X-Api-Key": _KEY},
+            )
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 200
+    body = r.json()
+    assert "curves" in body
+    assert len(body["curves"]) >= 1
+    point = body["curves"][0]["points"][0]
+    assert point["p25"] is None
+    assert point["p50"] is None
+    assert point["p75"] is None
+    assert point["n"] == 5
+
+
+def test_cohort_curves_n_zero_included():
+    """A curve point with n=0 must be included in the response, not filtered out."""
+    rows = [_make_row(session_number=1, n=0)]
+    with _client() as c:
+        app.dependency_overrides[get_db] = lambda: _db_with_rows(rows)
+        try:
+            r = c.get(
+                "/api/cohort/grp_frailty_sarcopenia/response_curves",
+                headers={"X-Api-Key": _KEY},
+            )
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 200
+    body = r.json()
+    assert "curves" in body
+    assert len(body["curves"]) >= 1
+    point = body["curves"][0]["points"][0]
+    assert point["n"] == 0
+
+
+def test_cohort_curves_invalid_metric_returns_non_500():
+    """Passing an unrecognised metric value must not cause a 500 server error."""
+    with _client() as c:
+        app.dependency_overrides[get_db] = lambda: _db_with_rows([])
+        try:
+            r = c.get(
+                "/api/cohort/grp_frailty_sarcopenia/response_curves?metric=invalid",
+                headers={"X-Api-Key": _KEY},
+            )
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+    assert r.status_code != 500
+
+
 def test_migration_creates_table():
     """Integration test: migration 24 creates the table against SQLite."""
     import importlib.util
