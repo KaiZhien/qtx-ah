@@ -201,3 +201,80 @@ def test_withdraw_enrollment(client, test_db):
     assert row.active is False
     assert row.consent_withdrawn_at is not None
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wearable/summary
+# ---------------------------------------------------------------------------
+
+def test_wearable_summary_returns_enrolled_count(client):
+    """Summary endpoint returns 200 with an enrolled_count key."""
+    resp = client.get("/api/wearable/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "enrolled_count" in data
+
+
+def test_wearable_summary_enrolled_count_is_integer(client):
+    """enrolled_count must be an integer (not null, not a string)."""
+    # Seed one active enrollment so the count is non-trivially interesting.
+    client.post("/api/wearable/confirm-enrollment", json={
+        "patient_id": "P_SUM1",
+        "terra_user_id": "terra_sum1",
+        "device_brand": "apple_health",
+        "enrolled_by": "clinician_01",
+    })
+    resp = client.get("/api/wearable/summary")
+    assert resp.status_code == 200
+    enrolled_count = resp.json()["enrolled_count"]
+    assert isinstance(enrolled_count, int)
+    assert enrolled_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/wearable/enroll/{patient_id}
+# ---------------------------------------------------------------------------
+
+def test_wearable_delete_enrollment_404_when_not_enrolled(client):
+    """Deleting enrollment for a patient with no active enrollment returns 404."""
+    resp = client.delete("/api/wearable/enroll/NONEXISTENT_PATIENT_999",
+                         headers={"X-Api-Key": _TEST_API_KEY})
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wearable/{patient_id}/features
+# ---------------------------------------------------------------------------
+
+def test_wearable_features_inactive_enrollment_shape(client, test_db):
+    """Features endpoint returns enrolled=false when the stored enrollment is inactive."""
+    engine, _ = test_db
+    from sqlalchemy.orm import sessionmaker
+    import uuid
+    from datetime import datetime, timezone
+    Session = sessionmaker(bind=engine)
+
+    # Insert an enrollment that is already inactive (consent withdrawn).
+    db = Session()
+    from models.wearable import WearableEnrollment
+    now = datetime.now(timezone.utc)
+    inactive = WearableEnrollment(
+        id=str(uuid.uuid4()),
+        patient_id="P_INACTIVE1",
+        terra_user_id="terra_inactive1",
+        device_brand="garmin",
+        enrolled_at=now,
+        enrolled_by="clinician_01",
+        consent_given_at=now,
+        consent_withdrawn_at=now,
+        active=False,
+    )
+    db.add(inactive)
+    db.commit()
+    db.close()
+
+    resp = client.get("/api/wearable/P_INACTIVE1/features")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "enrolled" in data
+    assert data["enrolled"] is False
