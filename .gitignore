@@ -18,6 +18,8 @@ dist/
 *.egg-info/
 .DS_Store
 web/tsconfig.tsbuildinfo
+node_modules/
+package-lock.json
 
 .worktrees/
 
