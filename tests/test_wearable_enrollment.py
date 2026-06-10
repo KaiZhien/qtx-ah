@@ -49,7 +49,7 @@ def client(test_db):
     from main import app
     from db import get_db
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app, headers={"X-Api-Key": _TEST_API_KEY}) as c:
+    with TestClient(app, headers={"X-Api-Key": _TEST_API_KEY}, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.clear()
 
