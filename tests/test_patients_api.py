@@ -170,6 +170,14 @@ def _db_for_detail(patient, session):
 # GET /patients tests
 # ===========================================================================
 
+def test_list_patients_requires_api_key():
+    with _client() as c:
+        assert c.get("/api/patients").status_code == 401
+
+def test_get_patient_requires_api_key():
+    with _client() as c:
+        assert c.get("/api/patient/P001").status_code == 401
+
 def test_list_patients_503_when_db_not_ready():
     with _client() as c:
         with patch.object(deps, "_db_ready", False):
@@ -207,7 +215,7 @@ def test_list_patients_200_with_results():
     assert data[0]["sn"] == "P001"
 
 
-def test_list_patients_cohort_filter_no_error():
+def test_list_patients_cohort_filter_returns_200():
     """Cohort filter param is passed through without error."""
     with _client() as c:
         with patch.object(deps, "_db_ready", True):
