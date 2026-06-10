@@ -1,4 +1,4 @@
-.PHONY: install ingest clean-data phenotype outcomes features eda model dosage fall-risk dev api web all test clean reconcile-wearables
+.PHONY: install ingest clean-data phenotype outcomes features eda model dosage fall-risk dev api web all test clean reconcile-wearables setup
 
 PYTHON := $(shell [ -f .venv/bin/python3 ] && echo .venv/bin/python3 || echo python3)
 export PYTHONPATH := src
@@ -53,6 +53,9 @@ test:
 
 reconcile-wearables:
 	PYTHONPATH=api $(PYTHON) scripts/10_reconcile_wearables.py
+
+setup:
+	bash setup.sh
 
 clean:
 	rm -rf data/processed/ data/audit/ reports/ models/
