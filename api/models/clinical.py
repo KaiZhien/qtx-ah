@@ -226,6 +226,27 @@ class PatientInsight(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
 
 
+class CohortResponseCurve(Base):
+    __tablename__ = "cohort_response_curves"
+    __table_args__ = (
+        UniqueConstraint("grp_flag", "metric", "session_number",
+                         name="uq_response_curves_grp_metric_session"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    grp_flag: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(50), nullable=False)
+    session_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    p25: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    p50: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    p75: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    n: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class SessionPrediction(Base):
     __tablename__ = "session_predictions"
 

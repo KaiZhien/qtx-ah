@@ -404,6 +404,17 @@ def main() -> None:
         except Exception as exc:
             print(f"  WARNING: hot-reload call failed: {exc} — API still using old models")
 
+    if any_model_saved:
+        try:
+            import subprocess
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "25_compute_cohort_response_curves.py")],
+                cwd=str(ROOT), check=True,
+            )
+            print("  Cohort response curves recomputed.")
+        except Exception as exc:
+            print(f"  WARNING: cohort response curve compute failed: {exc}")
+
     print("=== Retrain complete ===")
 
 

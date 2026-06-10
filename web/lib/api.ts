@@ -14,6 +14,7 @@ import type {
   AnomalyWarning,
   PlanRequest,
   TreatmentPlanResponse,
+  ResponseCurvesResponse,
 } from "./types";
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
@@ -274,6 +275,17 @@ export async function reloadModels(adminKey: string): Promise<{ status: string; 
     headers: { "X-Admin-Key": adminKey },
   });
   if (!res.ok) throw new Error(`reloadModels: ${res.status}`);
+  return res.json();
+}
+
+export async function getResponseCurves(
+  grpFlag: string,
+  metric?: string
+): Promise<ResponseCurvesResponse | null> {
+  const url = `/api/cohort/${encodeURIComponent(grpFlag)}/response_curves${metric ? `?metric=${encodeURIComponent(metric)}` : ""}`;
+  const res = await fetch(url, { headers: apiHeaders() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`getResponseCurves: ${res.status}`);
   return res.json();
 }
 

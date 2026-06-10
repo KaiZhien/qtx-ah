@@ -283,6 +283,24 @@ export type BenchmarkMetric = {
   higher_is_better: boolean;
 };
 
+export interface ResponseCurvePoint {
+  session_number: number
+  p25: number | null
+  p50: number | null
+  p75: number | null
+  n: number
+}
+
+export interface ResponseCurve {
+  metric: string
+  points: ResponseCurvePoint[]
+}
+
+export interface ResponseCurvesResponse {
+  grp_flag: string
+  curves: ResponseCurve[]
+}
+
 export type BenchmarkResult = {
   cohort: string | null;
   cohort_n: number;

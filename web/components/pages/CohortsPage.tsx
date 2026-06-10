@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useState } from "react";
-import type { Patient } from "@/lib/types";
+import type { Patient, ResponseCurve } from "@/lib/types";
 import { COHORTS, COHORT_COLORS, AGE_BANDS } from "@/lib/constants";
-import { fetchWearableSummary } from "@/lib/api";
+import { fetchWearableSummary, getResponseCurves } from "@/lib/api";
 import { GroupedBars } from "@/components/charts/GroupedBars";
 import { StackedBars } from "@/components/charts/StackedBars";
+import { ResponseCurveChart } from "@/components/charts/ResponseCurveChart";
 import { Card } from "@/components/ui/Card";
 import { Pill } from "@/components/ui/Pill";
 
@@ -117,6 +118,33 @@ function PatientSampleTable({
   );
 }
 
+const GRP_FLAGS = [
+  { key: "grp_joint_disease",      label: "Joint Disease" },
+  { key: "grp_spine_back",         label: "Spine / Back" },
+  { key: "grp_neurological",       label: "Neurological" },
+  { key: "grp_post_surgical",      label: "Post-Surgical" },
+  { key: "grp_frailty_sarcopenia", label: "Frailty / Sarcopenia" },
+  { key: "grp_balance_falls",      label: "Balance / Falls" },
+  { key: "grp_metabolic",          label: "Metabolic" },
+  { key: "grp_cardiovascular",     label: "Cardiovascular" },
+  { key: "grp_oncology",           label: "Oncology" },
+  { key: "grp_autoimmune",         label: "Autoimmune" },
+  { key: "grp_softtissue_injury",  label: "Soft Tissue Injury" },
+  { key: "grp_generalised_pain",   label: "Generalised Pain" },
+  { key: "grp_osteoporosis",       label: "Osteoporosis" },
+  { key: "grp_wellness",           label: "Wellness" },
+];
+
+const CURVE_METRICS = [
+  { key: "composite_improvement",  label: "Composite Improvement" },
+  { key: "tug_change_pct",         label: "TUG Change %" },
+  { key: "sst_change_pct",         label: "5xSST Change %" },
+  { key: "sppb_change",            label: "SPPB Change" },
+  { key: "vas_change",             label: "VAS Change" },
+  { key: "normal_gs_change_pct",   label: "Normal GS Change %" },
+  { key: "fast_gs_change_pct",     label: "Fast GS Change %" },
+];
+
 export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
   // Allow user to compare a subset
   const initialSelected = COHORTS.filter((c) => c !== "Unclassified");
@@ -124,11 +152,26 @@ export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
 
   const [enrolledCount, setEnrolledCount] = React.useState<number | null>(null);
 
+  // Response curves state
+  const [curveGrp, setCurveGrp] = React.useState<string>("grp_frailty_sarcopenia");
+  const [curveMetric, setCurveMetric] = React.useState<string>("composite_improvement");
+  const [curvesData, setCurvesData] = React.useState<ResponseCurve[] | null>(null);
+  const [curvesLoading, setCurvesLoading] = React.useState(false);
+
   React.useEffect(() => {
     fetchWearableSummary()
       .then((s) => setEnrolledCount(s.enrolled_count))
       .catch(() => { /* non-critical — silently ignore */ });
   }, []);
+
+  React.useEffect(() => {
+    setCurvesLoading(true);
+    setCurvesData(null);
+    getResponseCurves(curveGrp, curveMetric)
+      .then((res) => setCurvesData(res ? res.curves : []))
+      .catch(() => setCurvesData([]))
+      .finally(() => setCurvesLoading(false));
+  }, [curveGrp, curveMetric]);
 
   function toggle(c: string) {
     setSelected((s) => s.includes(c) ? s.filter((x) => x !== c) : [...s, c]);
@@ -325,6 +368,67 @@ export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
           </Card>
         </>
       )}
+
+      {/* Cohort Response Curves */}
+      <Card
+        title="Cohort Response Curves"
+        subtitle="Percentile bands (p25–p75) by session number for a phenotype group"
+      >
+        <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+          <div>
+            <label style={{ fontSize: 11, color: "var(--ink-3)", display: "block", marginBottom: 4 }}>Group</label>
+            <select
+              value={curveGrp}
+              onChange={(e) => setCurveGrp(e.target.value)}
+              style={{
+                fontSize: 12, padding: "4px 8px", borderRadius: 6,
+                border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)",
+              }}
+            >
+              {GRP_FLAGS.map((g) => (
+                <option key={g.key} value={g.key}>{g.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: "var(--ink-3)", display: "block", marginBottom: 4 }}>Metric</label>
+            <select
+              value={curveMetric}
+              onChange={(e) => setCurveMetric(e.target.value)}
+              style={{
+                fontSize: 12, padding: "4px 8px", borderRadius: 6,
+                border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)",
+              }}
+            >
+              {CURVE_METRICS.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {curvesLoading && (
+          <div style={{ color: "var(--ink-3)", fontSize: 12 }}>Loading curves…</div>
+        )}
+        {!curvesLoading && curvesData !== null && curvesData.length === 0 && (
+          <div style={{ color: "var(--ink-4)", fontSize: 12 }}>
+            No data for this group yet — run the compute script after ingesting data.
+          </div>
+        )}
+        {!curvesLoading && curvesData && curvesData.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+            {curvesData.map((curve) => (
+              <ResponseCurveChart
+                key={curve.metric}
+                metric={curve.metric}
+                points={curve.points}
+                patientPoints={[]}
+                color="var(--accent)"
+              />
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
