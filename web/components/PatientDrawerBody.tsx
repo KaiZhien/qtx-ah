@@ -1,13 +1,14 @@
 "use client";
 
 import React from "react";
-import type { Patient, WearableFeatures } from "@/lib/types";
+import type { Patient, WearableFeatures, TimelineSession } from "@/lib/types";
 import { COHORT_COLORS, TESTS, FLAG_LABELS } from "@/lib/constants";
 import { Pill } from "@/components/ui/Pill";
 import { Tabs } from "@/components/ui/Tabs";
-import { fetchWearableFeatures, enrollPatient } from "@/lib/api";
+import { fetchWearableFeatures, enrollPatient, fetchTimeline } from "@/lib/api";
 import { TimelineTab } from "@/components/clinical/TimelineTab";
 import { AITab } from "@/components/clinical/AITab";
+import { PatientProgressView } from "@/components/patient/PatientProgressView";
 
 interface PatientDrawerBodyProps {
   patient: Patient | null;
@@ -182,8 +183,9 @@ function WearableMetricsPanel({ data }: { data: WearableFeatures }) {
 }
 
 export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
-  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable" | "timeline" | "ai">("clinical");
+  const [activeTab, setActiveTab] = React.useState<"clinical" | "wearable" | "timeline" | "ai" | "patient">("clinical");
   const [wearableData, setWearableData] = React.useState<WearableFeatures | null>(null);
+  const [timelineSessions, setTimelineSessions] = React.useState<TimelineSession[]>([]);
   const [wearableLoading, setWearableLoading] = React.useState(false);
   const [wearableError, setWearableError] = React.useState<string | null>(null);
   const [deviceBrand, setDeviceBrand] = React.useState("apple_health");
@@ -194,7 +196,16 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
     setActiveTab("clinical");
     setWearableData(null);
     setWearableError(null);
+    setTimelineSessions([]);
   }, [patient?.id]);
+
+  // Fetch timeline sessions when the patient tab opens
+  React.useEffect(() => {
+    if (activeTab !== "patient" || !patient) return;
+    fetchTimeline(String(patient.sn))
+      .then(r => setTimelineSessions(r.sessions))
+      .catch(() => setTimelineSessions([]));
+  }, [activeTab, patient?.id]);
 
   // Fetch wearable data the first time the wearable tab is opened for this patient
   React.useEffect(() => {
@@ -277,8 +288,9 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
           { value: "wearable", label: "Wearable" },
           { value: "timeline", label: "Timeline" },
           { value: "ai", label: "AI" },
+          { value: "patient", label: "Patient View" },
         ]}
-        onChange={(v) => setActiveTab(v as "clinical" | "wearable" | "timeline" | "ai")}
+        onChange={(v) => setActiveTab(v as "clinical" | "wearable" | "timeline" | "ai" | "patient")}
       />
 
       {/* ── Clinical tab ── */}
@@ -548,6 +560,11 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
       {/* ── AI tab ── */}
       {activeTab === "ai" && (
         <AITab sn={String(patient.sn)} />
+      )}
+
+      {/* ── Patient View tab ── */}
+      {activeTab === "patient" && (
+        <PatientProgressView patient={patient} sessions={timelineSessions} />
       )}
     </div>
   );

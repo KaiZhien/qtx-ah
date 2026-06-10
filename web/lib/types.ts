@@ -307,3 +307,14 @@ export type BenchmarkResult = {
   cohort_percentile: number | null;
   benchmarks: BenchmarkMetric[];
 };
+
+export interface MetricSeriesPoint {
+  session_number: number
+  value: number
+}
+
+export interface MetricSeriesResponse {
+  sn: string
+  metric: string
+  points: MetricSeriesPoint[]
+}

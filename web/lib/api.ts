@@ -15,6 +15,7 @@ import type {
   PlanRequest,
   TreatmentPlanResponse,
   ResponseCurvesResponse,
+  MetricSeriesResponse,
 } from "./types";
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
@@ -287,6 +288,18 @@ export async function getResponseCurves(
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getResponseCurves: ${res.status}`);
   return res.json();
+}
+
+export async function fetchMetricSeries(
+  sn: string,
+  metric: "vas_change" | "tug_change_pct"
+): Promise<MetricSeriesResponse> {
+  const res = await fetch(
+    `/api/patient/${encodeURIComponent(sn)}/metric_series?metric=${metric}`,
+    { headers: apiHeaders() }
+  )
+  if (!res.ok) throw new Error(`fetchMetricSeries: ${res.status}`)
+  return res.json()
 }
 
 export async function suggestPlan(

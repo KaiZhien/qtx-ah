@@ -5,10 +5,12 @@ import math
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import deps
 from db import get_db
+from deps import verify_api_key
 from models.clinical import Patient, Session as ClinicalSession
 
 router = APIRouter()
@@ -129,6 +131,43 @@ def list_patients(
 
     rows = query.all()
     return [_row_to_dict(p, s) for p, s in rows]
+
+
+VALID_METRICS = {"vas_change", "tug_change_pct"}
+
+
+@router.get("/patient/{sn}/metric_series", dependencies=[Depends(verify_api_key)])
+def get_metric_series(
+    sn: str,
+    metric: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    if metric not in VALID_METRICS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid metric. Must be one of: {', '.join(sorted(VALID_METRICS))}",
+        )
+    patient = db.query(Patient).filter_by(sn=sn).first()
+    if patient is None:
+        raise HTTPException(status_code=404, detail=f"Patient sn={sn!r} not found")
+
+    rows = db.execute(
+        text(f"""
+            SELECT session_number, {metric} AS value
+            FROM sessions
+            WHERE patient_id = :pid
+              AND {metric} IS NOT NULL
+              AND (ingested_from IS NULL OR ingested_from NOT ILIKE '%raise%')
+            ORDER BY session_number
+        """),
+        {"pid": str(patient.id)},
+    ).fetchall()
+
+    return {
+        "sn": sn,
+        "metric": metric,
+        "points": [{"session_number": int(r.session_number), "value": float(r.value)} for r in rows],
+    }
 
 
 @router.get("/patient/{sn}")
