@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -76,7 +78,7 @@ def client(test_engine, db):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app, raise_server_exceptions=True) as c:
+    with TestClient(app, raise_server_exceptions=False) as c:
         deps._db_ready = True
         yield c
 
@@ -158,18 +160,14 @@ def test_suggest_plan_accepts_plan_sessions_6(client, db):
 
 def test_suggest_plan_503_when_db_not_ready(client, db):
     """When deps._db_ready is False, suggest_plan returns 503."""
-    import deps as _deps
-    prev = _deps._db_ready
-    try:
-        _deps._db_ready = False
+    import deps
+    with patch.object(deps, "_db_ready", False):
         resp = client.post(
             "/api/patient/P001/suggest_plan",
             json={},
             headers={"X-Api-Key": _TEST_API_KEY},
         )
-        assert resp.status_code == 503
-    finally:
-        _deps._db_ready = prev
+    assert resp.status_code == 503
 
 
 def test_suggest_plan_accepts_session_focus(client, db):
