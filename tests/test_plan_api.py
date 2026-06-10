@@ -154,3 +154,49 @@ def test_suggest_plan_accepts_plan_sessions_6(client, db):
     )
     assert resp.status_code == 200
     assert isinstance(resp.json()["plan"], str)
+
+
+def test_suggest_plan_503_when_db_not_ready(client, db):
+    """When deps._db_ready is False, suggest_plan returns 503."""
+    import deps as _deps
+    prev = _deps._db_ready
+    try:
+        _deps._db_ready = False
+        resp = client.post(
+            "/api/patient/P001/suggest_plan",
+            json={},
+            headers={"X-Api-Key": _TEST_API_KEY},
+        )
+        assert resp.status_code == 503
+    finally:
+        _deps._db_ready = prev
+
+
+def test_suggest_plan_accepts_session_focus(client, db):
+    """Passing session_focus in the body is accepted and returns 200."""
+    _make_patient(db, "P004")
+    db.commit()
+    resp = client.post(
+        "/api/patient/P004/suggest_plan",
+        json={"session_focus": "balance"},
+        headers={"X-Api-Key": _TEST_API_KEY},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "plan" in data
+    assert isinstance(data["plan"], str) and len(data["plan"]) > 0
+
+
+def test_suggest_plan_accepts_empty_body(client, db):
+    """All body fields are optional — empty body {} is valid and returns 200."""
+    _make_patient(db, "P005")
+    db.commit()
+    resp = client.post(
+        "/api/patient/P005/suggest_plan",
+        json={},
+        headers={"X-Api-Key": _TEST_API_KEY},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "plan" in data
+    assert isinstance(data["plan"], str) and len(data["plan"]) > 0
