@@ -56,8 +56,20 @@ deps.load_all = _original_load_all
 
 import contextlib  # noqa: E402
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from services.calibration import CalibrationService  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_api_key():
+    prev = os.environ.get("QTX_API_KEY")
+    os.environ["QTX_API_KEY"] = _TEST_API_KEY
+    yield
+    if prev is None:
+        os.environ.pop("QTX_API_KEY", None)
+    else:
+        os.environ["QTX_API_KEY"] = prev
 
 
 @contextlib.contextmanager
