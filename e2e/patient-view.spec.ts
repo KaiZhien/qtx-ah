@@ -1,48 +1,5 @@
 import { test, expect } from '@playwright/test'
-
-// ---------------------------------------------------------------------------
-// Helpers (shared with patient-drawer.spec.ts pattern)
-// ---------------------------------------------------------------------------
-
-async function navigateToPatientLookup(page: import('@playwright/test').Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' })
-
-  const clinicalBtn = page.locator('button.nav-item', { hasText: 'Clinical Tools' })
-  await expect(clinicalBtn).toBeVisible({ timeout: 10_000 })
-  await clinicalBtn.click()
-
-  const lookupTab = page.locator('button', { hasText: 'Patient Lookup' })
-  await expect(lookupTab).toBeVisible({ timeout: 5_000 })
-  await lookupTab.click()
-
-  const input = page.locator('input.input[placeholder*="Bernard"]')
-  await expect(input).toBeVisible({ timeout: 5_000 })
-  return input
-}
-
-async function openFirstPatientDrawer(
-  page: import('@playwright/test').Page,
-  query = '1',
-): Promise<boolean> {
-  const input = await navigateToPatientLookup(page)
-  await input.fill(query)
-
-  const table = page.locator('table.tbl')
-  const noMatches = page.locator('text=No matches')
-  await expect(table.or(noMatches)).toBeVisible({ timeout: 8_000 })
-
-  const tableVisible = await table.isVisible()
-  if (!tableVisible) return false
-
-  const firstRow = table.locator('tbody tr').first()
-  await expect(firstRow).toBeVisible({ timeout: 5_000 })
-  await firstRow.click()
-
-  const drawerOverlay = page.locator('.drawer-overlay.open')
-  await expect(drawerOverlay).toBeVisible({ timeout: 5_000 })
-
-  return true
-}
+import { openFirstPatientDrawer } from './helpers/patient-lookup'
 
 /**
  * Opens a drawer AND navigates to the "Patient View" tab.
@@ -154,9 +111,9 @@ test.describe('Patient View tab', () => {
     )
     // The inactive border uses var(--line), active uses var(--accent).
     // We assert the color is truthy and capture it — in most themes accent is a blue tone.
-    // A lightweight check: the element's style attribute should reference "accent" (set inline).
+    // GoalPicker sets border inline with var(--accent) when active.
     const style = await moveBtn.getAttribute('style')
-    expect(style).toContain('accent')
+    expect(style).toContain('var(--accent)')
   })
 
   // -------------------------------------------------------------------------
@@ -183,7 +140,7 @@ test.describe('Patient View tab', () => {
 
     // "Reduce my pain" should now have the accent border in its style
     const painStyle = await painBtn.getAttribute('style')
-    expect(painStyle).toContain('accent')
+    expect(painStyle).toContain('var(--accent)')
 
     // "Move better" should no longer have accent in border
     const moveStyle = await moveBtn.getAttribute('style')
@@ -264,17 +221,19 @@ test.describe('Patient View tab', () => {
     const slider = drawerBody.locator('input[type="range"]')
     await expect(slider).toBeVisible({ timeout: 8_000 })
 
-    // Wait for initial data load to complete (count stabilises)
-    await page.waitForTimeout(1_000)
+    // Wait for initial data load to complete (wait for a metric_series response or
+    // confirm the count is stable by waiting for the slider to be interactive)
+    await expect(slider).toBeEnabled({ timeout: 10_000 })
     const countBeforeSlider = metricSeriesCallCount
 
     // Move slider several times
+    const label = drawerBody.locator('span', { hasText: /more sessions/ })
     for (const val of ['3', '6', '9', '12']) {
       await slider.evaluate((el: HTMLInputElement, v) => {
         el.value = v
         el.dispatchEvent(new Event('input', { bubbles: true }))
       }, val)
-      await page.waitForTimeout(150)
+      await expect(label).toBeVisible({ timeout: 2_000 })
     }
 
     // No new metric_series calls should have fired

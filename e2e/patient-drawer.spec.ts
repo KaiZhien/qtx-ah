@@ -1,60 +1,5 @@
 import { test, expect } from '@playwright/test'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Navigate to Clinical Tools → Patient Lookup tab and return the search input.
- * Waits for data to be ready before returning.
- */
-async function navigateToPatientLookup(page: import('@playwright/test').Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' })
-
-  // Click "Clinical Tools" in the sidebar nav
-  const clinicalBtn = page.locator('button.nav-item', { hasText: 'Clinical Tools' })
-  await expect(clinicalBtn).toBeVisible({ timeout: 10_000 })
-  await clinicalBtn.click()
-
-  // Switch to the "Patient Lookup" sub-tab
-  const lookupTab = page.locator('button', { hasText: 'Patient Lookup' })
-  await expect(lookupTab).toBeVisible({ timeout: 5_000 })
-  await lookupTab.click()
-
-  const input = page.locator('input.input[placeholder*="Bernard"]')
-  await expect(input).toBeVisible({ timeout: 5_000 })
-  return input
-}
-
-/**
- * Open the drawer for the first search result matching the given query.
- * Returns without clicking if no rows appear (data unavailable).
- */
-async function openFirstPatientDrawer(
-  page: import('@playwright/test').Page,
-  query = '1',
-): Promise<boolean> {
-  const input = await navigateToPatientLookup(page)
-  await input.fill(query)
-
-  const table = page.locator('table.tbl')
-  const noMatches = page.locator('text=No matches')
-  await expect(table.or(noMatches)).toBeVisible({ timeout: 8_000 })
-
-  const tableVisible = await table.isVisible()
-  if (!tableVisible) return false
-
-  // Click the first result row
-  const firstRow = table.locator('tbody tr').first()
-  await expect(firstRow).toBeVisible({ timeout: 5_000 })
-  await firstRow.click()
-
-  // Wait for the drawer overlay to appear
-  const drawerOverlay = page.locator('.drawer-overlay.open')
-  await expect(drawerOverlay).toBeVisible({ timeout: 5_000 })
-
-  return true
-}
+import { openFirstPatientDrawer } from './helpers/patient-lookup'
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -94,10 +39,10 @@ test.describe('Patient drawer', () => {
     const subtitle = drawer.locator('.drawer-h').getByText('Patient record', { exact: false })
     await expect(subtitle).toBeVisible({ timeout: 5_000 })
 
-    // Title is either the patient's name or "Patient <sn>" — just assert it's non-empty
+    // Title is either the patient's name or "Patient <sn>" — assert it's non-empty
     const drawerH = drawer.locator('.drawer-h')
-    const titleText = await drawerH.locator('div').filter({ hasText: /Patient|[A-Z]/ }).first().textContent()
-    expect(titleText).toBeTruthy()
+    const titleEl = drawerH.locator('div').first()
+    await expect(titleEl).not.toBeEmpty()
   })
 
   // -------------------------------------------------------------------------
@@ -187,11 +132,8 @@ test.describe('Patient drawer', () => {
     await expect(timelineTab).toBeVisible({ timeout: 5_000 })
     await timelineTab.click()
 
-    // Wait for the Timeline content area to settle (500ms grace)
-    await page.waitForTimeout(500)
-
-    // The drawer body should still be present (no crash / unmount)
-    await expect(drawerBody).toBeVisible()
+    // Wait for the Timeline content area to be visible (no sleep needed)
+    await expect(drawerBody).toBeVisible({ timeout: 3_000 })
 
     // Filter out known-safe noise from console errors
     const jsErrors = errors.filter(
@@ -264,8 +206,10 @@ test.describe('Patient drawer', () => {
     const drawerOverlay = page.locator('.drawer-overlay.open')
     await expect(drawerOverlay).toBeVisible({ timeout: 5_000 })
 
-    // Click the overlay area (top-left corner is safely outside the drawer panel)
-    await drawerOverlay.click({ position: { x: 20, y: 20 } })
+    // Click the overlay area using actual bounding box coordinates (top-left corner,
+    // safely outside the drawer panel which slides in from the right)
+    const box = await drawerOverlay.boundingBox()
+    await page.mouse.click((box?.x ?? 0) + 20, (box?.y ?? 0) + 20)
 
     // Overlay should disappear
     await expect(drawerOverlay).not.toBeVisible({ timeout: 5_000 })
