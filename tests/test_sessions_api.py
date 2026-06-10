@@ -1,10 +1,13 @@
 """Tests for POST /api/patient/{sn}/session and GET /api/patient/{sn}/timeline."""
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
+import types
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,10 +16,110 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
 
+# Stub weasyprint before any app imports (needed for mock-pattern tests)
+if "weasyprint" not in sys.modules:
+    _wp = types.ModuleType("weasyprint")
+    class _HTML:
+        def __init__(self, s): pass
+        def write_pdf(self): return b"%PDF"
+    _wp.HTML = _HTML
+    sys.modules["weasyprint"] = _wp
+
 import models.clinical  # noqa: F401
 import models.wearable  # noqa: F401
 
 _TEST_API_KEY = "test-key-sessions"
+_MOCK_KEY = "mock-test-key-sessions"
+
+# Module-level setup for mock-pattern tests (benchmark/patients style)
+os.environ.setdefault("QTX_API_KEY", _TEST_API_KEY)
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("TERRA_WEBHOOK_SECRET", "s")
+
+import deps as _deps  # noqa: E402
+_orig_load_all = _deps.load_all
+_deps.load_all = lambda: None
+from main import app as _app  # noqa: E402
+_deps.load_all = _orig_load_all
+
+from db import get_db as _get_db  # noqa: E402
+
+
+@contextlib.contextmanager
+def _mock_client():
+    """Context manager yielding a TestClient backed by mock DB (no seeded SQLite)."""
+    _deps.load_all = lambda: None
+    try:
+        with TestClient(_app, raise_server_exceptions=False) as c:
+            yield c
+    finally:
+        _deps.load_all = _orig_load_all
+
+
+@pytest.fixture(autouse=True)
+def _restore_api_key_sessions():
+    """Ensure QTX_API_KEY is present for every test in this module."""
+    prev = os.environ.get("QTX_API_KEY")
+    os.environ["QTX_API_KEY"] = _TEST_API_KEY
+    yield
+    if prev is None:
+        os.environ.pop("QTX_API_KEY", None)
+    else:
+        os.environ["QTX_API_KEY"] = prev
+
+
+def _make_mock_patient():
+    """Return a minimal MagicMock patient compatible with the sessions router."""
+    from models.clinical import Patient
+    p = MagicMock(spec=Patient)
+    p.id = uuid.uuid4()
+    p.sn = "M001"
+    p.name = "Mock Patient"
+    p.age = 70
+    p.age_band = "70-79"
+    p.gender = "M"
+    p.cohort = "QTX-A"
+    p.primary_indication = None
+    p.baseline_sppb = None
+    p.pre_tandem_s = None
+    p.has_frailty = False
+    p.has_diabetes = False
+    p.has_neurological = False
+    p.has_stroke = False
+    p.has_parkinsons = False
+    return p
+
+
+def _db_patient_found(patient):
+    """Mock db: filter_by(sn=...).first() → patient; all other queries return empty."""
+    db = MagicMock()
+
+    def _query(model):
+        q = MagicMock()
+        q.filter_by.return_value.first.return_value = patient
+        q.filter_by.return_value.order_by.return_value.all.return_value = []
+        q.filter_by.return_value.order_by.return_value.first.return_value = None
+        q.filter.return_value.scalar.return_value = 0  # max session_number → 0
+        q.filter.return_value.first.return_value = None
+        q.scalar.return_value = 1
+        return q
+
+    db.query.side_effect = _query
+    db.add = MagicMock()
+    db.flush = MagicMock()
+    db.commit = MagicMock()
+    return db
+
+
+def _db_patient_not_found():
+    """Mock db: all patient lookups return None."""
+    db = MagicMock()
+    q = MagicMock()
+    q.filter_by.return_value.first.return_value = None
+    q.filter_by.return_value.order_by.return_value.all.return_value = []
+    q.filter.return_value.scalar.return_value = None
+    db.query.return_value = q
+    return db
 _FLAG_COLS = [
     "has_oa", "has_diabetes", "has_stroke", "has_parkinsons", "has_sarcopenia",
     "has_frailty", "has_balance_issue", "has_post_surgery", "has_chronic_pain",
@@ -207,3 +310,176 @@ def test_timeline_503_when_db_not_ready(client):
         assert resp.status_code == 503
     finally:
         deps._db_ready = True
+
+
+# ── Mock-pattern tests (no seeded DB — follow benchmark/patients style) ───────
+
+_MOCK_HEADERS = {"X-Api-Key": _TEST_API_KEY}
+
+
+# POST /api/patient/{sn}/session — auth / 503 / 404 / 201 via mock DB
+
+def test_create_session_requires_api_key():
+    """POST without X-Api-Key header → 401."""
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            r = c.post("/api/patient/M001/session", json={"post_tug_s": 10.0})
+    assert r.status_code == 401
+
+
+def test_create_session_503_when_db_not_ready_mock():
+    """POST when DB not ready → 503 (mock-DB variant)."""
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", False):
+            r = c.post(
+                "/api/patient/M001/session",
+                json={},
+                headers=_MOCK_HEADERS,
+            )
+    assert r.status_code == 503
+
+
+def test_create_session_404_for_unknown_patient():
+    """POST for a patient not in DB → 404 (mock DB returns None)."""
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_patient_not_found()
+            try:
+                r = c.post(
+                    "/api/patient/GHOST/session",
+                    json={"post_tug_s": 10.0},
+                    headers=_MOCK_HEADERS,
+                )
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 404
+
+
+def test_create_session_201_on_valid_payload():
+    """POST with valid payload and a found patient → 201."""
+    patient = _make_mock_patient()
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_patient_found(patient)
+            try:
+                r = c.post(
+                    "/api/patient/M001/session",
+                    json={"post_tug_s": 9.5, "post_vas": 3.0},
+                    headers=_MOCK_HEADERS,
+                )
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 201
+
+
+# GET /api/patient/{sn}/timeline — 404 / 200 shape / sessions is list via mock DB
+
+def test_get_timeline_404_for_unknown_patient():
+    """GET timeline for unknown patient → 404 (mock DB patient lookup is None)."""
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_patient_not_found()
+            try:
+                r = c.get("/api/patient/GHOST/timeline", headers=_MOCK_HEADERS)
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 404
+
+
+def test_get_timeline_200_returns_shape():
+    """GET timeline for a found patient → 200 with keys patient, sessions, trends."""
+    patient = _make_mock_patient()
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_patient_found(patient)
+            try:
+                r = c.get("/api/patient/M001/timeline", headers=_MOCK_HEADERS)
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 200
+    data = r.json()
+    assert "patient" in data
+    assert "sessions" in data
+    assert "trends" in data
+
+
+def test_get_timeline_sessions_is_array():
+    """GET timeline response['sessions'] is a list."""
+    patient = _make_mock_patient()
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_patient_found(patient)
+            try:
+                r = c.get("/api/patient/M001/timeline", headers=_MOCK_HEADERS)
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 200
+    assert isinstance(r.json()["sessions"], list)
+
+
+# GET /api/patient/{sn}/predictions/latest — empty and populated
+
+def _db_predictions(patient, prediction_row=None):
+    """Mock db for predictions endpoint: patient found, optional prediction row."""
+    from models.clinical import Patient, SessionPrediction
+
+    db = MagicMock()
+
+    def _query(model):
+        q = MagicMock()
+        if model is Patient:
+            q.filter_by.return_value.first.return_value = patient
+        elif model is SessionPrediction:
+            q.filter_by.return_value.order_by.return_value.first.return_value = prediction_row
+        else:
+            q.filter_by.return_value.first.return_value = None
+        return q
+
+    db.query.side_effect = _query
+    return db
+
+
+def _make_mock_prediction(patient_id):
+    """Return a minimal MagicMock SessionPrediction row."""
+    from datetime import datetime, timezone
+    row = MagicMock()
+    row.predicted_composite_improvement = 12.5
+    row.responder_probability = 0.78
+    row.dropout_probability = 0.12
+    row.dosage_recommendation = "3x/week"
+    row.predicted_at = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    row.shap_top5 = [{"feature": "post_tug_s", "value": -0.3}]
+    row.bias_correction = 0.05
+    return row
+
+
+def test_get_predictions_200_empty_when_no_predictions():
+    """GET predictions/latest with no stored prediction → 200 and empty object."""
+    patient = _make_mock_patient()
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_predictions(patient, None)
+            try:
+                r = c.get("/api/patient/M001/predictions/latest", headers=_MOCK_HEADERS)
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
+def test_get_predictions_200_with_fields_when_exist():
+    """GET predictions/latest with a stored prediction → 200 and response has expected keys."""
+    patient = _make_mock_patient()
+    pred = _make_mock_prediction(patient.id)
+    with _mock_client() as c:
+        with patch.object(_deps, "_db_ready", True):
+            _app.dependency_overrides[_get_db] = lambda: _db_predictions(patient, pred)
+            try:
+                r = c.get("/api/patient/M001/predictions/latest", headers=_MOCK_HEADERS)
+            finally:
+                _app.dependency_overrides.pop(_get_db, None)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) >= 1
+    assert "responder_probability" in data
+    assert "predicted_composite_improvement" in data
