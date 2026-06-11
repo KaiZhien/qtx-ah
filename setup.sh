@@ -4,10 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="$ROOT/.venv/bin/python3.14"
+PYTHON="$(ls "$ROOT/.venv/bin/python3."* 2>/dev/null | head -1)"
 
-if [[ ! -x "$PYTHON" ]]; then
-  echo "ERROR: $PYTHON not found. Run 'python3 -m venv .venv && .venv/bin/pip install -e .' first." >&2
+if [[ -z "$PYTHON" || ! -x "$PYTHON" ]]; then
+  echo "ERROR: No python found in $ROOT/.venv/bin/. Run 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt' first." >&2
   exit 1
 fi
 
