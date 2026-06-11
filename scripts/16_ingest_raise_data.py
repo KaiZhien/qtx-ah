@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
 import pandas as pd
 from sqlalchemy.orm import Session as DBSession
 
-EXCEL_PATH = Path("/Users/reetmitra/Downloads/Raise combined data (4 centres).xlsx")
+EXCEL_PATH = Path(__file__).resolve().parent.parent / "data" / "Raise combined data (4 centres).xlsx"
 SHEET = "All Combined 21Aug23"
 SOURCE = "Raise combined data (4 centres).xlsx"
 
