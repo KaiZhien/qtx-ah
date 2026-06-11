@@ -120,7 +120,7 @@ def seeded_engine(test_engine):
 @pytest.fixture
 def client(test_engine, monkeypatch):
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", _FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", _FakeHTML)
 
     from db import get_db
     from main import app
@@ -189,7 +189,7 @@ def test_pdf_503_when_db_not_ready(client):
 def test_pdf_key_query_param_auth(test_engine, monkeypatch):
     """?key= query param is accepted instead of X-Api-Key header."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", _FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", _FakeHTML)
 
     from db import get_db
     from main import app

@@ -182,7 +182,7 @@ def test_v_decimal_to_float():
 def test_generate_returns_bytes(db_session, monkeypatch):
     """generate() returns bytes when WeasyPrint is mocked."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", FakeHTML)
 
     patient = _make_patient(sn="S100", name="Bytes Patient")
     db_session.add(patient)
@@ -198,7 +198,7 @@ def test_generate_returns_bytes(db_session, monkeypatch):
 def test_generate_raises_for_unknown_sn(db_session, monkeypatch):
     """generate() raises ValueError when patient sn is not found."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", FakeHTML)
 
     service = _make_service(db_session)
     with pytest.raises(ValueError, match="not found"):
@@ -208,7 +208,7 @@ def test_generate_raises_for_unknown_sn(db_session, monkeypatch):
 def test_generate_no_sessions(db_session, monkeypatch):
     """generate() succeeds with a patient who has no sessions (empty list)."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     patient = _make_patient(sn="S200", name="No Session Patient")
     db_session.add(patient)
@@ -225,7 +225,7 @@ def test_generate_no_sessions(db_session, monkeypatch):
 def test_generate_two_sessions_list_structure(db_session, monkeypatch):
     """generate() with 2 sessions produces sessions_list with 2 dicts and correct keys."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", FakeHTML)
 
     patient = _make_patient(sn="S300", name="Two Session Patient")
     db_session.add(patient)
@@ -273,7 +273,7 @@ def test_generate_two_sessions_list_structure(db_session, monkeypatch):
     assert session_numbers == [1, 2]
 
     # Verify the expected keys by calling generate on base service and checking HTML
-    monkeypatch.setattr(svc2.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
     base_service = _make_service(db_session)
     base_service.generate("S300")
     html = CapturingHTML.captured
@@ -286,7 +286,7 @@ def test_generate_two_sessions_list_structure(db_session, monkeypatch):
 def test_generate_with_patient_trend(db_session, monkeypatch):
     """generate() with a PatientTrend row includes it in trends_list."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     from models.clinical import PatientTrend
 
@@ -321,7 +321,7 @@ def test_generate_with_patient_trend(db_session, monkeypatch):
 def test_generate_with_session_summary_insight(db_session, monkeypatch):
     """generate() with a session_summary PatientInsight sets latest_insight."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     from models.clinical import PatientInsight
 
@@ -352,7 +352,7 @@ def test_generate_with_session_summary_insight(db_session, monkeypatch):
 def test_generate_qa_response_only_insight_is_none(db_session, monkeypatch):
     """generate() with only qa_response insights results in latest_insight being None."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     from models.clinical import PatientInsight
 
@@ -388,7 +388,7 @@ def test_generate_qa_response_only_insight_is_none(db_session, monkeypatch):
 def test_generate_session_notes_appear(db_session, monkeypatch):
     """generate() with session notes renders the notes in sessions_list."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     patient = _make_patient(sn="S700", name="Notes Patient")
     db_session.add(patient)
@@ -414,7 +414,7 @@ def test_generate_session_notes_appear(db_session, monkeypatch):
 def test_generate_template_renders_patient_name(db_session, monkeypatch):
     """Template is found and renderable; rendered HTML includes patient name."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     patient = _make_patient(sn="S800", name="Alice Wonderland")
     db_session.add(patient)
@@ -437,7 +437,7 @@ def test_generate_none_name_uses_fallback(db_session, monkeypatch):
     in-memory and never touching the DB for this object.
     """
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     # We need a real patient row so the sessions/trends/insights queries work.
     patient = _make_patient(sn="S900", name="Placeholder")
@@ -494,7 +494,7 @@ def test_generate_none_name_uses_fallback(db_session, monkeypatch):
 def test_generate_session_date_isoformat(db_session, monkeypatch):
     """Session dates are rendered in ISO format in the HTML output."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     patient = _make_patient(sn="S1000", name="Dated Patient")
     db_session.add(patient)
@@ -518,7 +518,7 @@ def test_generate_session_date_isoformat(db_session, monkeypatch):
 def test_generate_multiple_insights_picks_latest(db_session, monkeypatch):
     """generate() picks the most recent session_summary insight."""
     import services.report as svc
-    monkeypatch.setattr(svc.weasyprint, "HTML", CapturingHTML)
+    monkeypatch.setattr("weasyprint.HTML", CapturingHTML)
 
     from models.clinical import PatientInsight
 
@@ -587,7 +587,7 @@ def test_generate_trend_magnitude_converted_to_float(db_session, monkeypatch):
             return tmpl
 
     monkeypatch.setattr(svc, "Environment", PatchedEnv)
-    monkeypatch.setattr(svc.weasyprint, "HTML", FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", FakeHTML)
 
     patient = _make_patient(sn="S1200", name="Float Trend Patient")
     db_session.add(patient)
@@ -641,7 +641,7 @@ def test_generate_patient_dict_fields(db_session, monkeypatch):
             return tmpl
 
     monkeypatch.setattr(svc, "Environment", PatchedEnv)
-    monkeypatch.setattr(svc.weasyprint, "HTML", FakeHTML)
+    monkeypatch.setattr("weasyprint.HTML", FakeHTML)
 
     patient = _make_patient(
         sn="S1300",
