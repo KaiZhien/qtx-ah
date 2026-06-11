@@ -1,4 +1,3 @@
-import os
 """Script 20 — Backfill session_predictions for all existing sessions.
 
 Runs PredictionService over every session that doesn't yet have a prediction row.
@@ -8,6 +7,7 @@ Usage:
     PYTHONPATH=src:api python scripts/20_backfill_predictions.py
 """
 from __future__ import annotations
+import os
 
 import sys
 from pathlib import Path

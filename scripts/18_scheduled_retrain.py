@@ -1,4 +1,3 @@
-import os
 # scripts/18_scheduled_retrain.py
 """Script 18 — Scheduled retraining job.
 
@@ -10,6 +9,7 @@ Usage (called automatically by RetrainService.check_and_trigger):
     PYTHONPATH=src:api python scripts/18_scheduled_retrain.py
 """
 from __future__ import annotations
+import os
 
 import json
 import math

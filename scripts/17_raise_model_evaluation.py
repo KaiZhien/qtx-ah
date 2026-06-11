@@ -1,4 +1,3 @@
-import os
 """Script 17 — RAISE covariate shift analysis and conditional retraining.
 
 Tests whether RAISE and QTX populations are safe to merge using two gates:
@@ -12,6 +11,7 @@ Usage:
     PYTHONPATH=src:api python scripts/17_raise_model_evaluation.py
 """
 from __future__ import annotations
+import os
 
 import sys
 from pathlib import Path
