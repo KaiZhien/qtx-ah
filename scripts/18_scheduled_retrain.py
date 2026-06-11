@@ -1,3 +1,4 @@
+import os
 # scripts/18_scheduled_retrain.py
 """Script 18 — Scheduled retraining job.
 
@@ -31,7 +32,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from qtx.outcomes.change_scores import compute_change_scores
 from qtx.outcomes.composite import compute_composite
 
-DB_URL = "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah"
+DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah")
 MODELS_DIR = ROOT / "models"
 STATE_PATH = ROOT / "retrain_state.json"
 RELOAD_URL = "http://localhost:8000/api/admin/reload-models"

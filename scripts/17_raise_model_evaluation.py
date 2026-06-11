@@ -1,3 +1,4 @@
+import os
 """Script 17 — RAISE covariate shift analysis and conditional retraining.
 
 Tests whether RAISE and QTX populations are safe to merge using two gates:
@@ -31,7 +32,7 @@ from sqlalchemy.orm import sessionmaker
 from qtx.outcomes.change_scores import compute_change_scores
 from qtx.outcomes.composite import compute_composite
 
-DB_URL = "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah"
+DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah")
 PARQUET = ROOT / "data" / "processed" / "dashboard_data.parquet"
 MODELS_DIR = ROOT / "models"
 

@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, text
 
 DB_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah"
+    os.environ.get("DATABASE_URL", "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah")
 )
 
 

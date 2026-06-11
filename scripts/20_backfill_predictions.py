@@ -1,3 +1,4 @@
+import os
 """Script 20 — Backfill session_predictions for all existing sessions.
 
 Runs PredictionService over every session that doesn't yet have a prediction row.
@@ -22,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 from models.clinical import Patient, Session as ClinicalSession, SessionPrediction
 from services.prediction import PredictionService
 
-DB_URL = "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah"
+DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://qtx:secret@localhost:5432/qtxah")
 MODELS_DIR = ROOT / "models"
 
 
