@@ -47,9 +47,9 @@ METRICS = [
 
 UPSERT_SQL = """
 INSERT INTO cohort_response_curves
-    (grp_flag, metric, session_number, p25, p50, p75, n, computed_at)
+    (id, grp_flag, metric, session_number, p25, p50, p75, n, computed_at)
 VALUES
-    (:grp_flag, :metric, :session_number, :p25, :p50, :p75, :n, :computed_at)
+    (gen_random_uuid(), :grp_flag, :metric, :session_number, :p25, :p50, :p75, :n, :computed_at)
 ON CONFLICT ON CONSTRAINT uq_response_curves_grp_metric_session
 DO UPDATE SET
     p25 = EXCLUDED.p25,
