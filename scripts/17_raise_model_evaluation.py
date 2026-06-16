@@ -67,6 +67,27 @@ SHIFT_FEATURES = [
     "primary_indication",
 ]
 CAT_COLS = ["gender", "primary_indication"]
+
+# Serving feature contract — must stay in sync with REGRESSION_FEATURES in scripts/18_scheduled_retrain.py
+# and with _build_feature_vector_from_orm() in api/services/prediction.py.
+_SERVING_REGRESSION_FEATURES = [
+    "age", "baseline_sppb", "pre_normal_gs_ms", "pre_tug_s", "pre_5xsst_s",
+    "pre_vas", "pre_fast_gs_ms", "has_oa", "has_diabetes", "has_stroke",
+    "has_parkinsons", "has_sarcopenia", "has_post_surgery", "has_balance_issue",
+    "has_chronic_pain", "has_hypertension", "has_frailty", "has_fall_risk",
+    "has_neurological", "has_metabolic", "has_knee_issue", "has_spinal_issue",
+    "grp_joint_disease", "grp_spine_back", "grp_neurological", "grp_post_surgical",
+    "grp_frailty_sarcopenia", "grp_balance_falls", "grp_metabolic",
+    "grp_softtissue_injury", "grp_osteoporosis",
+    "rgn_spine", "rgn_knee", "rgn_ankle_foot", "rgn_hip", "rgn_lower_limb",
+    "rgn_shoulder", "rgn_upper_limb", "rgn_trunk",
+    "n_flags", "n_groups", "n_regions",
+    "session_number",
+    "prior_avg_composite_improvement",
+    "trend_tug_magnitude",
+]
+_SERVING_CAT_COLS = ["cohort", "usage_frequency", "gender"]
+
 FALL_RISK_FEATURES = [
     "age", "gender_M", "has_oa", "has_diabetes", "has_stroke", "has_parkinsons",
     "has_frailty", "has_hypertension", "pre_5xsst_s", "pre_vas",
@@ -423,12 +444,36 @@ def _print_report(
 
 
 def _save_augmented_regression(df: pd.DataFrame) -> None:
-    """Train XGBRegressor on combined data and save as regression_xgb_raise_augmented.joblib."""
+    """Train augmented regression on combined data using the serving feature contract.
+
+    Uses the same feature list and OHE encoding as scripts/18_scheduled_retrain.py
+    so the model can be slot-swapped at serving time without feature mismatch.
+    """
     df_model = df[df["composite_improvement"].notna()].copy()
-    feature_cols = [c for c in SHIFT_FEATURES if c in df_model.columns]
-    df_enc = _label_encode_cats(df_model[feature_cols])
-    X = df_enc.to_numpy(dtype=float, na_value=float("nan"))
+    if len(df_model) < 20:
+        print(f"  WARNING: only {len(df_model)} rows — skipping augmented regression")
+        return
+
+    # OHE categoricals — matches _build_training_matrix() in script 18
+    present_cats = [c for c in _SERVING_CAT_COLS if c in df_model.columns]
+    df_enc = pd.get_dummies(df_model, columns=present_cats, dtype=float) if present_cats else df_model.copy()
+
+    # Derive longitudinal placeholders — RAISE rows have no prior sessions
+    for col, default in [
+        ("session_number", 1.0),
+        ("prior_avg_composite_improvement", 0.0),
+        ("trend_tug_magnitude", 0.0),
+    ]:
+        if col not in df_enc.columns:
+            df_enc[col] = default
+        else:
+            df_enc[col] = df_enc[col].fillna(default).astype(float)
+
+    # Build feature matrix aligned to serving contract
+    feature_cols = [c for c in _SERVING_REGRESSION_FEATURES if c in df_enc.columns]
+    X = df_enc[feature_cols].astype(float).fillna(0.0)
     y = df_model["composite_improvement"].astype(float).values
+
     model = XGBRegressor(
         n_estimators=300, max_depth=4, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8, tree_method="hist",
@@ -437,7 +482,7 @@ def _save_augmented_regression(df: pd.DataFrame) -> None:
     model.fit(X, y)
     out_path = MODELS_DIR / "regression_xgb_raise_augmented.joblib"
     joblib.dump(model, out_path)
-    print(f"  Saved: {out_path}")
+    print(f"  Saved: {out_path} ({len(feature_cols)} features, {len(df_model)} rows)")
 
 
 def _save_augmented_fall_risk(df: pd.DataFrame) -> None:
