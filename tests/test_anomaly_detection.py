@@ -327,3 +327,45 @@ def test_build_warning_prompt_handles_missing_dropout_gracefully():
 
     assert isinstance(prompt, str)
     assert len(prompt) > 0
+
+
+# ── Rule 7: high_sedentary_risk ──────────────────────────────────────────
+
+def test_high_sedentary_risk_fires_when_sedentary_above_threshold():
+    """high_sedentary_risk fires when wearable_sedentary_pct_30d > 80.0."""
+    from services.anomaly import AnomalyDetector
+
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    trends = []
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_sedentary_pct_30d": 85.0}
+
+    flags = detector._detect_flags(patient, session, trends, predictions, wearable_feats)
+    assert "high_sedentary_risk" in flags
+
+
+def test_high_sedentary_risk_does_not_fire_below_threshold():
+    """high_sedentary_risk does not fire at 75% sedentary."""
+    from services.anomaly import AnomalyDetector
+
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    trends = []
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_sedentary_pct_30d": 75.0}
+
+    flags = detector._detect_flags(patient, session, trends, predictions, wearable_feats)
+    assert "high_sedentary_risk" not in flags

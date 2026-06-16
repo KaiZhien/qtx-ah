@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SEDENTARY_RISK_THRESHOLD = 80.0   # % of day sedentary (30d rolling avg)
+
 _WARNING_TEMPLATE = """\
 Anomaly flags detected after session {session_number}:
 {flag_list}
@@ -110,6 +112,12 @@ class AnomalyDetector:
             cadence = wearable_feats.get("wearable_cadence_avg_30d")
             if cadence is not None and cadence < 80.0:
                 flags.append("low_cadence_risk")
+
+        # Rule 7: high_sedentary_risk
+        if wearable_feats is not None:
+            sedentary_pct = wearable_feats.get("wearable_sedentary_pct_30d")
+            if sedentary_pct is not None and sedentary_pct > _SEDENTARY_RISK_THRESHOLD:
+                flags.append("high_sedentary_risk")
 
         return flags
 
