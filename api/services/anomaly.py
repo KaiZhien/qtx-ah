@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_LOW_COMPLIANCE_THRESHOLD = 0.30   # fraction of days with ≥4h wear — matches PatientDrawerBody.tsx:168
 _SEDENTARY_RISK_THRESHOLD = 80.0   # % of day sedentary (30d rolling avg)
 
 _WARNING_TEMPLATE = """\
@@ -124,6 +125,14 @@ class AnomalyDetector:
             fall_count = wearable_feats.get("wearable_fall_events_90d")
             if fall_count is not None and int(fall_count) > 0:
                 flags.append("fall_event_recorded")
+
+        # Rule 9: low_compliance
+        # Fires when wear compliance is too low to trust other wearable readings.
+        # Mirrors the warning shown in PatientDrawerBody.tsx when compliance < 30%.
+        if wearable_feats is not None:
+            compliance = wearable_feats.get("wearable_compliance_rate_30d")
+            if compliance is not None and compliance < _LOW_COMPLIANCE_THRESHOLD:
+                flags.append("low_compliance")
 
         return flags
 

@@ -409,3 +409,43 @@ def test_fall_event_recorded_does_not_fire_when_zero_falls():
 
     flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
     assert "fall_event_recorded" not in flags
+
+
+# ── Rule 9: low_compliance ──────────────────────────────────────────
+
+def test_low_compliance_fires_when_compliance_below_threshold():
+    """low_compliance fires when wearable_compliance_rate_30d < 0.30."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_compliance_rate_30d": 0.15}
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "low_compliance" in flags
+
+
+def test_low_compliance_does_not_fire_at_30_percent():
+    """low_compliance does not fire at exactly 30% (threshold is exclusive)."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_compliance_rate_30d": 0.30}
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "low_compliance" not in flags
