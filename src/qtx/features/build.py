@@ -153,6 +153,32 @@ def build_feature_matrix(df: pd.DataFrame | None = None) -> pd.DataFrame:
         raise
 
     # ------------------------------------------------------------------
+    # Step 7b: Add longitudinal placeholder columns
+    # These are computed at inference time from the DB (prediction.py:
+    # _get_longitudinal_features). For offline Parquet-based training,
+    # we fill with sensible defaults: first session, no prior history.
+    # scripts/18_scheduled_retrain.py overrides these with real values
+    # via SQL window functions when retraining from live DB data.
+    # ------------------------------------------------------------------
+    if "session_number" not in df.columns:
+        df["session_number"] = 1.0
+        log.info("Added session_number placeholder (default=1.0)")
+    else:
+        df["session_number"] = df["session_number"].fillna(1.0).astype(float)
+
+    if "prior_avg_composite_improvement" not in df.columns:
+        df["prior_avg_composite_improvement"] = 0.0
+        log.info("Added prior_avg_composite_improvement placeholder (default=0.0)")
+    else:
+        df["prior_avg_composite_improvement"] = df["prior_avg_composite_improvement"].fillna(0.0).astype(float)
+
+    if "trend_tug_magnitude" not in df.columns:
+        df["trend_tug_magnitude"] = 0.0
+        log.info("Added trend_tug_magnitude placeholder (default=0.0)")
+    else:
+        df["trend_tug_magnitude"] = df["trend_tug_magnitude"].fillna(0.0).astype(float)
+
+    # ------------------------------------------------------------------
     # Step 8: Save as featured.parquet
     # ------------------------------------------------------------------
     save_parquet(df, "featured", versioned=True)

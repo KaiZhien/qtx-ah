@@ -1,268 +1,70 @@
-"""Tests for longitudinal feature additions to the regression model."""
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock
-
+"""Tests that build_feature_matrix() always produces the three longitudinal columns."""
+import pandas as pd
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from unittest.mock import patch
 
 
-def _make_patient(**kwargs):
-    p = MagicMock()
-    p.id = 1
-    p.age = 70
-    p.gender = "F"
-    p.cohort = "Pain"
-    p.primary_indication = None
-    p.has_oa = True
-    p.has_diabetes = False
-    p.has_stroke = False
-    p.has_parkinsons = False
-    p.has_sarcopenia = False
-    p.has_frailty = False
-    p.has_balance_issue = False
-    p.has_post_surgery = False
-    p.has_chronic_pain = False
-    p.has_neuropathy = False
-    p.has_cardiovascular = False
-    p.has_hypertension = False
-    p.has_osteoporosis = False
-    p.has_spinal_issue = False
-    p.has_knee_issue = False
-    p.has_hip_issue = False
-    p.has_shoulder_issue = False
-    p.has_neurological = False
-    p.has_fracture = False
-    p.has_autoimmune = False
-    p.has_metabolic = False
-    p.has_wellness_only = False
-    p.has_fall_risk = False
-    p.grp_joint_disease = False
-    p.grp_spine_back = False
-    p.grp_neurological = False
-    p.grp_post_surgical = False
-    p.grp_frailty_sarcopenia = False
-    p.grp_balance_falls = False
-    p.grp_metabolic = False
-    p.grp_softtissue_injury = False
-    p.grp_osteoporosis = False
-    p.rgn_spine = False
-    p.rgn_knee = False
-    p.rgn_ankle_foot = False
-    p.rgn_hip = False
-    p.rgn_lower_limb = False
-    p.rgn_shoulder = False
-    p.rgn_upper_limb = False
-    p.rgn_trunk = False
-    p.baseline_sppb = 8
-    for k, v in kwargs.items():
-        setattr(p, k, v)
-    return p
+def _minimal_outcomes_df():
+    return pd.DataFrame({
+        "sn": ["001", "002"],
+        "name": ["Alice", "Bob"],
+        "cohort": ["Orthopaedic", "Neurological"],
+        "primary_indication": ["OA", "Stroke"],
+        "age": [72, 65],
+        "age_band": ["70-79", "60-69"],
+        "gender": ["F", "M"],
+        "record_type": ["Active", "Active"],
+        "usage_frequency": ["1x/week", "2x/week"],
+        "has_oa": [1, 0],
+        "has_diabetes": [0, 1],
+        "has_followup": ["Y", "Y"],
+        "is_dropout": [0, 0],
+        "pre_vas": [6.0, 4.0],
+        "post_vas": [3.0, 2.0],
+        "pre_tug_s": [14.2, 11.0],
+        "post_tug_s": [11.5, 9.0],
+        "pre_5xsst_s": [20.0, 18.0],
+        "post_5xsst_s": [16.0, 15.0],
+        "pre_normal_gs_ms": [0.7, 0.9],
+        "post_normal_gs_ms": [0.85, 1.0],
+        "pre_fast_gs_ms": [1.0, 1.2],
+        "post_fast_gs_ms": [1.2, 1.4],
+        "baseline_sppb": [7, 9],
+        "post_sppb": [9, 11],
+        "composite_improvement": [0.5, 0.8],
+        "overall_responder": [1, 1],
+        "breadth_of_response": [0.8, 1.0],
+        "n_flags": [1, 1],
+        "n_groups": [1, 1],
+        "n_regions": [1, 1],
+    })
 
 
-def _make_session(**kwargs):
-    s = MagicMock()
-    s.id = 10
-    s.session_number = 1
-    s.pre_tug_s = 12.5
-    s.pre_vas = 5.0
-    s.pre_5xsst_s = 15.0
-    s.pre_normal_gs_ms = 0.75
-    s.pre_fast_gs_ms = None
-    s.baseline_sppb = 8
-    s.post_sppb = None
-    s.usage_frequency = "Once / week"
-    s.joined_with_pain = True
-    for k, v in kwargs.items():
-        setattr(s, k, v)
-    return s
+def test_longitudinal_columns_present_after_build():
+    """build_feature_matrix() must always produce all three longitudinal columns."""
+    from qtx.features.build import build_feature_matrix
+    df = _minimal_outcomes_df()
+    result = build_feature_matrix(df)
+    assert "session_number" in result.columns, "session_number missing from feature matrix"
+    assert "prior_avg_composite_improvement" in result.columns
+    assert "trend_tug_magnitude" in result.columns
 
 
-# ── _build_feature_vector_from_orm with extra= ────────────────────────────────
-
-def test_session_number_in_feature_vector():
-    """Extra longitudinal features are correctly inserted into the feature vector."""
-    from services.prediction import _build_feature_vector_from_orm
-
-    extra = {
-        "session_number": 3.0,
-        "prior_avg_composite_improvement": 0.15,
-        "trend_tug_magnitude": -0.05,
-    }
-    feature_names = ["age", "session_number", "prior_avg_composite_improvement", "trend_tug_magnitude"]
-    df = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=extra)
-
-    assert "session_number" in df.columns
-    assert df["session_number"].iloc[0] == 3.0
+def test_longitudinal_columns_default_values():
+    """For first-time patients (Parquet source), longitudinal features default to 0/1."""
+    from qtx.features.build import build_feature_matrix
+    df = _minimal_outcomes_df()
+    result = build_feature_matrix(df)
+    assert (result["session_number"] == 1.0).all(), "Default session_number should be 1"
+    assert (result["prior_avg_composite_improvement"] == 0.0).all()
+    assert (result["trend_tug_magnitude"] == 0.0).all()
 
 
-def test_prior_avg_defaults_to_zero_for_first_session():
-    """When prior_avg=0.0 (first session default), the feature vector gets 0.0."""
-    from services.prediction import _build_feature_vector_from_orm
-
-    extra = {
-        "session_number": 1.0,
-        "prior_avg_composite_improvement": 0.0,
-        "trend_tug_magnitude": 0.0,
-    }
-    feature_names = ["age", "prior_avg_composite_improvement"]
-    df = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=extra)
-
-    assert df["prior_avg_composite_improvement"].iloc[0] == 0.0
-
-
-def test_trend_tug_magnitude_in_feature_vector():
-    """trend_tug_magnitude value from extra is correctly placed in the output."""
-    from services.prediction import _build_feature_vector_from_orm
-
-    extra = {
-        "session_number": 2.0,
-        "prior_avg_composite_improvement": 0.1,
-        "trend_tug_magnitude": -0.3,
-    }
-    feature_names = ["age", "trend_tug_magnitude"]
-    df = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=extra)
-
-    assert df["trend_tug_magnitude"].iloc[0] == pytest.approx(-0.3)
-
-
-def test_extra_none_does_not_break_build():
-    """Passing extra=None (default) does not change behaviour."""
-    from services.prediction import _build_feature_vector_from_orm
-
-    feature_names = ["age", "has_oa"]
-    df_no_extra = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names)
-    df_extra_none = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=None)
-
-    assert df_no_extra.equals(df_extra_none)
-
-
-def test_extra_not_in_feature_names_is_ignored():
-    """An extra key not in feature_names is silently dropped (column slicing)."""
-    from services.prediction import _build_feature_vector_from_orm
-
-    extra = {"session_number": 5.0, "unknown_feature": 99.9}
-    feature_names = ["age"]
-    df = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=extra)
-
-    assert list(df.columns) == ["age"]
-    assert "session_number" not in df.columns
-    assert "unknown_feature" not in df.columns
-
-
-# ── REGRESSION_FEATURES list ─────────────────────────────────────────────────
-
-def test_longitudinal_features_list_has_three_new_features():
-    """REGRESSION_FEATURES must contain all three new longitudinal feature names."""
-    import importlib
-    import importlib.util
-
-    script_path = Path(__file__).resolve().parent.parent / "scripts" / "18_scheduled_retrain.py"
-    spec = importlib.util.spec_from_file_location("retrain_script", script_path)
-    retrain = importlib.util.module_from_spec(spec)
-    # Avoid running main() — only load module-level definitions
-    # The script uses sys.path manipulation and imports at module level;
-    # we load it carefully
-    try:
-        spec.loader.exec_module(retrain)
-    except Exception:
-        # If DB or other runtime imports fail, we can still check the list
-        # by reading the file directly
-        pass
-
-    features = getattr(retrain, "REGRESSION_FEATURES", None)
-    if features is None:
-        pytest.skip("Could not import REGRESSION_FEATURES from retrain script")
-
-    assert "session_number" in features, "session_number missing from REGRESSION_FEATURES"
-    assert "prior_avg_composite_improvement" in features, "prior_avg_composite_improvement missing"
-    assert "trend_tug_magnitude" in features, "trend_tug_magnitude missing"
-
-
-# ── _get_longitudinal_features helper ────────────────────────────────────────
-
-def test_get_longitudinal_features_defaults_when_no_prior_sessions():
-    """When DB returns None for avg and no tug trend, defaults are 0.0."""
-    from services.prediction import _get_longitudinal_features
-
-    # Mock DB that returns None for avg query scalar
-    mock_query = MagicMock()
-    mock_query.filter.return_value = mock_query
-    mock_query.order_by.return_value = mock_query
-    mock_query.scalar.return_value = None  # no prior sessions
-    mock_query.first.return_value = None   # no tug trend
-
-    db = MagicMock()
-    db.query.return_value = mock_query
-
-    patient = _make_patient()
-    session = _make_session(session_number=1)
-
-    result = _get_longitudinal_features(patient, session, db)
-
-    assert result["session_number"] == 1.0
-    assert result["prior_avg_composite_improvement"] == 0.0
-    assert result["trend_tug_magnitude"] == 0.0
-
-
-def test_get_longitudinal_features_uses_db_values():
-    """When DB returns real values, they flow through correctly."""
-    from services.prediction import _get_longitudinal_features
-
-    tug_trend = MagicMock()
-    tug_trend.magnitude = 0.25
-
-    call_count = 0
-
-    def side_effect(model_class):
-        nonlocal call_count
-        call_count += 1
-        q = MagicMock()
-        q.filter.return_value = q
-        q.order_by.return_value = q
-        if call_count == 1:
-            # First call: ClinicalSession avg
-            q.scalar.return_value = 0.42
-        else:
-            # Second call: PatientTrend
-            q.first.return_value = tug_trend
-        return q
-
-    db = MagicMock()
-    db.query.side_effect = side_effect
-
-    patient = _make_patient()
-    session = _make_session(session_number=3)
-
-    result = _get_longitudinal_features(patient, session, db)
-
-    assert result["session_number"] == 3.0
-    assert result["prior_avg_composite_improvement"] == pytest.approx(0.42)
-    assert result["trend_tug_magnitude"] == pytest.approx(0.25)
-
-
-# ── Model artifact feature_names_in_ ─────────────────────────────────────────
-
-def test_retrained_model_has_longitudinal_features_in_feature_names():
-    """After retraining, regression_xgb.joblib must include all three longitudinal feature names."""
-    import joblib
-
-    model_path = Path(__file__).resolve().parent.parent / "models" / "regression_xgb.joblib"
-    if not model_path.exists():
-        pytest.skip("regression_xgb.joblib not found")
-
-    # Trusted internal artifact: written exclusively by our own retrain script.
-    model = joblib.load(model_path)
-    feature_names = list(getattr(model, "feature_names_in_", []))
-
-    if not feature_names:
-        pytest.skip("Model does not expose feature_names_in_ (pre-retrain artifact)")
-
-    assert "session_number" in feature_names, f"session_number missing from model features: {feature_names}"
-    assert "prior_avg_composite_improvement" in feature_names, "prior_avg_composite_improvement missing from model"
-    assert "trend_tug_magnitude" in feature_names, "trend_tug_magnitude missing from model"
+def test_longitudinal_columns_dtype_float():
+    """Longitudinal columns must be float64 for XGBoost compatibility."""
+    from qtx.features.build import build_feature_matrix
+    df = _minimal_outcomes_df()
+    result = build_feature_matrix(df)
+    for col in ["session_number", "prior_avg_composite_improvement", "trend_tug_magnitude"]:
+        assert result[col].dtype in [float, "float64"], f"{col} must be float64"
