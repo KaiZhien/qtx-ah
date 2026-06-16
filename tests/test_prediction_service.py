@@ -269,3 +269,36 @@ def test_run_no_bias_correction_when_bias_zero():
     assert result is not None
     assert abs(result["predicted_composite_improvement"] - 0.42) < 1e-6
     assert "bias_correction_applied" not in result
+
+
+# ── longitudinal features in inference feature vector ────────────────────────
+
+def test_prediction_feature_vectors_include_longitudinal():
+    import joblib
+    from services.prediction import _build_feature_vector_from_orm
+
+    models_dir = Path(__file__).resolve().parent.parent / "models"
+    xgb_files = ["regression_xgb.joblib", "classifier_xgb.joblib", "dropout_xgb.joblib"]
+
+    extra = {
+        "session_number": 2.0,
+        "prior_avg_composite_improvement": 0.3,
+        "trend_tug_magnitude": -0.5,
+    }
+
+    for model_file in xgb_files:
+        model_path = models_dir / model_file
+        if not model_path.exists():
+            pytest.skip(f"{model_file} not present")
+
+        model = joblib.load(model_path)  # safe: local models/ written by our own training scripts
+        feature_names = list(model.feature_names_in_)
+
+        df = _build_feature_vector_from_orm(_make_patient(), _make_session(), feature_names, extra=extra)
+
+        assert "session_number" in df.columns, f"{model_file}: session_number missing from feature vector"
+        assert "prior_avg_composite_improvement" in df.columns, f"{model_file}: prior_avg_composite_improvement missing from feature vector"
+        assert "trend_tug_magnitude" in df.columns, f"{model_file}: trend_tug_magnitude missing from feature vector"
+
+        assert df["session_number"].iloc[0] == 2.0, f"{model_file}: session_number value mismatch"
+        assert df["prior_avg_composite_improvement"].iloc[0] == 0.3, f"{model_file}: prior_avg_composite_improvement value mismatch"
