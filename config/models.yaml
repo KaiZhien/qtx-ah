@@ -100,6 +100,10 @@ classifier_responder:
     - has_metabolic
     - has_knee_issue
     - has_spinal_issue
+    # longitudinal session features
+    - session_number
+    - prior_avg_composite_improvement
+    - trend_tug_magnitude
     # clinical group flags
     - grp_joint_disease
     - grp_spine_back
@@ -159,6 +163,10 @@ dropout:
     - has_metabolic
     - has_knee_issue
     - has_spinal_issue
+    # longitudinal session features
+    - session_number
+    - prior_avg_composite_improvement
+    - trend_tug_magnitude
     # clinical group flags
     - grp_joint_disease
     - grp_spine_back
