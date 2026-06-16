@@ -369,3 +369,43 @@ def test_high_sedentary_risk_does_not_fire_below_threshold():
 
     flags = detector._detect_flags(patient, session, trends, predictions, wearable_feats)
     assert "high_sedentary_risk" not in flags
+
+
+# ── Rule 8: fall_event_recorded ──────────────────────────────────────────
+
+def test_fall_event_recorded_fires_when_fall_detected_and_not_flagged():
+    """fall_event_recorded fires when a fall was detected."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_fall_events_90d": 1}
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "fall_event_recorded" in flags
+
+
+def test_fall_event_recorded_does_not_fire_when_zero_falls():
+    """fall_event_recorded does not fire when wearable_fall_events_90d is 0."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {"wearable_fall_events_90d": 0}
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "fall_event_recorded" not in flags

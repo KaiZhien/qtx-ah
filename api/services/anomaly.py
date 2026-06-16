@@ -119,6 +119,12 @@ class AnomalyDetector:
             if sedentary_pct is not None and sedentary_pct > _SEDENTARY_RISK_THRESHOLD:
                 flags.append("high_sedentary_risk")
 
+        # Rule 8: fall_event_recorded
+        if wearable_feats is not None:
+            fall_count = wearable_feats.get("wearable_fall_events_90d")
+            if fall_count is not None and int(fall_count) > 0:
+                flags.append("fall_event_recorded")
+
         return flags
 
     # ------------------------------------------------------------------
