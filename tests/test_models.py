@@ -1,7 +1,7 @@
 """Tests for model training contracts after Approach-A optimisation.
 
 Verifies:
-- Config has 46 features per model and a tuning block
+- Config has 49 features per model and a tuning block
 - _build_sklearn_imputer returns correct sklearn types
 - train_classifier / train_regression / train_dropout return expected keys
   including best_params, and n reflects expanded dataset
@@ -23,7 +23,7 @@ from qtx.utils.config import get_models_config
 # ---------------------------------------------------------------------------
 
 def _make_featured_df(n: int = 80, seed: int = 0) -> pd.DataFrame:
-    """Synthetic featured.parquet-like DataFrame with all 46 feature columns,
+    """Synthetic featured.parquet-like DataFrame with all 49 feature columns,
     two outcome columns, and realistic NaN patterns in pre_vas / pre_fast_gs_ms."""
     rng = np.random.default_rng(seed)
 
@@ -86,6 +86,10 @@ def _make_featured_df(n: int = 80, seed: int = 0) -> pd.DataFrame:
         "composite_improvement": np.where(np.arange(n) < 60, rng.uniform(-1, 1, n), np.nan),
         "is_dropout": np.where(np.arange(n) >= 60, 1, 0).astype(int),
         "has_followup": np.where(np.arange(n) < 60, "Y", "N"),
+        # longitudinal session features (default values matching build_feature_matrix placeholders)
+        "session_number": np.ones(n, dtype=float),
+        "prior_avg_composite_improvement": np.zeros(n, dtype=float),
+        "trend_tug_magnitude": np.zeros(n, dtype=float),
     })
     return df
 
@@ -99,9 +103,9 @@ def featured_df() -> pd.DataFrame:
 # Config tests
 # ---------------------------------------------------------------------------
 
-def test_config_classifier_has_46_features():
+def test_config_classifier_has_49_features():
     cfg = get_models_config()
-    assert len(cfg["classifier_responder"]["features"]) == 46
+    assert len(cfg["classifier_responder"]["features"]) == 49
 
 
 def test_config_regression_has_49_features():
@@ -109,9 +113,9 @@ def test_config_regression_has_49_features():
     assert len(cfg["regression_composite"]["features"]) == 49
 
 
-def test_config_dropout_has_46_features():
+def test_config_dropout_has_49_features():
     cfg = get_models_config()
-    assert len(cfg["dropout"]["features"]) == 46
+    assert len(cfg["dropout"]["features"]) == 49
 
 
 def test_config_has_tuning_block():
