@@ -2,7 +2,13 @@
 import pandas as pd
 import numpy as np
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def _no_io(monkeypatch):
+    with patch("qtx.features.build.save_parquet"):
+        yield
 
 
 def _minimal_outcomes_df():
@@ -66,5 +72,33 @@ def test_longitudinal_columns_dtype_float():
     from qtx.features.build import build_feature_matrix
     df = _minimal_outcomes_df()
     result = build_feature_matrix(df)
+    for col in ["session_number", "prior_avg_composite_improvement", "trend_tug_magnitude"]:
+        assert result[col].dtype in [float, "float64"], f"{col} must be float64"
+
+
+def test_longitudinal_columns_fillna_when_present():
+    """Exercises the else-branch: columns already present get NaN filled with defaults."""
+    from qtx.features.build import build_feature_matrix
+    df = _minimal_outcomes_df()
+    # Add the three longitudinal columns with at least one NaN each
+    df["session_number"] = [3.0, float("nan")]
+    df["prior_avg_composite_improvement"] = [float("nan"), 0.3]
+    df["trend_tug_magnitude"] = [0.1, float("nan")]
+    result = build_feature_matrix(df)
+    # NaN in session_number → filled with default 1.0
+    assert result["session_number"].isna().sum() == 0, "session_number still has NaN"
+    assert result.loc[result["session_number"] != 3.0, "session_number"].eq(1.0).all(), \
+        "NaN in session_number should be filled with 1.0"
+    # NaN in prior_avg_composite_improvement → filled with default 0.0
+    assert result["prior_avg_composite_improvement"].isna().sum() == 0
+    assert result.loc[result["prior_avg_composite_improvement"] != 0.3,
+                      "prior_avg_composite_improvement"].eq(0.0).all(), \
+        "NaN in prior_avg_composite_improvement should be filled with 0.0"
+    # NaN in trend_tug_magnitude → filled with default 0.0
+    assert result["trend_tug_magnitude"].isna().sum() == 0
+    assert result.loc[result["trend_tug_magnitude"] != 0.1,
+                      "trend_tug_magnitude"].eq(0.0).all(), \
+        "NaN in trend_tug_magnitude should be filled with 0.0"
+    # All three must be float64
     for col in ["session_number", "prior_avg_composite_improvement", "trend_tug_magnitude"]:
         assert result[col].dtype in [float, "float64"], f"{col} must be float64"
