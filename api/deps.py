@@ -25,6 +25,27 @@ def verify_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
+def _get_model_files() -> dict:
+    """Return model file paths for serving.
+
+    If QTX_USE_RAISE_AUGMENTED=1 and the augmented regression model exists,
+    use it in place of the baseline. Falls back to baseline if file is absent.
+    """
+    use_augmented = os.environ.get("QTX_USE_RAISE_AUGMENTED", "0") == "1"
+    augmented_path = MODELS_DIR / "regression_xgb_raise_augmented.joblib"
+    regression_path = (
+        augmented_path
+        if use_augmented and augmented_path.exists()
+        else MODELS_DIR / "regression_xgb.joblib"
+    )
+    return {
+        "classifier": MODELS_DIR / "classifier_xgb.joblib",
+        "regression": regression_path,
+        "dropout":    MODELS_DIR / "dropout_xgb.joblib",
+        "dosage":     MODELS_DIR / "dosage_frequency.joblib",
+    }
+
+
 def load_all() -> None:
     """Load ML models and verify DB connectivity at startup.
 
@@ -64,13 +85,7 @@ def load_all() -> None:
 
     # --- ML models (fatal if missing) ---
     missing: list[str] = []
-    model_files = {
-        "classifier": MODELS_DIR / "classifier_xgb.joblib",
-        "regression": MODELS_DIR / "regression_xgb.joblib",
-        "dropout":    MODELS_DIR / "dropout_xgb.joblib",
-        "dosage":     MODELS_DIR / "dosage_frequency.joblib",
-    }
-    for name, path in model_files.items():
+    for name, path in _get_model_files().items():
         try:
             models[name] = joblib.load(path)
         except FileNotFoundError:
