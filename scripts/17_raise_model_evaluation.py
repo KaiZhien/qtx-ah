@@ -153,8 +153,22 @@ def should_save_models(baseline: dict, combined: dict) -> bool:
 
 
 def load_qtx_df(parquet_path: Path | str = PARQUET) -> pd.DataFrame:
-    """Load QTX parquet and add dataset=0 flag."""
+    """Load QTX parquet and add dataset=0 flag.
+
+    Filters to clinical patients only (at least one condition flag set) so the
+    shift gate compares RAISE clinical-trial patients against comparable QTX
+    clinical patients, not the full QTX dataset which includes ~75% wellness/
+    low-acuity patients with zero condition flags. Those wellness patients are
+    trivially separable from RAISE trial participants, driving AUC toward 1.0.
+    """
     df = pd.read_parquet(parquet_path)
+    # Keep patients with at least one has_* flag — clinical patients only
+    has_cols_present = [c for c in HAS_COLS if c in df.columns]
+    if has_cols_present:
+        clinical_mask = df[has_cols_present].sum(axis=1) > 0
+        n_before = len(df)
+        df = df[clinical_mask].copy()
+        print(f"  QTX clinical filter: {n_before} → {len(df)} rows (excluded {n_before - len(df)} wellness/zero-flag patients)")
     df["dataset"] = 0
     return df
 
