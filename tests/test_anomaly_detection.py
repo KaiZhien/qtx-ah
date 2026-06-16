@@ -449,3 +449,71 @@ def test_low_compliance_does_not_fire_at_30_percent():
 
     flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
     assert "low_compliance" not in flags
+
+
+# ── Rule 10: hrv_decline ──────────────────────────────────────────
+
+def test_hrv_decline_fires_when_hrv_below_threshold():
+    """hrv_decline fires when wearable_hrv_trend_7d < 20.0 ms."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {
+        "wearable_hrv_trend_7d": 15.0,
+        "wearable_compliance_rate_30d": 0.80,  # compliance OK, so reading is reliable
+    }
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "hrv_decline" in flags
+
+
+def test_hrv_decline_suppressed_when_compliance_low():
+    """hrv_decline does not fire when compliance is too low to trust the HRV reading."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {
+        "wearable_hrv_trend_7d": 15.0,
+        "wearable_compliance_rate_30d": 0.10,  # too low — HRV reading unreliable
+    }
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "hrv_decline" not in flags
+
+
+def test_hrv_decline_does_not_fire_above_threshold():
+    """hrv_decline does not fire at 25 ms."""
+    from services.anomaly import AnomalyDetector
+    from unittest.mock import MagicMock
+    detector = AnomalyDetector(db=None)
+    patient = MagicMock()
+    patient.has_fall_risk = False
+    session = MagicMock()
+    session.post_tug_s = 10.0
+    session.post_vas = 3.0
+    session.pre_vas = 4.0
+    session.composite_improvement = 0.5
+    predictions = {"responder_probability": 0.4, "dropout_probability": 0.3}
+    wearable_feats = {
+        "wearable_hrv_trend_7d": 25.0,
+        "wearable_compliance_rate_30d": 0.80,
+    }
+
+    flags = detector._detect_flags(patient, session, [], predictions, wearable_feats)
+    assert "hrv_decline" not in flags

@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _LOW_COMPLIANCE_THRESHOLD = 0.30   # fraction of days with ≥4h wear — matches PatientDrawerBody.tsx:168
 _SEDENTARY_RISK_THRESHOLD = 80.0   # % of day sedentary (30d rolling avg)
+_HRV_DECLINE_THRESHOLD_MS = 20.0  # RMSSD ms — conservative lower bound; requires clinical review before adjusting
 
 _WARNING_TEMPLATE = """\
 Anomaly flags detected after session {session_number}:
@@ -133,6 +134,20 @@ class AnomalyDetector:
             compliance = wearable_feats.get("wearable_compliance_rate_30d")
             if compliance is not None and compliance < _LOW_COMPLIANCE_THRESHOLD:
                 flags.append("low_compliance")
+
+        # Rule 10: hrv_decline
+        # Suppressed when wearable compliance is low (< 0.30) as the reading
+        # is unreliable. Threshold of 20 ms RMSSD is conservative — adjust with
+        # clinical team input before tightening.
+        if wearable_feats is not None:
+            hrv = wearable_feats.get("wearable_hrv_trend_7d")
+            compliance = wearable_feats.get("wearable_compliance_rate_30d", 1.0)
+            if (
+                hrv is not None
+                and hrv < _HRV_DECLINE_THRESHOLD_MS
+                and compliance >= _LOW_COMPLIANCE_THRESHOLD
+            ):
+                flags.append("hrv_decline")
 
         return flags
 
