@@ -401,3 +401,33 @@ def test_check_and_warn_backwards_compat_no_wearable_feats(monkeypatch):
     )
 
     assert result is None
+
+
+# ── _build_warning_prompt: new wearable fields ───────────────────────────────
+
+def test_warning_prompt_includes_new_wearable_fields():
+    """_build_warning_prompt includes sedentary_pct, fall_events, compliance, hrv when provided."""
+    from services.anomaly import AnomalyDetector
+    detector = AnomalyDetector(db=None)
+    session = MagicMock()
+    session.pre_tug_s = 14.0
+    session.post_tug_s = 12.0
+    session.pre_vas = 6.0
+    session.post_vas = 4.0
+    session.composite_improvement = 0.3
+    wearable_feats = {
+        "wearable_sedentary_pct_30d": 85.0,
+        "wearable_fall_events_90d": 1,
+        "wearable_compliance_rate_30d": 0.20,
+        "wearable_hrv_trend_7d": 16.0,
+        "wearable_cadence_avg_30d": 75.0,
+    }
+    predictions = {"responder_probability": 0.6, "dropout_probability": 0.4}
+    flags = ["high_sedentary_risk", "fall_event_recorded"]
+
+    prompt = detector._build_warning_prompt(flags, session, predictions, session_number=3, wearable_feats=wearable_feats)
+
+    assert "sedentary_pct" in prompt or "85.0" in prompt
+    assert "fall_events" in prompt or "1" in prompt
+    assert "compliance" in prompt or "0.20" in prompt or "20%" in prompt
+    assert "hrv" in prompt or "16.0" in prompt

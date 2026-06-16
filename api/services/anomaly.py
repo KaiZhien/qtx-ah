@@ -42,7 +42,7 @@ Session measurements: pre_tug={pre_tug_s}, post_tug={post_tug_s},
 pre_vas={pre_vas}, post_vas={post_vas},
 composite_improvement={composite_improvement},
 responder_probability={responder_probability},
-dropout_probability={dropout_probability}.{cadence_line}
+dropout_probability={dropout_probability}.{wearable_line}
 
 In 2-3 sentences, explain what these flags mean clinically and what the \
 treating physiotherapist should monitor or investigate at the next session. \
@@ -174,8 +174,27 @@ class AnomalyDetector:
         dropout_probability = (
             predictions.get("dropout_probability") if predictions else None
         )
-        cadence = wearable_feats.get("wearable_cadence_avg_30d") if wearable_feats else None
-        cadence_line = f"\ncadence_avg_30d={_fmt(cadence, ' steps/min')}," if cadence is not None else ""
+
+        wearable_parts = []
+        if wearable_feats:
+            cadence = wearable_feats.get("wearable_cadence_avg_30d")
+            sedentary = wearable_feats.get("wearable_sedentary_pct_30d")
+            falls = wearable_feats.get("wearable_fall_events_90d")
+            compliance = wearable_feats.get("wearable_compliance_rate_30d")
+            hrv = wearable_feats.get("wearable_hrv_trend_7d")
+            if cadence is not None:
+                wearable_parts.append(f"cadence_avg_30d={_fmt(cadence, ' spm')}")
+            if sedentary is not None:
+                wearable_parts.append(f"sedentary_pct_30d={_fmt(sedentary, '%')}")
+            if falls is not None:
+                wearable_parts.append(f"fall_events_90d={int(falls)}")
+            if compliance is not None:
+                wearable_parts.append(f"compliance_rate_30d={_fmt(round(compliance * 100), '%')}")
+            if hrv is not None:
+                wearable_parts.append(f"hrv_rmssd_7d={_fmt(hrv, ' ms')}")
+
+        wearable_line = ("\n" + ", ".join(wearable_parts) + ",") if wearable_parts else ""
+
         return _WARNING_TEMPLATE.format(
             session_number=session_number,
             flag_list=flag_list,
@@ -186,7 +205,7 @@ class AnomalyDetector:
             composite_improvement=_fmt(session.composite_improvement),
             responder_probability=_fmt(responder_probability),
             dropout_probability=_fmt(dropout_probability),
-            cadence_line=cadence_line,
+            wearable_line=wearable_line,
         )
 
     # ------------------------------------------------------------------
