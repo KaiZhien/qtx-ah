@@ -160,3 +160,54 @@ def test_anomaly_requires_api_key(client, db):
 
     resp = client.get("/api/patient/B003/anomalies/latest")
     assert resp.status_code == 401
+
+
+# ── Wearable anomaly flags integration test ──────────────────────────────────
+
+def test_wearable_anomaly_flags_fire_via_session_post(client, db):
+    """POSTing a session with wearable features that cross thresholds causes
+    `high_sedentary_risk` and `fall_event_recorded` flags to fire, resulting
+    in an anomaly_warning row readable from GET /api/patient/{sn}/anomalies/latest.
+
+    _get_wearable_features is patched so the router receives controlled values
+    without needing a real Terra / DB wearable table.
+    """
+    from unittest.mock import patch
+
+    sn = "W001"
+    _make_patient(db, sn)
+    db.commit()
+
+    # Values that cross rule thresholds:
+    #   sedentary_pct_30d=85 > _SEDENTARY_RISK_THRESHOLD (80) → high_sedentary_risk
+    #   fall_events_90d=2    > 0                              → fall_event_recorded
+    #   compliance_rate_30d=0.80 (healthy, won't mask HRV)
+    wearable_stub = {
+        "wearable_sedentary_pct_30d": 85.0,
+        "wearable_fall_events_90d": 2,
+        "wearable_compliance_rate_30d": 0.80,
+        "wearable_cadence_avg_30d": 95.0,
+        "wearable_steps_30d_avg": 3500,
+        "wearable_hrv_trend_7d": None,
+    }
+
+    with patch("routers.sessions._get_wearable_features", return_value=wearable_stub):
+        resp = client.post(
+            f"/api/patient/{sn}/session",
+            json={"post_tug_s": 14.0, "post_vas": 5.0},
+            headers={"X-Api-Key": _TEST_API_KEY},
+        )
+
+    assert resp.status_code == 201, f"Session POST failed: {resp.text}"
+
+    # The anomaly detection runs synchronously inside the session endpoint.
+    # Fetch the latest anomaly warning and confirm it was persisted.
+    anomaly_resp = client.get(
+        f"/api/patient/{sn}/anomalies/latest",
+        headers={"X-Api-Key": _TEST_API_KEY},
+    )
+    assert anomaly_resp.status_code == 200, f"Anomaly GET failed: {anomaly_resp.text}"
+
+    data = anomaly_resp.json()
+    assert data is not None, "Expected an anomaly_warning row but got null"
+    assert data.get("content"), "anomaly_warning content must be non-empty"
