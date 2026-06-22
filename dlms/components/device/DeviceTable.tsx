@@ -1,13 +1,17 @@
 'use client'
-import { useTransition, useState, useRef, useCallback } from 'react'
+import { useTransition, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, Check, X } from 'lucide-react'
+import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil } from 'lucide-react'
 import { createDeviceRowAction, updateDeviceRowAction } from '@/app/devices/actions'
+import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
@@ -37,6 +41,15 @@ const SECTION = {
 } as const
 type Section = keyof typeof SECTION
 
+const GROUP_SECTION: Record<string, Section> = {
+  device_info:  'device',
+  pcba_a:       'pcbaA',
+  pcba_b:       'pcbaB',
+  hmi:          'hmi',
+  shipment:     'shipment',
+  status_notes: 'status',
+}
+
 function GroupTh({ label, sub, colSpan, section }: { label: string; sub?: string; colSpan: number; section: Section }) {
   const { bg, border } = SECTION[section]
   return (
@@ -61,36 +74,6 @@ function Td({ children, className = '' }: { children: React.ReactNode; className
     <td className={`px-2 py-1.5 text-xs border-r border-border last:border-r-0 align-top ${className}`}>
       {children}
     </td>
-  )
-}
-
-function CellInput({ value, onChange, type = 'text', placeholder = '', className = '' }: {
-  value: string; onChange: (v: string) => void; type?: string; placeholder?: string; className?: string
-}) {
-  return (
-    <input
-      type={type}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      placeholder={placeholder}
-      className={`w-full min-w-[80px] px-1 py-0.5 text-xs border border-input rounded bg-white focus:outline-none focus:ring-1 focus:ring-ring ${className}`}
-    />
-  )
-}
-
-function CellSelect({ value, onChange, options }: {
-  value: string; onChange: (v: string) => void
-  options: { code: string; label: string }[]
-}) {
-  return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="w-full min-w-[90px] px-1 py-0.5 text-xs border border-input rounded bg-white focus:outline-none focus:ring-1 focus:ring-ring"
-    >
-      <option value="">—</option>
-      {options.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
-    </select>
   )
 }
 
@@ -132,86 +115,161 @@ function deviceToInput(d: DeviceRow): DeviceInput {
 function n(v: string | null | undefined) { return v || '—' }
 function nv(v: string) { return v === '' ? null : v }
 
-interface EditRowProps {
+const SELECT_CLASS =
+  'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm ' +
+  'focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+
+function FieldControl({
+  fieldKey, data, onChange, statuses, phases,
+}: {
+  fieldKey: string
+  data: DeviceInput
+  onChange: (f: keyof DeviceInput, v: string | number | null) => void
+  statuses: StatusOption[]
+  phases: PhaseOption[]
+}) {
+  const raw = data[fieldKey as keyof DeviceInput]
+  const strVal = raw == null ? '' : String(raw)
+
+  if (fieldKey === 'status') {
+    return (
+      <select
+        value={strVal}
+        onChange={e => onChange('status', e.target.value)}
+        className={SELECT_CLASS}
+      >
+        <option value="">Select status…</option>
+        {statuses.map(s => (
+          <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
+        ))}
+      </select>
+    )
+  }
+  if (fieldKey === 'phase') {
+    return (
+      <select
+        value={strVal}
+        onChange={e => onChange('phase', e.target.value)}
+        className={SELECT_CLASS}
+      >
+        <option value="">Select phase…</option>
+        {phases.map(p => (
+          <option key={p.code} value={p.code}>{p.label_en} · {p.label_zh}</option>
+        ))}
+      </select>
+    )
+  }
+  if (fieldKey === 'remarks') {
+    return (
+      <Textarea
+        value={strVal}
+        onChange={e => onChange('remarks', e.target.value)}
+        rows={3}
+      />
+    )
+  }
+  if (fieldKey === 'qty') {
+    return (
+      <Input
+        type="number"
+        value={raw == null ? '' : String(raw)}
+        onChange={e => onChange('qty', e.target.value === '' ? null : parseInt(e.target.value) || null)}
+      />
+    )
+  }
+  if (fieldKey === 'build_date' || fieldKey === 'ship_date') {
+    return (
+      <Input
+        type="date"
+        value={strVal}
+        onChange={e => onChange(fieldKey as keyof DeviceInput, e.target.value)}
+      />
+    )
+  }
+  return (
+    <Input
+      value={strVal}
+      onChange={e => onChange(fieldKey as keyof DeviceInput, e.target.value)}
+    />
+  )
+}
+
+function DeviceFormModal({
+  open, isNew, data, statuses, phases, saving, rowError, onSave, onCancel, onChange,
+}: {
+  open: boolean
+  isNew: boolean
   data: DeviceInput
   statuses: StatusOption[]
   phases: PhaseOption[]
   saving: boolean
+  rowError: string | null
   onSave: () => void
   onCancel: () => void
   onChange: (field: keyof DeviceInput, value: string | number | null) => void
-}
-
-function EditRow({ data, statuses, phases, saving, onSave, onCancel, onChange }: EditRowProps) {
-  const s = (f: keyof DeviceInput) => String(data[f] ?? '')
-  const cell = (f: keyof DeviceInput, ph = '') => (
-    <CellInput value={s(f)} onChange={v => onChange(f, v)} placeholder={ph} />
-  )
-
+}) {
   return (
-    <tr className="bg-blue-50 border-t-2 border-blue-300">
-      <Td>{cell('device_sn', 'Device S/N')}</Td>
-      <Td>{cell('product_name', 'Product name')}</Td>
-      <Td>{cell('model_no', 'Model no.')}</Td>
-      <Td className="font-mono">{cell('pcba_a_sn', 'EE-02A-...*')}</Td>
-      <Td>{cell('pcba_a_hw_rev', 'V1P03')}</Td>
-      <Td>{cell('pcba_a_bom_rev', 'Rev01')}</Td>
-      <Td>{cell('pcba_a_fw_ver', 'V1.0.0')}</Td>
-      <Td className="font-mono">{cell('pcba_b_sn', 'EE-01-B...')}</Td>
-      <Td>{cell('pcba_b_hw_rev', 'V1.1')}</Td>
-      <Td>{cell('pcba_b_bom_rev', 'V1.0')}</Td>
-      <Td>{cell('pcba_b_fw_ver', 'V0.0.12')}</Td>
-      <Td>{cell('screen_model', 'NX8048...')}</Td>
-      <Td>{cell('hmi_ver', 'Basic')}</Td>
-      <Td><CellInput type="date" value={s('build_date')} onChange={v => onChange('build_date', v)} /></Td>
-      <Td><CellInput type="date" value={s('ship_date')} onChange={v => onChange('ship_date', v)} /></Td>
-      <Td right>
-        <CellInput
-          value={data.qty != null ? String(data.qty) : ''}
-          onChange={v => onChange('qty', v === '' ? null : parseInt(v) || null)}
-          type="number"
-          className="max-w-[60px]"
-        />
-      </Td>
-      <Td>{cell('destination', 'e.g. KL')}</Td>
-      <Td>{cell('customer', 'Customer')}</Td>
-      <Td>
-        <CellSelect
-          value={s('status')}
-          onChange={v => onChange('status', v)}
-          options={statuses.map(s => ({ code: s.code, label: s.label_en }))}
-        />
-      </Td>
-      <Td>
-        <CellSelect
-          value={s('phase')}
-          onChange={v => onChange('phase', v)}
-          options={phases.map(p => ({ code: p.code, label: p.label_en }))}
-        />
-      </Td>
-      <Td>
-        <textarea
-          value={s('remarks')}
-          onChange={e => onChange('remarks', e.target.value)}
-          rows={2}
-          placeholder="Remarks…"
-          className="w-full min-w-[140px] px-1 py-0.5 text-xs border border-input rounded bg-white focus:outline-none focus:ring-1 focus:ring-ring resize-none"
-        />
-      </Td>
-      {/* Save / cancel */}
-      <Td>
-        <div className="flex gap-1">
-          <button onClick={onSave} disabled={saving}
-            className="p-1 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50" title="Save">
-            <Check className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={onCancel} disabled={saving}
-            className="p-1 rounded bg-muted text-muted-foreground hover:bg-muted/80" title="Cancel">
-            <X className="h-3.5 w-3.5" />
-          </button>
+    <Dialog open={open} onOpenChange={o => { if (!o) onCancel() }}>
+      <DialogContent style={{ maxWidth: '56rem' }} className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{isNew ? 'New Device' : 'Edit Device'}</DialogTitle>
+          <p className="text-sm text-muted-foreground">{isNew ? '新增设备' : '编辑设备'}</p>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          {GROUP_LABELS.map(group => {
+            const sectionKey = GROUP_SECTION[group.key] ?? 'device'
+            const { bg } = SECTION[sectionKey]
+            return (
+              <section key={group.key}>
+                <div className={`${bg} text-white text-xs font-semibold px-3 py-1.5 rounded-t`}>
+                  {group.en}&nbsp;<span className="opacity-75 font-normal">{group.zh}</span>
+                </div>
+                <div className="border border-t-0 rounded-b p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {group.fields.map(fieldKey => {
+                    const label = FIELD_LABELS[fieldKey]
+                    return (
+                      <div key={fieldKey} className={fieldKey === 'remarks' ? 'sm:col-span-2' : ''}>
+                        <Label className="flex flex-col gap-0.5 mb-1.5">
+                          <span className="text-sm font-medium">{label?.en ?? fieldKey}</span>
+                          <span className="text-xs font-normal text-muted-foreground">{label?.zh}</span>
+                        </Label>
+                        <FieldControl
+                          fieldKey={fieldKey}
+                          data={data}
+                          onChange={onChange}
+                          statuses={statuses}
+                          phases={phases}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            )
+          })}
         </div>
-      </Td>
-    </tr>
+
+        {rowError && (
+          <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
+            {rowError}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={onSave}
+            disabled={saving}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -227,7 +285,6 @@ export function DeviceTable({
   const canEdit = can(userRole, ACTIONS.EDIT_DEVICE)
   const canCreate = can(userRole, ACTIONS.CREATE_DEVICE)
 
-  // inline edit state
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
   const [editVersion, setEditVersion] = useState(1)
@@ -313,6 +370,20 @@ export function DeviceTable({
 
   return (
     <div className="space-y-4">
+      {/* Modal editor */}
+      <DeviceFormModal
+        open={editingId !== null}
+        isNew={editingId === 'new'}
+        data={editData}
+        statuses={statuses}
+        phases={phases}
+        saving={saving}
+        rowError={rowError}
+        onSave={handleSave}
+        onCancel={cancelEdit}
+        onChange={handleChange}
+      />
+
       {/* Toolbar */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-48">
@@ -352,18 +423,12 @@ export function DeviceTable({
             </Button>
           </Link>
           {canCreate && (
-            <Button size="sm" onClick={startNew} disabled={editingId !== null}>
+            <Button size="sm" onClick={startNew}>
               <Plus className="h-4 w-4 mr-1" />New Row
             </Button>
           )}
         </div>
       </div>
-
-      {rowError && (
-        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded px-3 py-2">
-          {rowError}
-        </div>
-      )}
 
       {/* Table */}
       <div className="rounded-md border overflow-x-auto">
@@ -403,83 +468,53 @@ export function DeviceTable({
             </tr>
           </thead>
           <tbody>
-            {devices.length === 0 && editingId !== 'new' ? (
+            {devices.length === 0 ? (
               <tr>
                 <td colSpan={canEdit ? 22 : 21} className="text-center text-muted-foreground py-8">
                   No devices found.
                 </td>
               </tr>
             ) : (
-              devices.map((device, i) => {
-                if (editingId === device.id) {
-                  return (
-                    <EditRow
-                      key={device.id}
-                      data={editData}
-                      statuses={statuses}
-                      phases={phases}
-                      saving={saving}
-                      onSave={handleSave}
-                      onCancel={cancelEdit}
-                      onChange={handleChange}
-                    />
-                  )
-                }
-                return (
-                  <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
+              devices.map((device, i) => (
+                <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
+                  <Td>
+                    <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
+                      {n(device.device_sn)}
+                    </Link>
+                  </Td>
+                  <Td>{n(device.product_name)}</Td>
+                  <Td className="font-mono">{n(device.model_no)}</Td>
+                  <Td className="font-mono">{n(device.pcba_a_sn)}</Td>
+                  <Td className="font-mono">{n(device.pcba_a_hw_rev)}</Td>
+                  <Td className="font-mono">{n(device.pcba_a_bom_rev)}</Td>
+                  <Td className="font-mono">{n(device.pcba_a_fw_ver)}</Td>
+                  <Td className="font-mono">{n(device.pcba_b_sn)}</Td>
+                  <Td className="font-mono">{n(device.pcba_b_hw_rev)}</Td>
+                  <Td className="font-mono">{n(device.pcba_b_bom_rev)}</Td>
+                  <Td className="font-mono">{n(device.pcba_b_fw_ver)}</Td>
+                  <Td>{n(device.screen_model)}</Td>
+                  <Td>{n(device.hmi_ver)}</Td>
+                  <Td className="tabular-nums">{n(device.build_date)}</Td>
+                  <Td className="tabular-nums">{n(device.ship_date)}</Td>
+                  <Td className="tabular-nums text-right">{device.qty ?? '—'}</Td>
+                  <Td>{n(device.destination)}</Td>
+                  <Td>{n(device.customer)}</Td>
+                  <Td><StatusBadge status={device.status} /></Td>
+                  <Td><PhaseBadge phase={device.phase} /></Td>
+                  <Td className="max-w-[200px] whitespace-pre-wrap">{n(device.remarks)}</Td>
+                  {canEdit && (
                     <Td>
-                      <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
-                        {n(device.device_sn)}
-                      </Link>
+                      <button
+                        onClick={() => startEdit(device)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground"
+                        title="Edit row"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                     </Td>
-                    <Td>{n(device.product_name)}</Td>
-                    <Td className="font-mono">{n(device.model_no)}</Td>
-                    <Td className="font-mono">{n(device.pcba_a_sn)}</Td>
-                    <Td className="font-mono">{n(device.pcba_a_hw_rev)}</Td>
-                    <Td className="font-mono">{n(device.pcba_a_bom_rev)}</Td>
-                    <Td className="font-mono">{n(device.pcba_a_fw_ver)}</Td>
-                    <Td className="font-mono">{n(device.pcba_b_sn)}</Td>
-                    <Td className="font-mono">{n(device.pcba_b_hw_rev)}</Td>
-                    <Td className="font-mono">{n(device.pcba_b_bom_rev)}</Td>
-                    <Td className="font-mono">{n(device.pcba_b_fw_ver)}</Td>
-                    <Td>{n(device.screen_model)}</Td>
-                    <Td>{n(device.hmi_ver)}</Td>
-                    <Td className="tabular-nums">{n(device.build_date)}</Td>
-                    <Td className="tabular-nums">{n(device.ship_date)}</Td>
-                    <Td className="tabular-nums text-right">{device.qty ?? '—'}</Td>
-                    <Td>{n(device.destination)}</Td>
-                    <Td>{n(device.customer)}</Td>
-                    <Td><StatusBadge status={device.status} /></Td>
-                    <Td><PhaseBadge phase={device.phase} /></Td>
-                    <Td className="max-w-[200px] whitespace-pre-wrap">{n(device.remarks)}</Td>
-                    {canEdit && (
-                      <Td>
-                        <button
-                          onClick={() => startEdit(device)}
-                          disabled={editingId !== null}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground disabled:cursor-not-allowed"
-                          title="Edit row"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </Td>
-                    )}
-                  </tr>
-                )
-              })
-            )}
-
-            {/* New row form appended at the bottom */}
-            {editingId === 'new' && (
-              <EditRow
-                data={editData}
-                statuses={statuses}
-                phases={phases}
-                saving={saving}
-                onSave={handleSave}
-                onCancel={cancelEdit}
-                onChange={handleChange}
-              />
+                  )}
+                </tr>
+              ))
             )}
           </tbody>
         </table>
