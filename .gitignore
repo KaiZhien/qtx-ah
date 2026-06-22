@@ -23,6 +23,8 @@ package-lock.json
 
 .worktrees/
 
+.playwright-mcp/
+
 # AI tooling artifacts
 .superpowers/
 docs/superpowers/
