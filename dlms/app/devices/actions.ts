@@ -40,6 +40,34 @@ export async function softDeleteAction(id: string) {
   redirect('/devices')
 }
 
+// Inline table create — does not redirect, returns the new row
+export async function createDeviceRowAction(input: DeviceInput): Promise<{ id: string } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.CREATE_DEVICE)) return { error: 'Unauthorized' }
+    const device = await createDevice(input, user.id, user.role as Role)
+    revalidatePath('/devices')
+    return { id: device.id }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Save failed' }
+  }
+}
+
+// Inline table update — does not redirect, returns ok or error
+export async function updateDeviceRowAction(
+  id: string, input: Partial<DeviceInput>, version: number
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.EDIT_DEVICE)) return { error: 'Unauthorized' }
+    await updateDevice(id, input, version, user.id, user.role as Role)
+    revalidatePath('/devices')
+    return { ok: true }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Save failed' }
+  }
+}
+
 export async function exportDevicesAction(params: {
   q?: string; status?: string; phase?: string; customer?: string
 }): Promise<string> {
