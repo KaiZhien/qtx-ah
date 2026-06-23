@@ -13,8 +13,10 @@ export function TransitionFunnel({ data }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('count')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  // Take top 15 by count
-  const top15 = data.slice(0, 15)
+  // Sort by count descending first, then take top 15
+  const top15 = [...data]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 15)
 
   const sorted = [...top15].sort((a, b) => {
     let cmp = 0

@@ -1,4 +1,5 @@
 'use client'
+import { useId } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   ResponsiveContainer,
@@ -24,6 +25,10 @@ function formatDay(dateStr: string): string {
 }
 
 export function ThroughputChart({ data, range }: Props) {
+  const id = useId()
+  const gradientCreatedId = `colorCreated-${id}`
+  const gradientCompletedId = `colorCompleted-${id}`
+
   const chartData = data.map((d) => ({
     day: formatDay(d.day),
     'Devices Created': d.devicesCreated,
@@ -47,11 +52,11 @@ export function ThroughputChart({ data, range }: Props) {
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="colorCreated" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gradientCreatedId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                 </linearGradient>
-                <linearGradient id="colorCompleted" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gradientCompletedId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#34d399" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
                 </linearGradient>
@@ -64,14 +69,14 @@ export function ThroughputChart({ data, range }: Props) {
                 type="monotone"
                 dataKey="Devices Created"
                 stroke="hsl(var(--primary))"
-                fill="url(#colorCreated)"
+                fill={`url(#${gradientCreatedId})`}
                 strokeWidth={2}
               />
               <Area
                 type="monotone"
                 dataKey="Devices Completed"
                 stroke="#34d399"
-                fill="url(#colorCompleted)"
+                fill={`url(#${gradientCompletedId})`}
                 strokeWidth={2}
               />
             </AreaChart>
