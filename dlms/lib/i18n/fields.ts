@@ -73,6 +73,23 @@ export const FIELD_LABELS: Record<string, BilingualLabel> = {
   remarks:        { en: 'Remarks',      zh: '备注' },
 }
 
+export const ANALYTICS_LABELS: Record<string, { en: string; zh: string }> = {
+  overview:          { en: 'Overview',             zh: '概览' },
+  throughput:        { en: 'Throughput',            zh: '吞吐量' },
+  bottlenecks:       { en: 'Bottlenecks',           zh: '瓶颈分析' },
+  transitions:       { en: 'Status Transitions',    zh: '状态转换' },
+  engineer_activity: { en: 'Engineer Activity',     zh: '工程师活动' },
+  my_queue:          { en: 'My Queue',              zh: '我的队列' },
+  devices_created:   { en: 'Devices Created',       zh: '新增设备' },
+  devices_completed: { en: 'Devices Completed',     zh: '完成设备' },
+  avg_days:          { en: 'Avg Days',              zh: '平均天数' },
+  median_days:       { en: 'Median Days',           zh: '中位天数' },
+  stale_days:        { en: 'Days Since Update',     zh: '距上次更新天数' },
+  range_7d:          { en: 'Last 7 days',           zh: '最近7天' },
+  range_30d:         { en: 'Last 30 days',          zh: '最近30天' },
+  range_90d:         { en: 'Last 90 days',          zh: '最近90天' },
+}
+
 /** CSV export headers — bilingual: "English (中文)" */
 export const CSV_EXPORT_HEADERS: Record<string, string> = Object.fromEntries(
   Object.entries(FIELD_LABELS).map(([key, { en, zh }]) => [key, `${en} (${zh})`])

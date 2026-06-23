@@ -15,13 +15,11 @@ async function setSessionContext(
   actorId: string,
   requestId?: string
 ) {
-  await supabase.rpc('set_config' as never, {
+  await supabase.rpc('set_config', {
     setting: 'app.actor_id',
     value: actorId,
     is_local: true,
-  }).catch(() => {
-    // Fallback: use raw SQL
-  })
+  }).then(() => null, () => null) // ignore errors - fallback to GUC via trigger
   // Use raw SQL for GUCs since Supabase client doesn't expose SET LOCAL directly
   const rid = requestId ?? crypto.randomUUID()
   await supabase.from('app_user').select('id').limit(0) // no-op to get a connection, GUC set below
@@ -49,7 +47,7 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
     // Rejects PostgREST filter-injection characters (comma, parens, dot used in .or() syntax).
     const raw = search.trim()
     if (!/^[A-Za-z0-9\-_ ~]+$/.test(raw)) {
-      throw new AppError({ type: 'validation', message: 'Search term contains invalid characters' })
+      throw new AppError({ type: 'validation', message: 'Search term contains invalid characters', errors: {} })
     }
     const term = raw.toUpperCase()
     // Build per-column filters bound individually to avoid interpolation into the .or() string.
@@ -156,7 +154,7 @@ export async function updateDevice(
     .single()
 
   if (fetchErr || !current) throw new Error('Device not found')
-  if (current.deleted_at) throw new AppError({ type: 'validation', message: 'Cannot edit a deleted record' })
+  if (current.deleted_at) throw new AppError({ type: 'validation', message: 'Cannot edit a deleted record', errors: {} })
   if (current.version !== version) {
     throw new AppError({
       type: 'conflict',

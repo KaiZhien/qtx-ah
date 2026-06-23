@@ -33,6 +33,7 @@ export type Database = {
           active?: boolean
           created_at?: string
         }
+        Relationships: []
       }
       status_option: {
         Row: {
@@ -56,6 +57,7 @@ export type Database = {
           sort_order?: number
           active?: boolean
         }
+        Relationships: []
       }
       phase_option: {
         Row: {
@@ -79,6 +81,7 @@ export type Database = {
           sort_order?: number
           active?: boolean
         }
+        Relationships: []
       }
       device: {
         Row: {
@@ -180,6 +183,22 @@ export type Database = {
           pcba_a_sn_normalized?: string
           pcba_b_sn_normalized?: string | null
         }
+        Relationships: [
+          {
+            foreignKeyName: 'device_created_by_fkey'
+            columns: ['created_by']
+            isOneToOne: false
+            referencedRelation: 'app_user'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'device_updated_by_fkey'
+            columns: ['updated_by']
+            isOneToOne: false
+            referencedRelation: 'app_user'
+            referencedColumns: ['id']
+          }
+        ]
       }
       audit_log: {
         Row: {
@@ -218,6 +237,15 @@ export type Database = {
           request_id?: string | null
           occurred_at?: string
         }
+        Relationships: [
+          {
+            foreignKeyName: 'audit_log_actor_id_fkey'
+            columns: ['actor_id']
+            isOneToOne: false
+            referencedRelation: 'app_user'
+            referencedColumns: ['id']
+          }
+        ]
       }
       extracted_device_draft: {
         Row: {
@@ -256,10 +284,56 @@ export type Database = {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
     }
-    Views: Record<string, never>
-    Functions: Record<string, never>
+    Views: {
+      v_current_distribution: {
+        Row: {
+          status: string | null
+          label_en: string | null
+          label_zh: string | null
+          phase: string | null
+          phase_label_en: string | null
+          phase_label_zh: string | null
+          device_count: number | null
+          unit_count: number | null
+        }
+        Relationships: []
+      }
+      v_daily_throughput: {
+        Row: {
+          day: string | null
+          devices_created: number | null
+          devices_completed: number | null
+        }
+        Relationships: []
+      }
+      v_status_dwell: {
+        Row: {
+          status: string | null
+          dwell_interval: string | null
+        }
+        Relationships: []
+      }
+      v_status_transition: {
+        Row: {
+          from_status: string | null
+          to_status: string | null
+        }
+        Relationships: []
+      }
+    }
+    Functions: {
+      set_config: {
+        Args: {
+          setting: string
+          value: string
+          is_local: boolean
+        }
+        Returns: string
+      }
+    }
     Enums: Record<string, never>
   }
 }

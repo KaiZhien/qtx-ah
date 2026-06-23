@@ -43,7 +43,7 @@ export async function promoteDraft(
   const draft = await getDraft(id)
   if (!draft) throw new Error('Draft not found')
   if (draft.status !== 'pending_review') {
-    throw new AppError({ type: 'validation', message: `Draft is already ${draft.status}` })
+    throw new AppError({ type: 'validation', message: `Draft is already ${draft.status}`, errors: {} })
   }
 
   // Parse extracted_payload — format: { version, fields: { <field>: { value, confidence, source_quote } } }

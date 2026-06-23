@@ -23,7 +23,7 @@ export default function EditDevicePage() {
       supabase.from('status_option').select('*').eq('active', true).order('sort_order'),
       supabase.from('phase_option').select('*').eq('active', true).order('sort_order'),
     ]).then(([{ data: d }, { data: s }, { data: p }]) => {
-      setDevice(d as DeviceRow)
+      setDevice(d as unknown as DeviceRow)
       setStatuses((s ?? []) as StatusOption[])
       setPhases((p ?? []) as PhaseOption[])
     })

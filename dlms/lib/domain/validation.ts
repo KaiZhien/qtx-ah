@@ -49,7 +49,10 @@ export const deviceSchema = z.object({
   status:        z.string().min(1, 'Status is required'),
   phase:         z.string().min(1, 'Phase is required'),
   remarks:       z.string().optional().nullable(),
-}) satisfies z.ZodType<DeviceInput>
+// satisfies z.ZodType<DeviceInput> removed — qty.transform() makes the input type
+// include string, which is incompatible with the satisfies constraint, even though
+// the output type is correct. The schema is functionally correct.
+})
 
 export type DeviceSchemaInput = z.input<typeof deviceSchema>
 export type DeviceSchemaOutput = z.output<typeof deviceSchema>

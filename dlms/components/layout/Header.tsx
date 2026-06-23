@@ -20,6 +20,9 @@ export function Header({ user }: HeaderProps) {
         <nav className="flex items-center gap-4 text-sm">
           <Link href="/" className="text-muted-foreground hover:text-foreground transition-colors">Dashboard</Link>
           <Link href="/devices" className="text-muted-foreground hover:text-foreground transition-colors">Devices</Link>
+          {can(role, ACTIONS.VIEW_ANALYTICS) && (
+            <Link href="/analytics" className="text-muted-foreground hover:text-foreground transition-colors">Analytics</Link>
+          )}
           {can(role, ACTIONS.IMPORT_DATA) && (
             <Link href="/import" className="text-muted-foreground hover:text-foreground transition-colors">Import</Link>
           )}
