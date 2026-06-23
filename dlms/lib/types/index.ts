@@ -86,11 +86,11 @@ export type EngineerActivity = {
 
 export type MyQueueItem = {
   deviceId: string
-  pcbaASn: string
-  status: string
-  phase: string
+  serialNo: string | null
+  model: string | null
+  status: string | null
   updatedAt: string   // ISO datetime
-  staleDays: number
+  stalenessHours: number
 }
 
 export type ListDevicesParams = {

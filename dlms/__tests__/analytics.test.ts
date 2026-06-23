@@ -18,7 +18,7 @@ const mockIs = vi.fn()
 
 function buildChain(result: { data: unknown; error: unknown }) {
   const chain: Record<string, unknown> = {}
-  const methods = ['select', 'gte', 'order', 'eq', 'in', 'is', 'not', 'lte']
+  const methods = ['select', 'gte', 'order', 'eq', 'in', 'is', 'not', 'lte', 'limit']
   for (const m of methods) {
     chain[m] = vi.fn(() => chain)
   }
@@ -65,6 +65,20 @@ describe('parseIntervalToSeconds', () => {
     expect(parseIntervalToSeconds('10 days 12:30:45')).toBe(
       10 * 86400 + 12 * 3600 + 30 * 60 + 45
     )
+  })
+
+  it('parses "1 year 2 mons 3 days 04:05:06"', () => {
+    expect(parseIntervalToSeconds('1 year 2 mons 3 days 04:05:06')).toBe(
+      1 * 31536000 + 2 * 2592000 + 3 * 86400 + 4 * 3600 + 5 * 60 + 6
+    )
+  })
+
+  it('parses "2 years" (no months/days/time)', () => {
+    expect(parseIntervalToSeconds('2 years')).toBe(2 * 31536000)
+  })
+
+  it('parses "3 mons 00:00:00"', () => {
+    expect(parseIntervalToSeconds('3 mons 00:00:00')).toBe(3 * 2592000)
   })
 })
 
@@ -210,29 +224,20 @@ describe('getStatusDurations', () => {
 describe('getMyQueue', () => {
   const USER_ID = 'user-abc'
 
-  it('returns devices where user was last actor with non-terminal status', async () => {
-    // audit_log call 1: find entries by this user
+  it('returns devices recently touched by user with non-terminal status', async () => {
+    // Single audit_log call: find entries by this user (capped at 500)
     const auditByUser = [
       { row_id: 'device-1', occurred_at: '2024-02-10T10:00:00Z' },
       { row_id: 'device-2', occurred_at: '2024-02-09T10:00:00Z' },
     ]
-    // audit_log call 2: last actor per device (all by same user)
-    const lastActors = [
-      { row_id: 'device-1', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' },
-      { row_id: 'device-2', actor_id: 'other-user', occurred_at: '2024-02-11T10:00:00Z' },
-    ]
-    // device rows (device-1 only, since device-2 was superceded by other-user)
+    // device rows for those candidates
     const deviceRows = [
-      { id: 'device-1', pcba_a_sn: 'PA001', status: 'Stock', phase: 'Production', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-1', serial_no: 'SN001', model: 'ModelA', status: 'Stock', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-2', serial_no: 'SN002', model: 'ModelB', status: 'In Use', updated_at: '2024-02-09T10:00:00Z' },
     ]
 
-    let callCount = 0
     fromImpl = (table: string) => {
-      if (table === 'audit_log') {
-        callCount++
-        if (callCount === 1) return buildChain({ data: auditByUser, error: null })
-        return buildChain({ data: lastActors, error: null })
-      }
+      if (table === 'audit_log') return buildChain({ data: auditByUser, error: null })
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
       return buildChain({ data: [], error: null })
     }
@@ -240,26 +245,20 @@ describe('getMyQueue', () => {
     const { getMyQueue } = await import('@/lib/services/analyticsService')
     const result = await getMyQueue(USER_ID)
 
-    expect(result).toHaveLength(1)
+    expect(result).toHaveLength(2)
     expect(result[0].deviceId).toBe('device-1')
-    expect(result[0].pcbaASn).toBe('PA001')
+    expect(result[0].serialNo).toBe('SN001')
     expect(result[0].status).toBe('Stock')
   })
 
   it('excludes devices with terminal statuses', async () => {
     const auditByUser = [{ row_id: 'device-3', occurred_at: '2024-02-10T10:00:00Z' }]
-    const lastActors = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
     const deviceRows = [
-      { id: 'device-3', pcba_a_sn: 'PA003', status: 'Retired', phase: 'Production', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-3', serial_no: 'SN003', model: 'ModelA', status: 'Retired', updated_at: '2024-02-10T10:00:00Z' },
     ]
 
-    let callCount = 0
     fromImpl = (table: string) => {
-      if (table === 'audit_log') {
-        callCount++
-        if (callCount === 1) return buildChain({ data: auditByUser, error: null })
-        return buildChain({ data: lastActors, error: null })
-      }
+      if (table === 'audit_log') return buildChain({ data: auditByUser, error: null })
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
       return buildChain({ data: [], error: null })
     }

@@ -34,25 +34,20 @@ function rangeToDate(range: AnalyticsRange): string {
 export function parseIntervalToSeconds(interval: string): number {
   if (!interval) return 0
 
-  let totalSeconds = 0
-  let remaining = interval.trim()
-
-  // Extract days component: "N day(s)"
-  const dayMatch = remaining.match(/(\d+)\s+days?/)
-  if (dayMatch) {
-    totalSeconds += parseInt(dayMatch[1], 10) * 86400
-    remaining = remaining.replace(dayMatch[0], '').trim()
-  }
-
-  // Extract HH:MM:SS component
-  const timeMatch = remaining.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/)
+  let total = 0
+  const yearMatch = interval.match(/(\d+)\s+years?/)
+  if (yearMatch) total += parseInt(yearMatch[1]) * 31536000
+  const monMatch = interval.match(/(\d+)\s+mons?/)
+  if (monMatch) total += parseInt(monMatch[1]) * 2592000
+  const dayMatch = interval.match(/(\d+)\s+days?/)
+  if (dayMatch) total += parseInt(dayMatch[1]) * 86400
+  const timeMatch = interval.match(/(\d+):(\d+):(\d+)/)
   if (timeMatch) {
-    totalSeconds += parseInt(timeMatch[1], 10) * 3600
-    totalSeconds += parseInt(timeMatch[2], 10) * 60
-    totalSeconds += parseFloat(timeMatch[3])
+    total += parseInt(timeMatch[1]) * 3600
+    total += parseInt(timeMatch[2]) * 60
+    total += parseInt(timeMatch[3])
   }
-
-  return totalSeconds
+  return total
 }
 
 /** Compute median of a sorted numeric array */
@@ -180,12 +175,12 @@ export async function getStatusDurations(): Promise<StatusDuration[]> {
   const results: StatusDuration[] = []
   for (const [status, secondsArr] of groups.entries()) {
     const sorted = [...secondsArr].sort((a, b) => a - b)
-    const avgDays = secondsArr.reduce((sum, s) => sum + s, 0) / secondsArr.length / 86400
-    const medianDays = median(sorted) / 86400
+    const avgDays = (secondsArr.reduce((sum, s) => sum + s, 0) / secondsArr.length ?? 0) / 86400
+    const medianDays = (median(sorted) ?? 0) / 86400
     results.push({
       status,
-      avgDays,
-      medianDays,
+      avgDays: avgDays ?? 0,
+      medianDays: medianDays ?? 0,
       sampleCount: secondsArr.length,
     })
   }
@@ -248,7 +243,7 @@ export async function getEngineerActivity(range: AnalyticsRange): Promise<Engine
     const actorId = row.actor_id as string
     if (!actorId) continue
     const userRecord = Array.isArray(row.app_user) ? row.app_user[0] : row.app_user
-    const email = (userRecord as { email?: string } | null)?.email ?? actorId
+    const email = (userRecord as { email?: string } | null)?.email ?? 'unknown'
     const existing = actorMap.get(actorId)
     if (existing) {
       existing.changeCount += 1
@@ -276,73 +271,49 @@ const TERMINAL_STATUSES = new Set(['retired', 'lost'])
 export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   const supabase = createAdminClient()
 
-  // Get all audit log entries for this user on device table, most recent first
-  const { data: auditRows, error: auditError } = await supabase
+  // Get device IDs where the most recent audit action is by this user.
+  // Limit to last 500 actions by this user to avoid full table scans.
+  const { data: auditData, error: auditError } = await supabase
     .from('audit_log')
     .select('row_id, occurred_at')
     .eq('table_name', 'device')
     .eq('actor_id', userId)
     .order('occurred_at', { ascending: false })
+    .limit(500)  // practical cap — last 500 actions by this user
 
   if (auditError) throw new Error(auditError.message)
+  if (!auditData || auditData.length === 0) return []
 
-  // Keep only the distinct device IDs where this user was the last actor.
-  // Since we need to verify this user is THE last actor (not just any actor),
-  // we collect candidate device IDs first, then filter below.
-  const candidateDeviceIds = new Set<string>()
-  for (const row of auditRows ?? []) {
-    if (row.row_id) candidateDeviceIds.add(row.row_id as string)
-  }
-
-  if (candidateDeviceIds.size === 0) return []
-
-  // Fetch the last audit entry per device to confirm this user was the last actor
-  const { data: lastActorRows, error: lastActorError } = await supabase
-    .from('audit_log')
-    .select('row_id, actor_id, occurred_at')
-    .eq('table_name', 'device')
-    .in('row_id', Array.from(candidateDeviceIds))
-    .order('occurred_at', { ascending: false })
-
-  if (lastActorError) throw new Error(lastActorError.message)
-
-  // Deduplicate: keep first (most recent) occurrence per row_id
-  const lastActorByDevice = new Map<string, string>()
-  for (const row of lastActorRows ?? []) {
-    const rowId = row.row_id as string
-    if (!lastActorByDevice.has(rowId)) {
-      lastActorByDevice.set(rowId, row.actor_id as string)
+  // Deduplicate: keep only the first (most recent) occurrence of each device
+  const seen = new Set<string>()
+  const candidateIds: string[] = []
+  for (const row of auditData) {
+    if (!seen.has(row.row_id)) {
+      seen.add(row.row_id)
+      candidateIds.push(row.row_id)
     }
   }
 
-  // Filter to devices where this user is the last actor
-  const myDeviceIds = Array.from(lastActorByDevice.entries())
-    .filter(([, actorId]) => actorId === userId)
-    .map(([rowId]) => rowId)
-
-  if (myDeviceIds.length === 0) return []
-
-  // Fetch those devices, filtering out deleted and terminal statuses
+  // Fetch device details, filtered to non-terminal statuses
   const { data: devices, error: deviceError } = await supabase
     .from('device')
-    .select('id, pcba_a_sn, status, phase, updated_at')
-    .in('id', myDeviceIds)
+    .select('id, serial_no, model, status, updated_at')
+    .in('id', candidateIds)
     .is('deleted_at', null)
+    .order('updated_at', { ascending: true })
+    .limit(50)
 
   if (deviceError) throw new Error(deviceError.message)
+  if (!devices) return []
 
-  const now = Date.now()
-  const results: MyQueueItem[] = (devices ?? [])
-    .filter((d) => !TERMINAL_STATUSES.has((d.status as string).toLowerCase()))
-    .map((d) => ({
-      deviceId: d.id as string,
-      pcbaASn: d.pcba_a_sn as string,
-      status: d.status as string,
-      phase: d.phase as string,
-      updatedAt: d.updated_at as string,
-      staleDays: Math.floor((now - new Date(d.updated_at as string).getTime()) / 86400000),
+  return devices
+    .filter(d => !TERMINAL_STATUSES.has((d.status ?? '').toLowerCase()))
+    .map(d => ({
+      deviceId: d.id,
+      serialNo: d.serial_no,
+      model: d.model,
+      status: d.status,
+      updatedAt: d.updated_at,
+      stalenessHours: (Date.now() - new Date(d.updated_at).getTime()) / 3600000,
     }))
-    .sort((a, b) => b.staleDays - a.staleDays)
-
-  return results
 }

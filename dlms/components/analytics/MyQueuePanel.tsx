@@ -6,9 +6,9 @@ interface Props {
   data: MyQueueItem[]
 }
 
-function staleDaysColor(days: number): string {
-  if (days < 3) return 'text-green-600 dark:text-green-400'
-  if (days <= 7) return 'text-yellow-600 dark:text-yellow-400'
+function stalenessColor(hours: number): string {
+  if (hours < 72) return 'text-green-600 dark:text-green-400'
+  if (hours <= 168) return 'text-yellow-600 dark:text-yellow-400'
   return 'text-red-600 dark:text-red-400'
 }
 
@@ -26,20 +26,20 @@ export function MyQueuePanel({ data }: Props) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">PCBA-A S/N</th>
+                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">Serial No</th>
+                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">Model</th>
                   <th className="text-left py-2 px-3 font-medium text-muted-foreground">Status</th>
-                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">Phase</th>
-                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">Days Stale</th>
+                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">Hours Stale</th>
                 </tr>
               </thead>
               <tbody>
                 {data.map((item) => (
                   <tr key={item.deviceId} className="border-b last:border-0 hover:bg-muted/40">
-                    <td className="py-2 px-3 font-mono text-xs">{item.pcbaASn}</td>
-                    <td className="py-2 px-3">{item.status}</td>
-                    <td className="py-2 px-3">{item.phase}</td>
-                    <td className={`py-2 px-3 text-right tabular-nums font-semibold ${staleDaysColor(item.staleDays)}`}>
-                      {item.staleDays}
+                    <td className="py-2 px-3 font-mono text-xs">{item.serialNo ?? '—'}</td>
+                    <td className="py-2 px-3">{item.model ?? '—'}</td>
+                    <td className="py-2 px-3">{item.status ?? '—'}</td>
+                    <td className={`py-2 px-3 text-right tabular-nums font-semibold ${stalenessColor(item.stalenessHours)}`}>
+                      {Math.round(item.stalenessHours)}
                     </td>
                   </tr>
                 ))}
