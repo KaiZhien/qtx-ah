@@ -9,7 +9,7 @@ const FROM_EMAIL = Deno.env.get('DIGEST_FROM_EMAIL') ?? 'digest@example.com'
 serve(async (req) => {
   // Basic auth check: only allow calls with service role bearer
   const auth = req.headers.get('Authorization') ?? ''
-  if (!SUPABASE_SERVICE_ROLE_KEY || !auth.includes(SUPABASE_SERVICE_ROLE_KEY)) {
+  if (!SUPABASE_SERVICE_ROLE_KEY || auth !== `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
   }
 

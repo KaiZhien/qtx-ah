@@ -96,8 +96,8 @@ export async function getOverviewMetrics(): Promise<OverviewMetrics> {
       existing.unit_count += row.unit_count ?? 0
     } else {
       statusMap.set(key, {
-        label_en: row.label_en ?? key,
-        label_zh: row.label_zh ?? key,
+        label_en: row.status_label_en ?? key,
+        label_zh: row.status_label_zh ?? key,
         device_count: row.device_count ?? 0,
         unit_count: row.unit_count ?? 0,
       })

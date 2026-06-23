@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { requirePermission } from '@/lib/auth/session'
 import { ACTIONS, can } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
@@ -47,7 +48,9 @@ export default async function AnalyticsPage({
           {can(user.role as Role, ACTIONS.EXPORT_DATA) && (
             <ExportMenu range={range} />
           )}
-          <RangeSelector currentRange={range} />
+          <Suspense fallback={null}>
+            <RangeSelector currentRange={range} />
+          </Suspense>
         </div>
       </div>
 

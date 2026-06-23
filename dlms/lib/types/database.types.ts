@@ -291,8 +291,8 @@ export type Database = {
       v_current_distribution: {
         Row: {
           status: string | null
-          label_en: string | null
-          label_zh: string | null
+          status_label_en: string | null
+          status_label_zh: string | null
           phase: string | null
           phase_label_en: string | null
           phase_label_zh: string | null
