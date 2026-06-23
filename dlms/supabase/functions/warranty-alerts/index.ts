@@ -115,16 +115,27 @@ serve(async (req) => {
   }
 })
 
+/** Escape HTML special characters to prevent XSS in email body */
+function esc(s: string | null): string {
+  if (s == null) return '—'
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function buildWarrantyHtml(
   devices: Array<{ device_sn: string | null; model_no: string | null; ship_date: string | null; warranty_expiry: string | null }>
 ): string {
   const rows = devices
     .map(d => `
       <tr>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${d.device_sn ?? '—'}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${d.model_no ?? '—'}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${d.ship_date ?? '—'}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #b45309;">${d.warranty_expiry ?? '—'}</td>
+        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${esc(d.device_sn)}</td>
+        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${esc(d.model_no)}</td>
+        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${esc(d.ship_date)}</td>
+        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #b45309;">${esc(d.warranty_expiry)}</td>
       </tr>`)
     .join('')
 
