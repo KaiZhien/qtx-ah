@@ -13,6 +13,14 @@ serve(async (req) => {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
   }
 
+  // Validate RESEND_API_KEY before any DB queries
+  if (!RESEND_API_KEY) {
+    return new Response(JSON.stringify({ error: 'RESEND_API_KEY is not configured' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
@@ -57,6 +65,7 @@ serve(async (req) => {
 
     // 5. Send to each subscriber
     let sent = 0
+    const failures: string[] = []
     for (const { email } of subscribers) {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -71,10 +80,19 @@ serve(async (req) => {
           html,
         }),
       })
-      if (res.ok) sent++
+      if (res.ok) {
+        sent++
+      } else {
+        const body = await res.text()
+        console.error(`Failed to send digest to ${email}: ${res.status} ${body}`)
+        failures.push(email)
+      }
     }
 
-    return new Response(JSON.stringify({ sent, total: subscribers.length }), { status: 200 })
+    return new Response(
+      JSON.stringify({ sent, total: subscribers.length, failures }),
+      { status: failures.length > 0 ? 207 : 200, headers: { 'Content-Type': 'application/json' } }
+    )
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err) }), { status: 500 })
   }
