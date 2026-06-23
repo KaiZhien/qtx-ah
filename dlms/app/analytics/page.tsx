@@ -1,5 +1,6 @@
 import { requirePermission } from '@/lib/auth/session'
-import { ACTIONS } from '@/lib/auth/permissions'
+import { ACTIONS, can } from '@/lib/auth/permissions'
+import type { Role } from '@/lib/types'
 import {
   getOverviewMetrics,
   getThroughputSeries,
@@ -15,6 +16,7 @@ import { TransitionFunnel } from '@/components/analytics/TransitionFunnel'
 import { EngineerActivityPanel } from '@/components/analytics/EngineerActivityPanel'
 import { MyQueuePanel } from '@/components/analytics/MyQueuePanel'
 import { RangeSelector } from '@/components/analytics/RangeSelector'
+import { ExportMenu } from '@/components/analytics/ExportMenu'
 import type { AnalyticsRange } from '@/lib/types'
 
 export default async function AnalyticsPage({
@@ -41,7 +43,12 @@ export default async function AnalyticsPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Analytics</h1>
-        <RangeSelector currentRange={range} />
+        <div className="flex items-center gap-3">
+          {can(user.role as Role, ACTIONS.EXPORT_DATA) && (
+            <ExportMenu range={range} />
+          )}
+          <RangeSelector currentRange={range} />
+        </div>
       </div>
 
       <OverviewPanel metrics={overview} />
