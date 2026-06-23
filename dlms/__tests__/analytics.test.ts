@@ -244,8 +244,8 @@ describe('getMyQueue', () => {
     ]
     // device rows for those candidates
     const deviceRows = [
-      { id: 'device-1', serial_no: 'SN001', model: 'ModelA', status: 'Stock', updated_at: '2024-02-10T10:00:00Z' },
-      { id: 'device-2', serial_no: 'SN002', model: 'ModelB', status: 'In Use', updated_at: '2024-02-09T10:00:00Z' },
+      { id: 'device-1', device_sn: 'SN001', model_no: 'ModelA', status: 'Stock', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-2', device_sn: 'SN002', model_no: 'ModelB', status: 'In Use', updated_at: '2024-02-09T10:00:00Z' },
     ]
 
     let auditCallCount = 0
@@ -272,7 +272,7 @@ describe('getMyQueue', () => {
     const auditByUser = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
     const auditVerify = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
     const deviceRows = [
-      { id: 'device-3', serial_no: 'SN003', model: 'ModelA', status: 'Retired', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-3', device_sn: 'SN003', model_no: 'ModelA', status: 'Retired', updated_at: '2024-02-10T10:00:00Z' },
     ]
 
     let auditCallCount = 0
@@ -309,7 +309,7 @@ describe('getMyQueue', () => {
       { row_id: 'device-4', actor_id: USER_ID,   occurred_at: '2024-02-08T10:00:00Z' },
     ]
     const deviceRows = [
-      { id: 'device-4', serial_no: 'SN004', model: 'ModelA', status: 'Stock', updated_at: '2024-02-09T10:00:00Z' },
+      { id: 'device-4', device_sn: 'SN004', model_no: 'ModelA', status: 'Stock', updated_at: '2024-02-09T10:00:00Z' },
     ]
 
     let auditCallCount = 0

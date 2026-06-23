@@ -308,7 +308,7 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   // Keep only devices where the most recent audit entry is by this user
   const lastActorMap = new Map<string, string>()
   for (const row of verifyData ?? []) {
-    if (!lastActorMap.has(row.row_id)) {
+    if (!lastActorMap.has(row.row_id) && row.actor_id != null) {
       lastActorMap.set(row.row_id, row.actor_id)
     }
   }
@@ -320,7 +320,7 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   // so the DB limit does not cut off non-terminal candidates.
   const { data: devices, error: deviceError } = await supabase
     .from('device')
-    .select('id, serial_no, model, status, updated_at')
+    .select('id, device_sn, model_no, status, updated_at')
     .in('id', confirmedIds)
     .is('deleted_at', null)
     .order('updated_at', { ascending: true })
@@ -334,8 +334,8 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
     .slice(0, 50)
     .map(d => ({
       deviceId: d.id,
-      serialNo: d.serial_no,
-      model: d.model,
+      serialNo: d.device_sn,
+      model: d.model_no,
       status: d.status,
       updatedAt: d.updated_at ?? new Date().toISOString(),
       stalenessHours: (Date.now() - new Date(d.updated_at ?? Date.now()).getTime()) / 3600000,
