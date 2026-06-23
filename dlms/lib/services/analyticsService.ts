@@ -212,6 +212,7 @@ export async function getTransitionFunnel(): Promise<TransitionEdge[]> {
   // Aggregate by from+to pair
   const counts = new Map<string, { fromStatus: string; toStatus: string; count: number }>()
   for (const row of data ?? []) {
+    if (row.from_status == null) continue  // skip synthetic origin rows
     const key = `${row.from_status}→${row.to_status}`
     const existing = counts.get(key)
     if (existing) {
@@ -267,7 +268,7 @@ export async function getEngineerActivity(range: AnalyticsRange): Promise<Engine
     .sort((a, b) => b.changeCount - a.changeCount)
 }
 
-const TERMINAL_STATUSES = new Set(['shipped', 'completed', 'closed'])
+const TERMINAL_STATUSES = new Set(['retired', 'lost'])
 
 /**
  * Devices where the given user was the last actor and status is non-terminal.

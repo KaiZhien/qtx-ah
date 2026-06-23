@@ -250,7 +250,7 @@ describe('getMyQueue', () => {
     const auditByUser = [{ row_id: 'device-3', occurred_at: '2024-02-10T10:00:00Z' }]
     const lastActors = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
     const deviceRows = [
-      { id: 'device-3', pcba_a_sn: 'PA003', status: 'shipped', phase: 'Production', updated_at: '2024-02-10T10:00:00Z' },
+      { id: 'device-3', pcba_a_sn: 'PA003', status: 'Retired', phase: 'Production', updated_at: '2024-02-10T10:00:00Z' },
     ]
 
     let callCount = 0

@@ -121,13 +121,13 @@ WITH
   created AS (
     SELECT created_at::date AS day, COUNT(*) AS cnt
     FROM device
-    WHERE deleted_at IS NULL
-    GROUP BY created_at::date
+    GROUP BY created_at::date  -- no deleted_at filter: historical counts are immutable
   ),
   completed AS (
     SELECT occurred_at::date AS day, COUNT(DISTINCT device_id) AS cnt
     FROM v_status_transition
     WHERE to_status IN ('Retired', 'Lost')
+      AND from_status IS NOT NULL  -- exclude device-creation synthetic rows
     GROUP BY occurred_at::date
   ),
   all_days AS (
