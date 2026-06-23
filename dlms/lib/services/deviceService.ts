@@ -73,7 +73,7 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
 
   const SORTABLE = new Set([
     'device_sn', 'product_name', 'model_no', 'pcba_a_sn', 'pcba_b_sn',
-    'build_date', 'ship_date', 'qty', 'destination', 'customer',
+    'build_date', 'ship_date', 'warranty_expiry', 'qty', 'destination', 'customer',
     'status', 'phase', 'created_at',
   ])
   const sortCol = sort && SORTABLE.has(sort) ? sort : 'created_at'
@@ -273,4 +273,27 @@ export async function getDistinctCustomers(): Promise<string[]> {
     }
   }
   return result
+}
+
+/**
+ * Count devices whose warranty expires within the next `withinDays` days
+ * (warranty_expiry >= today AND warranty_expiry <= today + withinDays).
+ * Excludes soft-deleted devices.
+ * Used by the /devices page banner.
+ */
+export async function getExpiringWarrantyCount(withinDays = 7): Promise<number> {
+  const supabase = createAdminClient()
+  const today = new Date().toISOString().split('T')[0]   // 'YYYY-MM-DD'
+  const future = new Date(Date.now() + withinDays * 86_400_000)
+    .toISOString().split('T')[0]
+
+  const { count, error } = await supabase
+    .from('device')
+    .select('*', { count: 'exact', head: true })
+    .is('deleted_at', null)
+    .gte('warranty_expiry', today)
+    .lte('warranty_expiry', future)
+
+  if (error) throw new Error(error.message)
+  return count ?? 0
 }
