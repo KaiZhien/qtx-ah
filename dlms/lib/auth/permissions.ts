@@ -20,6 +20,7 @@ export const ACTIONS = {
   EXPORT_DATA:          'export_data',
   CONFIRM_DRAFT:        'confirm_draft',
   IMPORT_DATA:          'import_data',
+  VIEW_ANALYTICS:       'view_analytics',
 } as const
 
 export type Action = (typeof ACTIONS)[keyof typeof ACTIONS]
@@ -28,6 +29,7 @@ export type Action = (typeof ACTIONS)[keyof typeof ACTIONS]
 const PERMISSIONS: Record<Role, Set<Action>> = {
   viewer: new Set([
     ACTIONS.VIEW_RECORDS,
+    ACTIONS.VIEW_ANALYTICS,
   ]),
   engineer: new Set([
     ACTIONS.VIEW_RECORDS,
@@ -38,6 +40,7 @@ const PERMISSIONS: Record<Role, Set<Action>> = {
     ACTIONS.EXPORT_DATA,
     ACTIONS.CONFIRM_DRAFT,
     ACTIONS.IMPORT_DATA,
+    ACTIONS.VIEW_ANALYTICS,
   ]),
   admin: new Set(Object.values(ACTIONS) as Action[]),
   system: new Set([]),  // system role writes only to extracted_device_draft (enforced by RLS)

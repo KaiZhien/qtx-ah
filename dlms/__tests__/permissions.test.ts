@@ -81,3 +81,18 @@ describe('system permissions', () => {
     }
   })
 })
+
+describe('VIEW_ANALYTICS permission', () => {
+  it('viewer can view_analytics', () => {
+    expect(can('viewer', ACTIONS.VIEW_ANALYTICS)).toBe(true)
+  })
+  it('engineer can view_analytics', () => {
+    expect(can('engineer', ACTIONS.VIEW_ANALYTICS)).toBe(true)
+  })
+  it('admin can view_analytics', () => {
+    expect(can('admin', ACTIONS.VIEW_ANALYTICS)).toBe(true)
+  })
+  it('system cannot view_analytics', () => {
+    expect(can('system', ACTIONS.VIEW_ANALYTICS)).toBe(false)
+  })
+})

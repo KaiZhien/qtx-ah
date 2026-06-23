@@ -49,6 +49,50 @@ export type DeviceStats = {
   byCustomer: Record<string, number>
 }
 
+export type AnalyticsRange = '7d' | '30d' | '90d'
+
+export type OverviewMetrics = {
+  totalDevices: number
+  totalUnits: number
+  byStatus: Array<{ status: string; label_en: string; label_zh: string; device_count: number; unit_count: number }>
+  byPhase: Array<{ phase: string; label_en: string; label_zh: string; device_count: number; unit_count: number }>
+}
+
+export type ThroughputPoint = {
+  day: string        // ISO date string YYYY-MM-DD
+  devicesCreated: number
+  devicesCompleted: number
+}
+
+export type StatusDuration = {
+  status: string
+  avgDays: number
+  medianDays: number
+  sampleCount: number
+}
+
+export type TransitionEdge = {
+  fromStatus: string
+  toStatus: string
+  count: number
+}
+
+export type EngineerActivity = {
+  actorId: string
+  actorEmail: string
+  changeCount: number
+  distinctDevices: number
+}
+
+export type MyQueueItem = {
+  deviceId: string
+  pcbaASn: string
+  status: string
+  phase: string
+  updatedAt: string   // ISO datetime
+  staleDays: number
+}
+
 export type ListDevicesParams = {
   search?: string
   status?: string
