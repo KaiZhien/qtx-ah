@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -45,10 +46,11 @@ export default function LoginPage() {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? 'Signing in…' : 'Sign In'}
             </Button>
-            <p className="text-xs text-center text-muted-foreground">
-              Demo: admin@demo.quantumtx.com / demo1234
-            </p>
           </form>
+          <div className="mt-4 text-center text-sm">
+            Don&apos;t have an account?{' '}
+            <Link href="/signup" className="underline">Sign up</Link>
+          </div>
         </CardContent>
       </Card>
     </div>
