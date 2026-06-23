@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
+import { AlertTriangle, Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
 import { createDeviceRowAction, updateDeviceRowAction } from '@/app/devices/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
@@ -100,6 +100,20 @@ function Td({ children, className = '' }: { children: React.ReactNode; className
       {children}
     </td>
   )
+}
+
+/** Returns 'expired' if warranty_expiry is in the past, 'soon' if within 7 days, null otherwise */
+function warrantyState(warrantyExpiry: string | null | undefined): 'expired' | 'soon' | null {
+  if (!warrantyExpiry) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const expiry = new Date(warrantyExpiry)
+  expiry.setHours(0, 0, 0, 0)
+  const diffMs = expiry.getTime() - today.getTime()
+  const diffDays = diffMs / (1000 * 60 * 60 * 24)
+  if (diffDays < 0) return 'expired'
+  if (diffDays <= 7) return 'soon'
+  return null
 }
 
 const EMPTY: DeviceInput = {
@@ -550,7 +564,7 @@ export function DeviceTable({
               <GroupTh label="PCBA-A (电源板 Amplifier Board)"         colSpan={4} section="pcbaA" />
               <GroupTh label="PCBA-B (控制板 Accessory Board)"         colSpan={4} section="pcbaB" />
               <GroupTh label="HMI Screen 触摸屏"                        colSpan={2} section="hmi" />
-              <GroupTh label="出货信息" sub="Shipment Info"             colSpan={5} section="shipment" />
+              <GroupTh label="出货信息" sub="Shipment Info"             colSpan={6} section="shipment" />
               <GroupTh label="状态 Status & Notes" colSpan={canEdit ? 4 : 3} section="status" />
             </tr>
             <tr>
@@ -569,6 +583,7 @@ export function DeviceTable({
               <ColTh section="hmi">HMI Ver<br /><span className="opacity-70">HMI软件</span></ColTh>
               <ColTh section="shipment" sortKey="build_date" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Build Date<br /><span className="opacity-70">生产日期</span></ColTh>
               <ColTh section="shipment" sortKey="ship_date" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Ship Date<br /><span className="opacity-70">出货日期</span></ColTh>
+              <ColTh section="shipment" sortKey="warranty_expiry" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Warranty Expiry<br /><span className="opacity-70">保修到期</span></ColTh>
               <ColTh section="shipment" right sortKey="qty" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Qty<br /><span className="opacity-70">量</span></ColTh>
               <ColTh section="shipment" sortKey="destination" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Destination<br /><span className="opacity-70">目的地</span></ColTh>
               <ColTh section="shipment" sortKey="customer" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Customer<br /><span className="opacity-70">客户</span></ColTh>
@@ -581,7 +596,7 @@ export function DeviceTable({
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 22 : 21} className="text-center text-muted-foreground py-8">
+                <td colSpan={canEdit ? 23 : 22} className="text-center text-muted-foreground py-8">
                   No devices found.
                 </td>
               </tr>
@@ -589,9 +604,21 @@ export function DeviceTable({
               devices.map((device, i) => (
                 <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
                   <Td>
-                    <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
-                      {n(device.device_sn)}
-                    </Link>
+                    <span className="inline-flex items-center gap-1">
+                      {warrantyState(device.warranty_expiry) === 'expired' && (
+                        <span title={`Warranty expired ${device.warranty_expiry ?? ''}`}>
+                          <AlertTriangle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                        </span>
+                      )}
+                      {warrantyState(device.warranty_expiry) === 'soon' && (
+                        <span title={`Warranty expires ${device.warranty_expiry ?? ''}`}>
+                          <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
+                        </span>
+                      )}
+                      <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
+                        {n(device.device_sn)}
+                      </Link>
+                    </span>
                   </Td>
                   <Td>{n(device.product_name)}</Td>
                   <Td className="font-mono">{n(device.model_no)}</Td>
@@ -607,6 +634,7 @@ export function DeviceTable({
                   <Td>{n(device.hmi_ver)}</Td>
                   <Td className="tabular-nums">{n(device.build_date)}</Td>
                   <Td className="tabular-nums">{n(device.ship_date)}</Td>
+                  <Td className="tabular-nums">{n(device.warranty_expiry)}</Td>
                   <Td className="tabular-nums text-right">{device.qty ?? '—'}</Td>
                   <Td>{n(device.destination)}</Td>
                   <Td>{n(device.customer)}</Td>

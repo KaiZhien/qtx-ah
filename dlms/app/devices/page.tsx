@@ -1,9 +1,10 @@
 import { Suspense } from 'react'
 import { DeviceTable } from '@/components/device/DeviceTable'
-import { listDevices, getDistinctCustomers } from '@/lib/services/deviceService'
+import { listDevices, getDistinctCustomers, getExpiringWarrantyCount } from '@/lib/services/deviceService'
 import { getStatuses, getPhases } from '@/lib/services/vocabularyService'
 import { requireAuth } from '@/lib/auth/session'
 import type { Role } from '@/lib/types'
+import { WarrantyBanner } from '@/components/device/WarrantyBanner'
 
 interface PageProps {
   searchParams: {
@@ -18,7 +19,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
   const page = Number(searchParams.page ?? '1')
   const pageSize = 50
 
-  const [{ rows, total }, statuses, phases, customers] = await Promise.all([
+  const [{ rows, total }, statuses, phases, customers, expiringCount] = await Promise.all([
     listDevices({
       search: searchParams.q,
       status: searchParams.status,
@@ -37,11 +38,13 @@ export default async function DevicesPage({ searchParams }: PageProps) {
     getStatuses(),
     getPhases(),
     getDistinctCustomers(),
+    getExpiringWarrantyCount(),
   ])
 
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Devices</h1>
+      <WarrantyBanner count={expiringCount} />
       <DeviceTable
         devices={rows}
         total={total}
