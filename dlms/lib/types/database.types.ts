@@ -116,6 +116,7 @@ export type Database = {
           device_sn_normalized: string | null
           pcba_a_sn_normalized: string
           pcba_b_sn_normalized: string | null
+          warranty_expiry: string | null
         }
         Insert: {
           id?: string
@@ -149,6 +150,7 @@ export type Database = {
           device_sn_normalized?: string | null
           pcba_a_sn_normalized?: string
           pcba_b_sn_normalized?: string | null
+          warranty_expiry?: string | null
         }
         Update: {
           id?: string
@@ -182,6 +184,7 @@ export type Database = {
           device_sn_normalized?: string | null
           pcba_a_sn_normalized?: string
           pcba_b_sn_normalized?: string | null
+          warranty_expiry?: string | null
         }
         Relationships: [
           {
@@ -285,6 +288,29 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      warranty_notification: {
+        Row: {
+          device_id: string
+          notified_at: string
+        }
+        Insert: {
+          device_id: string
+          notified_at?: string
+        }
+        Update: {
+          device_id?: string
+          notified_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "warranty_notification_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: true
+            referencedRelation: "device"
+            referencedColumns: ["id"]
+          }
+        ]
       }
     }
     Views: {
