@@ -80,6 +80,13 @@ describe('parseIntervalToSeconds', () => {
   it('parses "3 mons 00:00:00"', () => {
     expect(parseIntervalToSeconds('3 mons 00:00:00')).toBe(3 * 2592000)
   })
+
+  it('parses fractional seconds e.g. "2 days 03:14:07.583221"', () => {
+    expect(parseIntervalToSeconds('2 days 03:14:07.583221')).toBeCloseTo(
+      2 * 86400 + 3 * 3600 + 14 * 60 + 7.583221,
+      4
+    )
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -225,10 +232,15 @@ describe('getMyQueue', () => {
   const USER_ID = 'user-abc'
 
   it('returns devices recently touched by user with non-terminal status', async () => {
-    // Single audit_log call: find entries by this user (capped at 500)
+    // First audit_log call: find entries by this user (capped at 500)
     const auditByUser = [
-      { row_id: 'device-1', occurred_at: '2024-02-10T10:00:00Z' },
-      { row_id: 'device-2', occurred_at: '2024-02-09T10:00:00Z' },
+      { row_id: 'device-1', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' },
+      { row_id: 'device-2', actor_id: USER_ID, occurred_at: '2024-02-09T10:00:00Z' },
+    ]
+    // Second audit_log call (verify): most recent entries for candidate devices
+    const auditVerify = [
+      { row_id: 'device-1', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' },
+      { row_id: 'device-2', actor_id: USER_ID, occurred_at: '2024-02-09T10:00:00Z' },
     ]
     // device rows for those candidates
     const deviceRows = [
@@ -236,8 +248,13 @@ describe('getMyQueue', () => {
       { id: 'device-2', serial_no: 'SN002', model: 'ModelB', status: 'In Use', updated_at: '2024-02-09T10:00:00Z' },
     ]
 
+    let auditCallCount = 0
     fromImpl = (table: string) => {
-      if (table === 'audit_log') return buildChain({ data: auditByUser, error: null })
+      if (table === 'audit_log') {
+        const data = auditCallCount === 0 ? auditByUser : auditVerify
+        auditCallCount++
+        return buildChain({ data, error: null })
+      }
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
       return buildChain({ data: [], error: null })
     }
@@ -252,13 +269,19 @@ describe('getMyQueue', () => {
   })
 
   it('excludes devices with terminal statuses', async () => {
-    const auditByUser = [{ row_id: 'device-3', occurred_at: '2024-02-10T10:00:00Z' }]
+    const auditByUser = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
+    const auditVerify = [{ row_id: 'device-3', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
     const deviceRows = [
       { id: 'device-3', serial_no: 'SN003', model: 'ModelA', status: 'Retired', updated_at: '2024-02-10T10:00:00Z' },
     ]
 
+    let auditCallCount = 0
     fromImpl = (table: string) => {
-      if (table === 'audit_log') return buildChain({ data: auditByUser, error: null })
+      if (table === 'audit_log') {
+        const data = auditCallCount === 0 ? auditByUser : auditVerify
+        auditCallCount++
+        return buildChain({ data, error: null })
+      }
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
       return buildChain({ data: [], error: null })
     }
@@ -270,6 +293,35 @@ describe('getMyQueue', () => {
 
   it('returns empty array when user has no audit entries', async () => {
     fromImpl = () => buildChain({ data: [], error: null })
+
+    const { getMyQueue } = await import('@/lib/services/analyticsService')
+    const result = await getMyQueue(USER_ID)
+    expect(result).toHaveLength(0)
+  })
+
+  it('excludes devices where another user acted more recently', async () => {
+    // This user touched device-4, but OTHER_USER acted on it after
+    const OTHER_USER = 'user-other'
+    const auditByUser = [{ row_id: 'device-4', actor_id: USER_ID, occurred_at: '2024-02-08T10:00:00Z' }]
+    // Verify step: most recent entry for device-4 is by OTHER_USER
+    const auditVerify = [
+      { row_id: 'device-4', actor_id: OTHER_USER, occurred_at: '2024-02-09T10:00:00Z' },
+      { row_id: 'device-4', actor_id: USER_ID,   occurred_at: '2024-02-08T10:00:00Z' },
+    ]
+    const deviceRows = [
+      { id: 'device-4', serial_no: 'SN004', model: 'ModelA', status: 'Stock', updated_at: '2024-02-09T10:00:00Z' },
+    ]
+
+    let auditCallCount = 0
+    fromImpl = (table: string) => {
+      if (table === 'audit_log') {
+        const data = auditCallCount === 0 ? auditByUser : auditVerify
+        auditCallCount++
+        return buildChain({ data, error: null })
+      }
+      if (table === 'device') return buildChain({ data: deviceRows, error: null })
+      return buildChain({ data: [], error: null })
+    }
 
     const { getMyQueue } = await import('@/lib/services/analyticsService')
     const result = await getMyQueue(USER_ID)

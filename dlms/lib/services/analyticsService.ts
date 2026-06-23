@@ -41,11 +41,11 @@ export function parseIntervalToSeconds(interval: string): number {
   if (monMatch) total += parseInt(monMatch[1]) * 2592000
   const dayMatch = interval.match(/(\d+)\s+days?/)
   if (dayMatch) total += parseInt(dayMatch[1]) * 86400
-  const timeMatch = interval.match(/(\d+):(\d+):(\d+)/)
+  const timeMatch = interval.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/)
   if (timeMatch) {
     total += parseInt(timeMatch[1]) * 3600
     total += parseInt(timeMatch[2]) * 60
-    total += parseInt(timeMatch[3])
+    total += parseFloat(timeMatch[3])
   }
   return total
 }
@@ -175,12 +175,12 @@ export async function getStatusDurations(): Promise<StatusDuration[]> {
   const results: StatusDuration[] = []
   for (const [status, secondsArr] of groups.entries()) {
     const sorted = [...secondsArr].sort((a, b) => a - b)
-    const avgDays = (secondsArr.reduce((sum, s) => sum + s, 0) / secondsArr.length ?? 0) / 86400
-    const medianDays = (median(sorted) ?? 0) / 86400
+    const avgDays = secondsArr.reduce((sum, s) => sum + s, 0) / secondsArr.length / 86400
+    const medianDays = median(sorted) / 86400
     results.push({
       status,
-      avgDays: avgDays ?? 0,
-      medianDays: medianDays ?? 0,
+      avgDays,
+      medianDays,
       sampleCount: secondsArr.length,
     })
   }
@@ -271,20 +271,19 @@ const TERMINAL_STATUSES = new Set(['retired', 'lost'])
 export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   const supabase = createAdminClient()
 
-  // Get device IDs where the most recent audit action is by this user.
-  // Limit to last 500 actions by this user to avoid full table scans.
+  // Step 1: Get device IDs this user has recently touched
   const { data: auditData, error: auditError } = await supabase
     .from('audit_log')
     .select('row_id, occurred_at')
     .eq('table_name', 'device')
     .eq('actor_id', userId)
     .order('occurred_at', { ascending: false })
-    .limit(500)  // practical cap — last 500 actions by this user
+    .limit(500)
 
   if (auditError) throw new Error(auditError.message)
   if (!auditData || auditData.length === 0) return []
 
-  // Deduplicate: keep only the first (most recent) occurrence of each device
+  // Dedup: first occurrence per device = most recent action by this user
   const seen = new Set<string>()
   const candidateIds: string[] = []
   for (const row of auditData) {
@@ -294,26 +293,51 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
     }
   }
 
-  // Fetch device details, filtered to non-terminal statuses
+  // Step 2: Verify this user is still the last actor on each candidate device
+  // Fetch recent audit entries for candidate devices and find most recent actor per device
+  const { data: verifyData, error: verifyError } = await supabase
+    .from('audit_log')
+    .select('row_id, actor_id, occurred_at')
+    .eq('table_name', 'device')
+    .in('row_id', candidateIds)
+    .order('occurred_at', { ascending: false })
+    .limit(candidateIds.length * 10)  // over-fetch to cover each device's recent history
+
+  if (verifyError) throw new Error(verifyError.message)
+
+  // Keep only devices where the most recent audit entry is by this user
+  const lastActorMap = new Map<string, string>()
+  for (const row of verifyData ?? []) {
+    if (!lastActorMap.has(row.row_id)) {
+      lastActorMap.set(row.row_id, row.actor_id)
+    }
+  }
+  const confirmedIds = candidateIds.filter(id => lastActorMap.get(id) === userId)
+  if (confirmedIds.length === 0) return []
+
+  // Step 3: Fetch device details for confirmed IDs
+  // Use limit(100) then JS-slice to 50 after filtering terminal statuses,
+  // so the DB limit does not cut off non-terminal candidates.
   const { data: devices, error: deviceError } = await supabase
     .from('device')
     .select('id, serial_no, model, status, updated_at')
-    .in('id', candidateIds)
+    .in('id', confirmedIds)
     .is('deleted_at', null)
     .order('updated_at', { ascending: true })
-    .limit(50)
+    .limit(100)  // over-fetch; JS-limit to 50 after filtering terminal statuses
 
   if (deviceError) throw new Error(deviceError.message)
   if (!devices) return []
 
   return devices
     .filter(d => !TERMINAL_STATUSES.has((d.status ?? '').toLowerCase()))
+    .slice(0, 50)
     .map(d => ({
       deviceId: d.id,
       serialNo: d.serial_no,
       model: d.model,
       status: d.status,
-      updatedAt: d.updated_at,
-      stalenessHours: (Date.now() - new Date(d.updated_at).getTime()) / 3600000,
+      updatedAt: d.updated_at ?? new Date().toISOString(),
+      stalenessHours: (Date.now() - new Date(d.updated_at ?? Date.now()).getTime()) / 3600000,
     }))
 }
