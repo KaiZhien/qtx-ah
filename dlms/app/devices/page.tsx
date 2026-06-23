@@ -9,6 +9,7 @@ interface PageProps {
   searchParams: {
     q?: string; status?: string; phase?: string; customer?: string; model?: string
     buildFrom?: string; buildTo?: string; shipFrom?: string; shipTo?: string; page?: string
+    sort?: string; dir?: string
   }
 }
 
@@ -28,6 +29,8 @@ export default async function DevicesPage({ searchParams }: PageProps) {
       buildDateTo: searchParams.buildTo,
       shipDateFrom: searchParams.shipFrom,
       shipDateTo: searchParams.shipTo,
+      sort: searchParams.sort,
+      dir: searchParams.dir,
       page,
       pageSize,
     }),

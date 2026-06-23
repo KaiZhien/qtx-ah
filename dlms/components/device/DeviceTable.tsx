@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil } from 'lucide-react'
+import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
 import { createDeviceRowAction, updateDeviceRowAction } from '@/app/devices/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
@@ -60,11 +60,36 @@ function GroupTh({ label, sub, colSpan, section }: { label: string; sub?: string
   )
 }
 
-function ColTh({ children, section, right }: { children: React.ReactNode; section: Section; right?: boolean }) {
+function ColTh({
+  children, section, right, sortKey, activeSort, activeDir, onSort,
+}: {
+  children: React.ReactNode
+  section: Section
+  right?: boolean
+  sortKey?: string
+  activeSort?: string
+  activeDir?: string
+  onSort?: (key: string) => void
+}) {
   const { bg } = SECTION[section]
+  const isActive = sortKey && activeSort === sortKey
+  const SortIcon = isActive
+    ? activeDir === 'asc' ? ChevronUp : ChevronDown
+    : ChevronsUpDown
+
   return (
     <th className={`${bg} text-white text-xs font-medium px-2 py-1.5 border-r border-white/20 whitespace-nowrap ${right ? 'text-right' : 'text-left'}`}>
-      {children}
+      {sortKey && onSort ? (
+        <button
+          onClick={() => onSort(sortKey)}
+          className="inline-flex items-center gap-0.5 hover:opacity-80 active:opacity-60 transition-opacity"
+        >
+          {children}
+          <SortIcon className={`h-3 w-3 shrink-0 ${isActive ? 'opacity-100' : 'opacity-40'}`} />
+        </button>
+      ) : (
+        children
+      )}
     </th>
   )
 }
@@ -290,6 +315,28 @@ export function DeviceTable({
   const [editVersion, setEditVersion] = useState(1)
   const [saving, setSaving] = useState(false)
   const [rowError, setRowError] = useState<string | null>(null)
+  const [showFilters, setShowFilters] = useState(
+    !!(searchParams.get('model') || searchParams.get('buildFrom') ||
+       searchParams.get('buildTo') || searchParams.get('shipFrom') || searchParams.get('shipTo'))
+  )
+
+  const activeSort = searchParams.get('sort') ?? ''
+  const activeDir  = searchParams.get('dir')  ?? ''
+
+  function toggleSort(key: string) {
+    const cur = searchParams.get('sort')
+    const dir = searchParams.get('dir')
+    const nextDir = cur === key && dir === 'asc' ? 'desc' : 'asc'
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('sort', key)
+    params.set('dir', nextDir)
+    params.set('page', '1')
+    startTransition(() => router.push(`${pathname}?${params.toString()}`))
+  }
+
+  function clearAllFilters() {
+    startTransition(() => router.push(pathname))
+  }
 
   function updateParam(key: string, value: string) {
     const params = new URLSearchParams(searchParams.toString())
@@ -385,49 +432,113 @@ export function DeviceTable({
       />
 
       {/* Toolbar */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-48">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search by S/N or customer..."
-            defaultValue={initialSearch}
-            onChange={(e) => updateParam('q', e.target.value)}
-            className="pl-8"
-          />
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="relative flex-1 min-w-48">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search S/N, product, model, destination, customer…"
+              defaultValue={initialSearch}
+              onChange={(e) => updateParam('q', e.target.value)}
+              className="pl-8"
+            />
+          </div>
+          <Select defaultValue={initialStatus || '_all'} onValueChange={(v) => updateParam('status', v === '_all' ? '' : v)}>
+            <SelectTrigger className="w-36"><SelectValue placeholder="All Statuses" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all">All Statuses</SelectItem>
+              {statuses.map((s) => <SelectItem key={s.code} value={s.code}>{s.label_en}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select defaultValue={initialPhase || '_all'} onValueChange={(v) => updateParam('phase', v === '_all' ? '' : v)}>
+            <SelectTrigger className="w-28"><SelectValue placeholder="All Phases" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all">All Phases</SelectItem>
+              {phases.map((p) => <SelectItem key={p.code} value={p.code}>{p.label_en}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select defaultValue={initialCustomer || '_all'} onValueChange={(v) => updateParam('customer', v === '_all' ? '' : v)}>
+            <SelectTrigger className="w-36"><SelectValue placeholder="All Customers" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all">All Customers</SelectItem>
+              {customers.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button
+            variant={showFilters ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => setShowFilters(v => !v)}
+          >
+            <SlidersHorizontal className="h-4 w-4 mr-1" />
+            Filters
+          </Button>
+          <div className="ml-auto flex gap-2">
+            <Link href={`/devices/export?${searchParams.toString()}`}>
+              <Button variant="outline" size="sm">
+                <Download className="h-4 w-4 mr-1" />Export CSV
+              </Button>
+            </Link>
+            {canCreate && (
+              <Button size="sm" onClick={startNew}>
+                <Plus className="h-4 w-4 mr-1" />New Row
+              </Button>
+            )}
+          </div>
         </div>
-        <Select defaultValue={initialStatus || '_all'} onValueChange={(v) => updateParam('status', v === '_all' ? '' : v)}>
-          <SelectTrigger className="w-36"><SelectValue placeholder="All Statuses" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="_all">All Statuses</SelectItem>
-            {statuses.map((s) => <SelectItem key={s.code} value={s.code}>{s.label_en}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Select defaultValue={initialPhase || '_all'} onValueChange={(v) => updateParam('phase', v === '_all' ? '' : v)}>
-          <SelectTrigger className="w-28"><SelectValue placeholder="All Phases" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="_all">All Phases</SelectItem>
-            {phases.map((p) => <SelectItem key={p.code} value={p.code}>{p.label_en}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Select defaultValue={initialCustomer || '_all'} onValueChange={(v) => updateParam('customer', v === '_all' ? '' : v)}>
-          <SelectTrigger className="w-36"><SelectValue placeholder="All Customers" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="_all">All Customers</SelectItem>
-            {customers.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <div className="ml-auto flex gap-2">
-          <Link href={`/devices/export?${searchParams.toString()}`}>
-            <Button variant="outline" size="sm">
-              <Download className="h-4 w-4 mr-1" />Export CSV
+
+        {/* Advanced filters row */}
+        {showFilters && (
+          <div className="flex flex-wrap gap-2 items-end p-3 rounded-md border bg-muted/40">
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Model No.</Label>
+              <Input
+                placeholder="e.g. QTX-200"
+                defaultValue={searchParams.get('model') ?? ''}
+                onChange={(e) => updateParam('model', e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Build Date From</Label>
+              <Input
+                type="date"
+                defaultValue={searchParams.get('buildFrom') ?? ''}
+                onChange={(e) => updateParam('buildFrom', e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Build Date To</Label>
+              <Input
+                type="date"
+                defaultValue={searchParams.get('buildTo') ?? ''}
+                onChange={(e) => updateParam('buildTo', e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Ship Date From</Label>
+              <Input
+                type="date"
+                defaultValue={searchParams.get('shipFrom') ?? ''}
+                onChange={(e) => updateParam('shipFrom', e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Ship Date To</Label>
+              <Input
+                type="date"
+                defaultValue={searchParams.get('shipTo') ?? ''}
+                onChange={(e) => updateParam('shipTo', e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+            </div>
+            <Button variant="ghost" size="sm" onClick={clearAllFilters} className="h-8 text-xs text-muted-foreground">
+              <X className="h-3.5 w-3.5 mr-1" />Clear all
             </Button>
-          </Link>
-          {canCreate && (
-            <Button size="sm" onClick={startNew}>
-              <Plus className="h-4 w-4 mr-1" />New Row
-            </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Table */}
@@ -443,26 +554,26 @@ export function DeviceTable({
               <GroupTh label="状态 Status & Notes" colSpan={canEdit ? 4 : 3} section="status" />
             </tr>
             <tr>
-              <ColTh section="device">Device S/N<br /><span className="opacity-70">设备序列号</span></ColTh>
-              <ColTh section="device">Product Name<br /><span className="opacity-70">产品名称</span></ColTh>
-              <ColTh section="device">Model No.<br /><span className="opacity-70">产品型号</span></ColTh>
-              <ColTh section="pcbaA">PCBA-A S/N<br /><span className="opacity-70">序列号</span></ColTh>
+              <ColTh section="device" sortKey="device_sn" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Device S/N<br /><span className="opacity-70">设备序列号</span></ColTh>
+              <ColTh section="device" sortKey="product_name" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Product Name<br /><span className="opacity-70">产品名称</span></ColTh>
+              <ColTh section="device" sortKey="model_no" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Model No.<br /><span className="opacity-70">产品型号</span></ColTh>
+              <ColTh section="pcbaA" sortKey="pcba_a_sn" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>PCBA-A S/N<br /><span className="opacity-70">序列号</span></ColTh>
               <ColTh section="pcbaA">HW Rev<br /><span className="opacity-70">硬件版本</span></ColTh>
               <ColTh section="pcbaA">BOM Rev<br /><span className="opacity-70">物料版本</span></ColTh>
               <ColTh section="pcbaA">FW Ver<br /><span className="opacity-70">固件版本</span></ColTh>
-              <ColTh section="pcbaB">PCBA-B S/N<br /><span className="opacity-70">序列号</span></ColTh>
+              <ColTh section="pcbaB" sortKey="pcba_b_sn" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>PCBA-B S/N<br /><span className="opacity-70">序列号</span></ColTh>
               <ColTh section="pcbaB">HW Rev<br /><span className="opacity-70">硬件版本</span></ColTh>
               <ColTh section="pcbaB">BOM Rev<br /><span className="opacity-70">物料版本</span></ColTh>
               <ColTh section="pcbaB">FW Ver<br /><span className="opacity-70">固件版本</span></ColTh>
               <ColTh section="hmi">Screen Model<br /><span className="opacity-70">屏幕</span></ColTh>
               <ColTh section="hmi">HMI Ver<br /><span className="opacity-70">HMI软件</span></ColTh>
-              <ColTh section="shipment">Build Date<br /><span className="opacity-70">生产日期</span></ColTh>
-              <ColTh section="shipment">Ship Date<br /><span className="opacity-70">出货日期</span></ColTh>
-              <ColTh section="shipment" right>Qty<br /><span className="opacity-70">量</span></ColTh>
-              <ColTh section="shipment">Destination<br /><span className="opacity-70">目的地</span></ColTh>
-              <ColTh section="shipment">Customer<br /><span className="opacity-70">客户</span></ColTh>
-              <ColTh section="status">Status<br /><span className="opacity-70">状态</span></ColTh>
-              <ColTh section="status">Phase<br /><span className="opacity-70">阶段</span></ColTh>
+              <ColTh section="shipment" sortKey="build_date" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Build Date<br /><span className="opacity-70">生产日期</span></ColTh>
+              <ColTh section="shipment" sortKey="ship_date" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Ship Date<br /><span className="opacity-70">出货日期</span></ColTh>
+              <ColTh section="shipment" right sortKey="qty" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Qty<br /><span className="opacity-70">量</span></ColTh>
+              <ColTh section="shipment" sortKey="destination" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Destination<br /><span className="opacity-70">目的地</span></ColTh>
+              <ColTh section="shipment" sortKey="customer" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Customer<br /><span className="opacity-70">客户</span></ColTh>
+              <ColTh section="status" sortKey="status" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Status<br /><span className="opacity-70">状态</span></ColTh>
+              <ColTh section="status" sortKey="phase" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Phase<br /><span className="opacity-70">阶段</span></ColTh>
               <ColTh section="status">Remarks<br /><span className="opacity-70">备注</span></ColTh>
               {canEdit && <ColTh section="status"><span className="sr-only">Edit</span></ColTh>}
             </tr>

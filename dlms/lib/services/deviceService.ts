@@ -34,6 +34,7 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   const {
     search, status, phase, customer, model,
     buildDateFrom, buildDateTo, shipDateFrom, shipDateTo,
+    sort, dir,
     page = 1, pageSize = 50, includeDeleted = false,
   } = params
 
@@ -57,6 +58,10 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
       `pcba_b_sn_normalized.ilike.%${term}%`,
       `device_sn_normalized.ilike.%${term}%`,
       `customer.ilike.%${term}%`,
+      `product_name.ilike.%${term}%`,
+      `model_no.ilike.%${term}%`,
+      `screen_model.ilike.%${term}%`,
+      `destination.ilike.%${term}%`,
     ].join(','))
   }
   if (status)        query = query.eq('status', status)
@@ -68,8 +73,17 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   if (shipDateFrom)  query = query.gte('ship_date', shipDateFrom)
   if (shipDateTo)    query = query.lte('ship_date', shipDateTo)
 
+  const SORTABLE = new Set([
+    'device_sn', 'product_name', 'model_no', 'pcba_a_sn', 'pcba_b_sn',
+    'build_date', 'ship_date', 'qty', 'destination', 'customer',
+    'status', 'phase', 'created_at',
+  ])
+  const sortCol = sort && SORTABLE.has(sort) ? sort : 'created_at'
+  // Default for created_at is newest-first (desc); for everything else default asc
+  const ascending = sortCol === 'created_at' ? dir === 'asc' : dir !== 'desc'
+
   const from = (page - 1) * pageSize
-  query = query.order('created_at', { ascending: false }).range(from, from + pageSize - 1)
+  query = query.order(sortCol, { ascending }).range(from, from + pageSize - 1)
 
   const { data, error, count } = await query
   if (error) throw new Error(error.message)

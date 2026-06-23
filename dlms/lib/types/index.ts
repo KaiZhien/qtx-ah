@@ -59,6 +59,8 @@ export type ListDevicesParams = {
   buildDateTo?: string
   shipDateFrom?: string
   shipDateTo?: string
+  sort?: string
+  dir?: string
   page?: number
   pageSize?: number
   includeDeleted?: boolean
