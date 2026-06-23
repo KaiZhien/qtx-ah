@@ -604,21 +604,26 @@ export function DeviceTable({
               devices.map((device, i) => (
                 <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
                   <Td>
-                    <span className="inline-flex items-center gap-1">
-                      {warrantyState(device.warranty_expiry) === 'expired' && (
-                        <span title={`Warranty expired ${device.warranty_expiry ?? ''}`}>
-                          <AlertTriangle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                    {(() => {
+                      const ws = warrantyState(device.warranty_expiry)
+                      return (
+                        <span className="inline-flex items-center gap-1">
+                          {ws === 'expired' && (
+                            <span title={`Warranty expired ${device.warranty_expiry ?? ''}`}>
+                              <AlertTriangle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                            </span>
+                          )}
+                          {ws === 'soon' && (
+                            <span title={`Warranty expires ${device.warranty_expiry ?? ''}`}>
+                              <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
+                            </span>
+                          )}
+                          <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
+                            {n(device.device_sn)}
+                          </Link>
                         </span>
-                      )}
-                      {warrantyState(device.warranty_expiry) === 'soon' && (
-                        <span title={`Warranty expires ${device.warranty_expiry ?? ''}`}>
-                          <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
-                        </span>
-                      )}
-                      <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
-                        {n(device.device_sn)}
-                      </Link>
-                    </span>
+                      )
+                    })()}
                   </Td>
                   <Td>{n(device.product_name)}</Td>
                   <Td className="font-mono">{n(device.model_no)}</Td>

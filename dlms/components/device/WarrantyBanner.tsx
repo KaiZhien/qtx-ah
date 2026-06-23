@@ -13,7 +13,7 @@ export function WarrantyBanner({ count }: WarrantyBannerProps) {
       <AlertTriangle className="h-4 w-4" />
       <AlertTitle>Warranty Expiring Soon</AlertTitle>
       <AlertDescription>
-        {count} device{count !== 1 ? 's' : ''} have warranty expiring within the next 7 days.{' '}
+        {count} device{count !== 1 ? 's' : ''} {count !== 1 ? 'have' : 'has'} warranty expiring within the next 7 days.{' '}
         <Link
           href="/devices?sort=warranty_expiry&dir=asc"
           className="underline font-medium hover:opacity-80"

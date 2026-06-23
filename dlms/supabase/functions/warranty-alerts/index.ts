@@ -53,9 +53,11 @@ serve(async (req) => {
     }
 
     // 3. De-duplicate: filter out devices already notified
+    const expiringIds = expiring.map((d: { id: string }) => d.id)
     const { data: alreadyNotified, error: notifError } = await supabase
       .from('warranty_notification')
       .select('device_id')
+      .in('device_id', expiringIds)
 
     if (notifError) throw notifError
     const notifiedIds = new Set((alreadyNotified ?? []).map((r: { device_id: string }) => r.device_id))
