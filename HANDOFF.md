@@ -1,6 +1,6 @@
 # QTX-AH Handoff
 
-**Date:** 2026-06-23 | **Branch:** main | **Commit:** ee6a731
+**Date:** 2026-06-24 | **Branch:** main | **Commit:** b271d21
 
 ---
 
@@ -87,7 +87,7 @@ npx playwright test                              # 25 E2E (requires make dev)
 
 ## 2 · DLMS — Device Lifecycle Management System
 
-**Status:** Live on cloud Supabase (`bkvbqopcebfjfiemqdvk`). 103 tests passing. Commit `ee6a731`.
+**Status:** Live on cloud Supabase (`bkvbqopcebfjfiemqdvk`). DB seeded (admin user + 5 devices + status/phase vocab). 6 essential features added (session 2). Commit `b271d21`.
 
 **Location:** `dlms/` (Next.js 14 App Router + Supabase cloud)
 
@@ -97,6 +97,7 @@ npx playwright test                              # 25 E2E (requires make dev)
 - **Modal-based create/edit** — wide centred dialog with all 21 fields in colour-coded grouped sections
 - CSV export with bilingual headers (auto-derived from `FIELD_LABELS`)
 - Filters panel + sortable columns
+- `NEXT_PUBLIC_DEV_MODE` set to `false` in `dlms/.env.local`
 - RLS + table GRANT layer (`20250101000008_grants.sql`) — anon=SELECT only, authenticated/service_role=full DML
 - Full audit log (`audit_log` table) — every INSERT/UPDATE/soft-delete with old/new values and changed columns
 - **Warranty-expiry notifications** (ship_date + 2 years):
@@ -113,7 +114,9 @@ npx playwright test                              # 25 E2E (requires make dev)
 | Supabase project | `bkvbqopcebfjfiemqdvk` |
 | Project URL | `https://bkvbqopcebfjfiemqdvk.supabase.co` |
 | Edge Functions | `warranty-alerts`, `weekly-digest` |
-| Cron job | `dlms-warranty-alerts` — daily 08:00 UTC |
+| Resend API | `RESEND_API_KEY` set; `WARRANTY_FROM_EMAIL=onboarding@resend.dev` (interim; `quantumtx.com` DNS pending) |
+| Cron jobs (live) | `dlms-daily-stats` (23:00 UTC nightly), `dlms-warranty-alerts` (08:00 UTC daily) |
+| Cron jobs (migration-only) | `dlms-weekly-digest` (Mon 08:00 UTC) — migration `20250102000002_analytics_cron.sql` exists but **not yet scheduled in cloud** |
 
 ### Activating a new user (after they sign up + confirm email)
 ```sql
@@ -181,11 +184,21 @@ dlms/lib/
   services/deviceService.ts — listDevices, getExpiringWarrantyCount, SORTABLE set
 ```
 
+### Features added — session 2
+1. **Reactivate user** — Admin can reactivate deactivated users via SQL
+2. **Weekly digest cron + subscriber UI** — Admin page to manage digest subscribers; migration `20250102000002_analytics_cron.sql` defines cron job
+3. **Bulk actions on device table** — Bulk select/deselect rows; bulk delete, status update, phase update
+4. **In-app notification banners** — Toast notifications for CRUD success/errors; banner alerts for warranty expiry and system events
+5. **Password reset flow** — Email-based password reset via Resend; endpoint `/auth/reset-password`
+6. **Daily stats cron** — `dlms-daily-stats` job at 23:00 UTC; aggregates device counts and warranty metrics
+
 ### Known Issues / Open Items
 - `tsc --noEmit` errors in `dlms/__tests__` (missing `@types/jest` in tsconfig) — pre-existing, safe to ignore
-- `NEXT_PUBLIC_DEV_MODE=true` in `.env.local` enables cookie-based role switching for local demos — remove or set to `false` before exposing the app publicly
 - `warranty_notification` records are permanent (no TTL) — if a `ship_date` is ever corrected on a device, the old notification blocks future alerts. Clear with: `DELETE FROM warranty_notification WHERE device_id = '...'`
-- Resend secrets not yet configured — warranty email alerts are inert until `RESEND_API_KEY` + `WARRANTY_FROM_EMAIL` are set via `npx supabase secrets set`
+- `quantumtx.com` DNS records not yet added to registrar (Resend domain pending)
+- Weekly digest cron not yet scheduled in cloud — set via SQL editor using `dlms-weekly-digest` cron (see migration `20250102000002_analytics_cron.sql`)
+- Supabase Auth SMTP not configured — use Resend for reliable password-reset email delivery (Project settings → Auth → SMTP)
+- BAA / PDPA / HBRA — legal blockers, no code change needed
 
 ---
 
