@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
-import { updateRoleAction, deactivateUserAction } from './actions'
+import { updateRoleAction, deactivateUserAction, reactivateUserAction } from './actions'
 import { useRouter } from 'next/navigation'
 import type { Role } from '@/lib/types'
 
@@ -28,6 +28,13 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
     setSaving(false)
   }
 
+  async function handleReactivate() {
+    setSaving(true)
+    await reactivateUserAction(userId)
+    router.refresh()
+    setSaving(false)
+  }
+
   return (
     <div className="flex gap-2 items-center">
       <Select value={role} onValueChange={handleRoleChange} disabled={saving || !active}>
@@ -39,6 +46,11 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
       {active && (
         <Button variant="ghost" size="sm" onClick={handleDeactivate} disabled={saving}>
           Deactivate
+        </Button>
+      )}
+      {!active && (
+        <Button variant="ghost" size="sm" onClick={handleReactivate} disabled={saving}>
+          Reactivate
         </Button>
       )}
     </div>
