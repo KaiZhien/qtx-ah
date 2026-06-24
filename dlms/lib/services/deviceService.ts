@@ -258,6 +258,28 @@ export async function getDeviceStats(): Promise<DeviceStats> {
   return { totalDevices, totalUnits, byStatus, byPhase, byCustomer }
 }
 
+/**
+ * Count devices whose 1-year warranty (from ship_date) expires within the next 7 days.
+ * Devices where ship_date is between (today - 365 days) and (today - 358 days).
+ */
+export async function getExpiringWarrantyCount(): Promise<number> {
+  const supabase = createAdminClient()
+  const today = new Date()
+  const warrantyWindowEnd = new Date(today)
+  warrantyWindowEnd.setDate(today.getDate() - 358) // ship_date + 365 - 7 = expires in 7 days
+  const warrantyWindowStart = new Date(today)
+  warrantyWindowStart.setDate(today.getDate() - 365) // ship_date + 365 = expires today
+  const { count, error } = await supabase
+    .from('device')
+    .select('*', { count: 'exact', head: true })
+    .is('deleted_at', null)
+    .not('ship_date', 'is', null)
+    .gte('ship_date', warrantyWindowStart.toISOString().slice(0, 10))
+    .lte('ship_date', warrantyWindowEnd.toISOString().slice(0, 10))
+  if (error) throw new Error(error.message)
+  return count ?? 0
+}
+
 export async function getDistinctCustomers(): Promise<string[]> {
   const supabase = createAdminClient()
   const { data } = await supabase

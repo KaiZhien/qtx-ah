@@ -4,6 +4,16 @@ import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { ExtractedDeviceDraft, DeviceRow, DeviceInput, Role } from '@/lib/types'
 
+export async function getPendingDraftCount(): Promise<number> {
+  const supabase = createAdminClient()
+  const { count, error } = await supabase
+    .from('extracted_device_draft')
+    .select('*', { count: 'exact', head: true })
+    .eq('status', 'pending_review')
+  if (error) throw new Error(error.message)
+  return count ?? 0
+}
+
 export async function listDrafts(): Promise<ExtractedDeviceDraft[]> {
   const supabase = createAdminClient()
   const { data, error } = await supabase

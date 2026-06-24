@@ -5,6 +5,7 @@ import { getDeviceStats } from '@/lib/services/deviceService'
 import { getAuditLog } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
 import { Package, Layers, TrendingUp, Users } from 'lucide-react'
+import { NotificationBanners } from '@/components/NotificationBanners'
 
 export default async function DashboardPage() {
   const user = await requireAuth()
@@ -19,6 +20,8 @@ export default async function DashboardPage() {
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <p className="text-muted-foreground">Device Lifecycle Management · QuantumTX</p>
       </div>
+
+      <NotificationBanners />
 
       {/* Metric tiles */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
