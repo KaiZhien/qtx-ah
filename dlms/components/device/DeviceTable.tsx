@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
 import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
-import { createDeviceRowAction, updateDeviceRowAction } from '@/app/devices/actions'
+import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction } from '@/app/devices/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
 import { can, ACTIONS } from '@/lib/auth/permissions'
@@ -309,6 +309,8 @@ export function DeviceTable({
 
   const canEdit = can(userRole, ACTIONS.EDIT_DEVICE)
   const canCreate = can(userRole, ACTIONS.CREATE_DEVICE)
+  const canChangeStatus = can(userRole, ACTIONS.CHANGE_STATUS)
+  const canDelete = can(userRole, ACTIONS.SOFT_DELETE)
 
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
@@ -319,6 +321,10 @@ export function DeviceTable({
     !!(searchParams.get('model') || searchParams.get('buildFrom') ||
        searchParams.get('buildTo') || searchParams.get('shipFrom') || searchParams.get('shipTo'))
   )
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showBulkStatus, setShowBulkStatus] = useState(false)
+  const [bulkStatusVal, setBulkStatusVal] = useState<string>('__unchanged__')
+  const [bulkPhaseVal, setBulkPhaseVal] = useState<string>('__unchanged__')
 
   const activeSort = searchParams.get('sort') ?? ''
   const activeDir  = searchParams.get('dir')  ?? ''
@@ -411,6 +417,43 @@ export function DeviceTable({
 
   const totalPages = Math.ceil(total / pageSize)
 
+  async function handleBulkDelete() {
+    if (!confirm(`Soft-delete ${selectedIds.size} device(s)?`)) return
+    const items = devices
+      .filter(d => selectedIds.has(d.id))
+      .map(d => ({ id: d.id, version: d.version }))
+    const res = await bulkSoftDeleteAction(items)
+    if ('error' in res) { setRowError(res.error); return }
+    if (res.conflicts.length > 0) {
+      setRowError(`Deleted ${res.deleted}. Failed to delete ${res.conflicts.length} device(s) — they may have already been removed.`)
+    }
+    setSelectedIds(new Set())
+    router.refresh()
+  }
+
+  function handleBulkExport() {
+    const ids = Array.from(selectedIds).join(',')
+    window.location.href = `/devices/export?ids=${encodeURIComponent(ids)}`
+  }
+
+  async function handleBulkStatusConfirm() {
+    const items = devices
+      .filter(d => selectedIds.has(d.id))
+      .map(d => ({ id: d.id, version: d.version }))
+    const newStatus = bulkStatusVal === '__unchanged__' ? null : bulkStatusVal
+    const newPhase = bulkPhaseVal === '__unchanged__' ? null : bulkPhaseVal
+    const res = await bulkChangeStatusAction(items, newStatus, newPhase)
+    if ('error' in res) { setRowError(res.error); return }
+    if (res.conflicts.length > 0) {
+      setRowError(`Updated ${res.updated}. ${res.conflicts.length} device(s) had conflicts and were skipped.`)
+    }
+    setShowBulkStatus(false)
+    setBulkStatusVal('__unchanged__')
+    setBulkPhaseVal('__unchanged__')
+    setSelectedIds(new Set())
+    router.refresh()
+  }
+
   const actionsCol = canEdit ? (
     <ColTh section="status"><span className="sr-only">Actions</span></ColTh>
   ) : null
@@ -430,6 +473,77 @@ export function DeviceTable({
         onCancel={cancelEdit}
         onChange={handleChange}
       />
+
+      {/* Bulk status dialog */}
+      <Dialog open={showBulkStatus} onOpenChange={o => { if (!o) { setShowBulkStatus(false); setBulkStatusVal('__unchanged__'); setBulkPhaseVal('__unchanged__') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change Status / Phase</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">{selectedIds.size} device(s) selected. Choose values to apply — leave "Unchanged" to keep each device&apos;s current value.</p>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <select
+                value={bulkStatusVal}
+                onChange={e => setBulkStatusVal(e.target.value)}
+                className={SELECT_CLASS}
+              >
+                <option value="__unchanged__">— Unchanged —</option>
+                {statuses.map(s => (
+                  <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Phase</Label>
+              <select
+                value={bulkPhaseVal}
+                onChange={e => setBulkPhaseVal(e.target.value)}
+                className={SELECT_CLASS}
+              >
+                <option value="__unchanged__">— Unchanged —</option>
+                {phases.map(p => (
+                  <option key={p.code} value={p.code}>{p.label_en} · {p.label_zh}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowBulkStatus(false); setBulkStatusVal('__unchanged__'); setBulkPhaseVal('__unchanged__') }}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkStatusConfirm}>
+              Apply to {selectedIds.size} device(s)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-md">
+          <span className="text-sm text-blue-700 font-medium">{selectedIds.size} selected</span>
+          {canChangeStatus && (
+            <Button size="sm" variant="outline" onClick={() => setShowBulkStatus(true)}>
+              Change Status/Phase
+            </Button>
+          )}
+          {canChangeStatus && (
+            <Button size="sm" variant="outline" onClick={handleBulkExport}>
+              Export Selected
+            </Button>
+          )}
+          {canDelete && (
+            <Button size="sm" variant="destructive" onClick={handleBulkDelete}>
+              Delete Selected
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="space-y-2">
@@ -546,6 +660,7 @@ export function DeviceTable({
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr>
+              <th className="w-8 bg-gray-600 px-2 py-1.5" />
               <GroupTh label="设备信息" sub="Device Info"              colSpan={3} section="device" />
               <GroupTh label="PCBA-A (电源板 Amplifier Board)"         colSpan={4} section="pcbaA" />
               <GroupTh label="PCBA-B (控制板 Accessory Board)"         colSpan={4} section="pcbaB" />
@@ -554,6 +669,14 @@ export function DeviceTable({
               <GroupTh label="状态 Status & Notes" colSpan={canEdit ? 4 : 3} section="status" />
             </tr>
             <tr>
+              <th className="w-8 bg-gray-600 px-2 py-1.5 text-center">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size === devices.length && devices.length > 0}
+                  onChange={e => setSelectedIds(e.target.checked ? new Set(devices.map(d => d.id)) : new Set())}
+                  className="rounded border-gray-300"
+                />
+              </th>
               <ColTh section="device" sortKey="device_sn" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Device S/N<br /><span className="opacity-70">设备序列号</span></ColTh>
               <ColTh section="device" sortKey="product_name" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Product Name<br /><span className="opacity-70">产品名称</span></ColTh>
               <ColTh section="device" sortKey="model_no" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Model No.<br /><span className="opacity-70">产品型号</span></ColTh>
@@ -581,13 +704,25 @@ export function DeviceTable({
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 22 : 21} className="text-center text-muted-foreground py-8">
+                <td colSpan={canEdit ? 23 : 22} className="text-center text-muted-foreground py-8">
                   No devices found.
                 </td>
               </tr>
             ) : (
               devices.map((device, i) => (
                 <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
+                  <td className="px-2 py-1.5 align-top">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(device.id)}
+                      onChange={e => setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        e.target.checked ? next.add(device.id) : next.delete(device.id)
+                        return next
+                      })}
+                      className="rounded border-gray-300"
+                    />
+                  </td>
                   <Td>
                     <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
                       {n(device.device_sn)}

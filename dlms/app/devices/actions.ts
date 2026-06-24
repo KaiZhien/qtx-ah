@@ -1,7 +1,7 @@
 'use server'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices } from '@/lib/services/deviceService'
+import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices, getDevice } from '@/lib/services/deviceService'
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
@@ -65,6 +65,58 @@ export async function updateDeviceRowAction(
     return { ok: true }
   } catch (e: unknown) {
     return { error: e instanceof Error ? e.message : 'Save failed' }
+  }
+}
+
+export async function bulkChangeStatusAction(
+  items: { id: string; version: number }[],
+  status: string | null,
+  phase: string | null
+): Promise<{ ok: true; updated: number; conflicts: string[] } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.CHANGE_STATUS)) return { error: 'Unauthorized' }
+    let updated = 0
+    const conflicts: string[] = []
+    for (const { id, version } of items) {
+      try {
+        const current = await getDevice(id)
+        if (!current) { conflicts.push(id); continue }
+        const newStatus = status ?? current.status
+        const newPhase = phase ?? current.phase
+        await changeStatus(id, newStatus, newPhase, version, user.id, user.role as Role)
+        updated++
+      } catch {
+        conflicts.push(id)
+      }
+    }
+    revalidatePath('/devices')
+    return { ok: true, updated, conflicts }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Bulk update failed' }
+  }
+}
+
+export async function bulkSoftDeleteAction(
+  items: { id: string; version: number }[]
+): Promise<{ ok: true; deleted: number; conflicts: string[] } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.SOFT_DELETE)) return { error: 'Unauthorized' }
+    let deleted = 0
+    const conflicts: string[] = []
+    for (const { id } of items) {
+      try {
+        await softDeleteDevice(id, user.id, user.role as Role)
+        deleted++
+      } catch {
+        conflicts.push(id)
+      }
+    }
+    revalidatePath('/devices')
+    return { ok: true, deleted, conflicts }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Bulk delete failed' }
   }
 }
 
