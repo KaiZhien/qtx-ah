@@ -4,7 +4,7 @@ import Papa from 'papaparse'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ImportPreviewTable } from '@/components/import/ImportPreviewTable'
-import { previewImportAction, importAction } from './actions'
+import { previewImportAction, importAction, previewExcelAction } from './actions'
 import type { ImportPreviewRow } from '@/lib/types'
 import { Upload } from 'lucide-react'
 
@@ -19,6 +19,22 @@ export default function ImportPage() {
     setError(null)
     setRows(null)
     setResult(null)
+
+    const ext = file.name.split('.').pop()?.toLowerCase()
+
+    if (ext === 'xlsx') {
+      file.arrayBuffer().then(async (buf) => {
+        try {
+          const preview = await previewExcelAction(buf)
+          setRows(preview)
+        } catch (e) {
+          setError((e as Error).message)
+        }
+      }).catch((e) => setError((e as Error).message))
+      return
+    }
+
+    // Default: CSV path (unchanged)
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
@@ -52,10 +68,9 @@ export default function ImportPage() {
     <div className="flex min-h-[calc(100vh-3.5rem-3rem)] items-center justify-center">
     <div className="space-y-6 max-w-2xl w-full">
       <div>
-        <h1 className="text-2xl font-bold">CSV Import</h1>
+        <h1 className="text-2xl font-bold">Import Devices</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Upload a CSV exported from the PCBA Traceability sheet. Columns are auto-mapped.
-          Valid rows are imported; rejected rows are shown with reasons.
+          Upload a CSV or Excel (.xlsx) file from the PCBA Traceability sheet. Columns are auto-mapped. Serial ranges are expanded to individual device rows.
         </p>
       </div>
 
@@ -67,9 +82,9 @@ export default function ImportPage() {
         onDragOver={(e) => e.preventDefault()}
       >
         <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-        <p className="text-sm text-muted-foreground">Drop a CSV file here, or click to browse</p>
-        <p className="text-xs text-muted-foreground mt-1">Expected columns: PCBA-A S/N, Status, Phase, etc. (bilingual headers OK)</p>
-        <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+        <p className="text-sm text-muted-foreground">Drop a CSV or Excel (.xlsx) file here, or click to browse</p>
+        <p className="text-xs text-muted-foreground mt-1">Expected: PCBA Traceability .xlsx or a CSV export. Bilingual headers OK. Serial ranges (e.g. 0001 to 0015) expand automatically.</p>
+        <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
       </div>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
