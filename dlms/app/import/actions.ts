@@ -1,6 +1,7 @@
 'use server'
 import { getStatuses, getPhases } from '@/lib/services/vocabularyService'
 import { previewCsvRows, importValidRows } from '@/lib/services/importService'
+import { previewExcelBuffer } from '@/lib/services/excelImportService'
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { ImportPreviewRow, Role } from '@/lib/types'
@@ -19,4 +20,11 @@ export async function importAction(rows: ImportPreviewRow[]): Promise<{ imported
   const result = await importValidRows(rows, user.id, user.role as Role)
   revalidatePath('/devices')
   return result
+}
+
+export async function previewExcelAction(buf: ArrayBuffer): Promise<ImportPreviewRow[]> {
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.IMPORT_DATA)) throw new Error('Unauthorized')
+  const [statuses, phases] = await Promise.all([getStatuses(), getPhases()])
+  return previewExcelBuffer(buf, statuses.map(s => s.code), phases.map(p => p.code))
 }
