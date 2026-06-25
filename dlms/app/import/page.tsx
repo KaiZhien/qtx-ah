@@ -23,9 +23,13 @@ export default function ImportPage() {
     const ext = file.name.split('.').pop()?.toLowerCase()
 
     if (ext === 'xlsx') {
+      if (file.size > 10 * 1024 * 1024) {
+        setError('File too large (max 10 MB). Remove embedded images or split the file.')
+        return
+      }
       file.arrayBuffer().then(async (buf) => {
         try {
-          const preview = await previewExcelAction(buf)
+          const preview = await previewExcelAction(new Uint8Array(buf))
           setRows(preview)
         } catch (e) {
           setError((e as Error).message)

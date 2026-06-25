@@ -63,23 +63,26 @@ export async function previewExcelBuffer(
 
   // Step 2: Detect header row (scan up to row 10)
   let headerRowNumber = -1
-
-  ws.eachRow((row, rowNumber) => {
-    if (headerRowNumber !== -1 || rowNumber > 10) return
-
+  for (let n = 1; n <= 10; n++) {
+    const row = ws.getRow(n)
+    let isHeader = false
     row.eachCell((cell) => {
-      if (headerRowNumber !== -1) return
-      const val = cell.value != null ? String(cell.value) : ''
+      if (isHeader) return
+      const cellText = cell.value != null ? String(cell.value) : ''
       if (
-        val.includes('Device S/N') ||
-        val.includes('设备序列号') ||
-        val.includes('PCBA-A S/N') ||
-        val.includes('电源板序列号')
+        cellText.includes('Device S/N') ||
+        cellText.includes('设备序列号') ||
+        cellText.includes('PCBA-A S/N') ||
+        cellText.includes('电源板序列号')
       ) {
-        headerRowNumber = rowNumber
+        isHeader = true
       }
     })
-  })
+    if (isHeader) {
+      headerRowNumber = n
+      break
+    }
+  }
 
   if (headerRowNumber === -1) {
     throw new Error('Could not detect header row in workbook')
@@ -110,11 +113,16 @@ export async function previewExcelBuffer(
       const cell = row.getCell(colIdx)
       let val = ''
       if (cell.value !== null && cell.value !== undefined) {
-        if (cell.value instanceof Date) {
+        let rawVal: unknown = cell.value
+        // Unwrap formula cells — use the computed result, not the formula object
+        if (rawVal !== null && typeof rawVal === 'object' && 'result' in (rawVal as object)) {
+          rawVal = (rawVal as { result?: unknown }).result ?? null
+        }
+        if (rawVal instanceof Date) {
           // Format as DD/MM/YYYY so parseSheetDate handles it
-          val = `${String(cell.value.getDate()).padStart(2, '0')}/${String(cell.value.getMonth() + 1).padStart(2, '0')}/${cell.value.getFullYear()}`
-        } else {
-          val = String(cell.value).trim()
+          val = `${String(rawVal.getDate()).padStart(2, '0')}/${String(rawVal.getMonth() + 1).padStart(2, '0')}/${rawVal.getFullYear()}`
+        } else if (rawVal !== null && rawVal !== undefined) {
+          val = String(rawVal).trim()
         }
       }
       if (val) rec[fieldName] = val
