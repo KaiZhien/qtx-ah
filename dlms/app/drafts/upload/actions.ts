@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { createAdminClient } from '@/lib/supabase/server'
-import { createDevice } from '@/lib/services/deviceService'
+import { createDevice, getDeviceByPcbaSn } from '@/lib/services/deviceService'
 import { extractInvoiceFields } from '@/lib/services/invoiceExtractionService'
 import type { DeviceInput, Role } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
@@ -61,7 +61,7 @@ export async function extractInvoiceAction(formData: FormData): Promise<ExtractR
 
 type ConfirmResult =
   | { id: string }
-  | { error: string }
+  | { error: string; existingId?: string }
 
 /**
  * On Confirm: upload the original invoice file to private Storage, create the device
@@ -83,6 +83,15 @@ export async function confirmInvoiceDeviceAction(
   if (!file) return { error: 'File missing from confirm request' }
 
   try {
+    // Duplicate detection: check for an existing device with the same PCBA-A S/N
+    const existing = await getDeviceByPcbaSn(input.pcba_a_sn)
+    if (existing) {
+      return {
+        error: `A device with PCBA-A S/N "${input.pcba_a_sn}" already exists`,
+        existingId: existing.id,
+      }
+    }
+
     const buffer = Buffer.from(await file.arrayBuffer())
     const supabase = createAdminClient()
 

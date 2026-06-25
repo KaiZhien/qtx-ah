@@ -6,28 +6,14 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { deviceSchema } from '@/lib/domain/validation'
+import { normalizeSerial } from '@/lib/domain/normalize'
+import { isValidTransition } from '@/lib/domain/statusTransitions'
 import { AppError } from '@/lib/types'
 import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role } from '@/lib/types'
 
-/** Set session GUCs so the audit trigger can capture the actor and request ID */
-async function setSessionContext(
-  supabase: ReturnType<typeof createAdminClient>,
-  actorId: string,
-  requestId?: string
-) {
-  await supabase.rpc('set_config' as never, {
-    setting: 'app.actor_id',
-    value: actorId,
-    is_local: true,
-  }).catch(() => {
-    // Fallback: use raw SQL
-  })
-  // Use raw SQL for GUCs since Supabase client doesn't expose SET LOCAL directly
-  const rid = requestId ?? crypto.randomUUID()
-  await supabase.from('app_user').select('id').limit(0) // no-op to get a connection, GUC set below
-  // We rely on the trigger reading current_setting('app.actor_id', true)
-  // For the prototype, we pass actor_id as a column value in created_by / updated_by
-}
+// NOTE: setSessionContext() was removed — it was a dead no-op stub that never
+// actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
+// directly from the row's created_by/updated_by columns (migration 20250106000000).
 
 export async function listDevices(params: ListDevicesParams = {}): Promise<{ rows: DeviceRow[]; total: number }> {
   const supabase = createAdminClient()
@@ -100,6 +86,22 @@ export async function getDevice(id: string): Promise<DeviceRow | null> {
     .single()
   if (error) return null
   return data as DeviceRow
+}
+
+/**
+ * Look up a device by its PCBA-A serial number (normalized).
+ * Returns null if not found. Used for duplicate detection before create.
+ */
+export async function getDeviceByPcbaSn(pcbaASn: string): Promise<DeviceRow | null> {
+  const supabase = createAdminClient()
+  const normalized = normalizeSerial(pcbaASn)
+  const { data } = await supabase
+    .from('device')
+    .select('*')
+    .eq('pcba_a_sn_normalized', normalized)
+    .is('deleted_at', null)
+    .maybeSingle()
+  return (data as DeviceRow) ?? null
 }
 
 export async function createDevice(
@@ -205,6 +207,21 @@ export async function changeStatus(
   if (!can(actorRole, ACTIONS.CHANGE_STATUS)) {
     throw new AppError({ type: 'permission', message: 'You do not have permission to change status' })
   }
+
+  // Fetch the current device to validate the transition
+  const current = await getDevice(id)
+  if (!current) {
+    throw new AppError({ type: 'conflict', message: 'Device not found' })
+  }
+
+  // Enforce status-transition rules
+  if (!isValidTransition(current.status ?? '', status)) {
+    throw new AppError({
+      type: 'conflict',
+      message: `Status transition from "${current.status}" to "${status}" is not allowed`,
+    })
+  }
+
   return updateDevice(id, { status, phase }, version, actorId, actorRole)
 }
 
