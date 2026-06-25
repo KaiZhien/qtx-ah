@@ -25,6 +25,8 @@ import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
 interface ExtractedDeviceConfirmModalProps {
   open: boolean
   onClose: () => void
+  /** Optional callback after a device is successfully created. Receives the new device ID. */
+  onSuccess?: (deviceId: string) => void
   fields: ExtractedFields
   statuses: StatusOption[]
   phases: PhaseOption[]
@@ -71,6 +73,7 @@ function buildDefaultValues(fields: ExtractedFields): Partial<DeviceInput> {
 export function ExtractedDeviceConfirmModal({
   open,
   onClose,
+  onSuccess,
   fields,
   statuses,
   phases,
@@ -107,8 +110,12 @@ export function ExtractedDeviceConfirmModal({
         }
       } else {
         toast.success('Device created successfully')
-        onClose()
-        router.push(`/devices/${result.id}`)
+        if (onSuccess) {
+          onSuccess(result.id)
+        } else {
+          onClose()
+          router.push(`/devices/${result.id}`)
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Confirm failed'
