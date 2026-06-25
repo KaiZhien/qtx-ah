@@ -6,6 +6,7 @@ import { getAuditLog } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
 import { Package, Layers, TrendingUp, Users } from 'lucide-react'
 import { NotificationBanners } from '@/components/NotificationBanners'
+import { DeviceCharts } from '@/components/dashboard/DeviceCharts'
 
 export default async function DashboardPage() {
   const user = await requireAuth()
@@ -78,6 +79,12 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <DeviceCharts
+        byStatus={stats.byStatus}
+        byPhase={stats.byPhase}
+        byCustomer={stats.byCustomer}
+      />
 
       {/* Recent Activity */}
       <Card>
