@@ -49,7 +49,8 @@ export default function ImportPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="flex min-h-[calc(100vh-3.5rem-3rem)] items-center justify-center">
+    <div className="space-y-6 max-w-2xl w-full">
       <div>
         <h1 className="text-2xl font-bold">CSV Import</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -84,6 +85,7 @@ export default function ImportPage() {
       {rows && (
         <ImportPreviewTable rows={rows} onImport={handleImport} isImporting={importing} />
       )}
+    </div>
     </div>
   )
 }
