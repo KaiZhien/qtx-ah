@@ -10,10 +10,13 @@ import { getDeviceHistory } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
 
 import { can, ACTIONS } from '@/lib/auth/permissions'
-import { GROUP_LABELS } from '@/lib/i18n/fields'
+import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { Role } from '@/lib/types'
+import { formatDistanceToNow } from 'date-fns'
 import { Edit, Trash2 } from 'lucide-react'
 import { DeleteDeviceButton } from './DeleteDeviceButton'
+import { getPredecessor, getSuccessor } from '@/lib/services/successionService'
+import { LinkReplacementForm } from './LinkReplacementForm'
 
 interface PageProps { params: { id: string } }
 
@@ -25,6 +28,12 @@ export default async function DeviceDetailPage({ params }: PageProps) {
   ])
 
   if (!device || device.deleted_at) notFound()
+
+  const replacedById = (device as any).replaced_by as string | null
+  const [predecessor, successor] = await Promise.all([
+    getPredecessor(params.id),
+    replacedById ? getSuccessor(replacedById) : Promise.resolve(null),
+  ])
 
   const role = (user?.role ?? 'viewer') as Role
   const primaryId = device.device_sn || device.pcba_a_sn
@@ -60,13 +69,40 @@ export default async function DeviceDetailPage({ params }: PageProps) {
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
-          <TabsTrigger value="documents" disabled>Documents (Phase 2)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="details" className="space-y-6 mt-4">
           {GROUP_LABELS.map((group) => (
             <DeviceGroupSection key={group.key} groupKey={group.key} device={device} />
           ))}
+
+          {/* Succession */}
+          {(predecessor || successor || can(role, ACTIONS.EDIT_DEVICE)) && (
+            <div className="border rounded-md p-4 space-y-3">
+              <h3 className="text-sm font-semibold">Device Succession</h3>
+              {successor && (
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Replaced by</span>
+                  <Link href={`/devices/${successor.id}`} className="font-mono underline hover:no-underline">
+                    {successor.device_sn || successor.pcba_a_sn}
+                  </Link>
+                  <span className="text-muted-foreground">→</span>
+                </div>
+              )}
+              {predecessor && (
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">← Replaces</span>
+                  <Link href={`/devices/${predecessor.id}`} className="font-mono underline hover:no-underline">
+                    {predecessor.device_sn || predecessor.pcba_a_sn}
+                  </Link>
+                </div>
+              )}
+              {!successor && can(role, ACTIONS.EDIT_DEVICE) && (
+                <LinkReplacementForm deviceId={device.id} />
+              )}
+            </div>
+          )}
+
           <p className="text-xs text-muted-foreground">
             Created {new Date(device.created_at).toLocaleString()} · Version {device.version}
           </p>
@@ -84,8 +120,11 @@ export default async function DeviceDetailPage({ params }: PageProps) {
                       {entry.action}
                     </Badge>
                     <span className="text-muted-foreground">{entry.actor_email ?? 'System'}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {new Date(entry.occurred_at).toLocaleString()}
+                    <span
+                      className="text-xs text-muted-foreground tabular-nums"
+                      title={new Date(entry.occurred_at).toLocaleString()}
+                    >
+                      {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
                     </span>
                   </div>
                   {entry.changed_columns.length > 0 && (
@@ -95,7 +134,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
                         const newVal = (entry.new_values as Record<string, unknown>)[col]
                         return (
                           <div key={col} className="flex gap-2">
-                            <span className="font-medium w-32 shrink-0">{col}</span>
+                            <span className="font-medium w-32 shrink-0">{FIELD_LABELS[col]?.en ?? col}</span>
                             <span className="text-red-600 line-through">{String(oldVal ?? '')}</span>
                             <span className="text-muted-foreground">→</span>
                             <span className="text-green-700">{String(newVal ?? '')}</span>

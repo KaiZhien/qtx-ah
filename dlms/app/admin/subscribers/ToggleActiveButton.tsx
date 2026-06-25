@@ -1,28 +1,29 @@
 'use client'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { toggleStatusActiveAction, togglePhaseActiveAction } from './actions'
+import { toggleSubscriberAction } from './actions'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 
-interface Props { table: 'status_option' | 'phase_option'; code: string; active: boolean }
+interface Props { id: string; active: boolean }
 
-export function ToggleActiveButton({ table, code, active }: Props) {
+export function ToggleActiveButton({ id, active }: Props) {
   const router = useRouter()
   const [pending, setPending] = useState(false)
+
   async function toggle() {
     setPending(true)
     try {
-      if (table === 'status_option') await toggleStatusActiveAction(code, !active)
-      else await togglePhaseActiveAction(code, !active)
+      await toggleSubscriberAction(id, !active)
       router.refresh()
-      toast.success(active ? 'Entry deactivated' : 'Entry activated')
+      toast.success(active ? 'Subscriber deactivated' : 'Subscriber activated')
     } catch {
-      toast.error(active ? 'Failed to deactivate entry' : 'Failed to activate entry')
+      toast.error(active ? 'Failed to deactivate subscriber' : 'Failed to activate subscriber')
     } finally {
       setPending(false)
     }
   }
+
   return (
     <Button variant="ghost" size="sm" onClick={toggle} disabled={pending}>
       {active ? 'Deactivate' : 'Activate'}

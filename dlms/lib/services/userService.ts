@@ -50,3 +50,21 @@ export async function deactivateUser(
   if (error) throw new Error(error.message)
   return data as AppUser
 }
+
+export async function reactivateUser(
+  userId: string,
+  actorRole: Role = 'admin'
+): Promise<AppUser> {
+  if (!can(actorRole, ACTIONS.MANAGE_USERS)) {
+    throw new AppError({ type: 'permission', message: 'Only admins can manage users' })
+  }
+  const supabase = createAdminClient()
+  const { data, error } = await supabase
+    .from('app_user')
+    .update({ active: true })
+    .eq('id', userId)
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data as AppUser
+}

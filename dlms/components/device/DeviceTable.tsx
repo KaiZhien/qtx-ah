@@ -8,13 +8,26 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { AlertTriangle, Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
-import { createDeviceRowAction, updateDeviceRowAction } from '@/app/devices/actions'
+import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X, Bookmark, BookmarkPlus, Trash2 } from 'lucide-react'
+import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction } from '@/app/devices/actions'
+import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/devices/presets/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
+import { toast } from 'sonner'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
+import type { FilterPreset } from '@/lib/services/filterPresetService'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
+// allowedNextStatuses is being created by the parallel agent — import it for status filtering
+// If the module isn't ready yet, the fallback logic below handles missing gracefully
+let allowedNextStatuses: ((status: string) => string[]) | undefined
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  allowedNextStatuses = require('@/lib/domain/statusTransitions').allowedNextStatuses
+} catch {
+  allowedNextStatuses = undefined
+}
 
 interface DeviceTableProps {
   devices: DeviceRow[]
@@ -103,18 +116,6 @@ function Td({ children, className = '' }: { children: React.ReactNode; className
 }
 
 /** Returns 'expired' if warranty_expiry is in the past, 'soon' if within 7 days, null otherwise */
-function warrantyState(warrantyExpiry: string | null | undefined): 'expired' | 'soon' | null {
-  if (!warrantyExpiry) return null
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const expiry = new Date(warrantyExpiry)
-  expiry.setHours(0, 0, 0, 0)
-  const diffMs = expiry.getTime() - today.getTime()
-  const diffDays = diffMs / (1000 * 60 * 60 * 24)
-  if (diffDays < 0) return 'expired'
-  if (diffDays <= 7) return 'soon'
-  return null
-}
 
 const EMPTY: DeviceInput = {
   device_sn: '', product_name: '', model_no: '',
@@ -159,18 +160,24 @@ const SELECT_CLASS =
   'focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
 
 function FieldControl({
-  fieldKey, data, onChange, statuses, phases,
+  fieldKey, data, onChange, statuses, phases, currentStatus,
 }: {
   fieldKey: string
   data: DeviceInput
   onChange: (f: keyof DeviceInput, v: string | number | null) => void
   statuses: StatusOption[]
   phases: PhaseOption[]
+  currentStatus?: string
 }) {
   const raw = data[fieldKey as keyof DeviceInput]
   const strVal = raw == null ? '' : String(raw)
 
   if (fieldKey === 'status') {
+    // Filter statuses to only allowed transitions if we know the current status and the module is available
+    const filteredStatuses = (allowedNextStatuses && currentStatus)
+      ? statuses.filter(s => allowedNextStatuses!(currentStatus).includes(s.code))
+      : statuses
+
     return (
       <select
         value={strVal}
@@ -178,7 +185,7 @@ function FieldControl({
         className={SELECT_CLASS}
       >
         <option value="">Select status…</option>
-        {statuses.map(s => (
+        {filteredStatuses.map(s => (
           <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
         ))}
       </select>
@@ -234,7 +241,7 @@ function FieldControl({
 }
 
 function DeviceFormModal({
-  open, isNew, data, statuses, phases, saving, rowError, onSave, onCancel, onChange,
+  open, isNew, data, statuses, phases, saving, rowError, onSave, onCancel, onChange, currentStatus,
 }: {
   open: boolean
   isNew: boolean
@@ -246,6 +253,7 @@ function DeviceFormModal({
   onSave: () => void
   onCancel: () => void
   onChange: (field: keyof DeviceInput, value: string | number | null) => void
+  currentStatus?: string
 }) {
   return (
     <Dialog open={open} onOpenChange={o => { if (!o) onCancel() }}>
@@ -279,6 +287,7 @@ function DeviceFormModal({
                           onChange={onChange}
                           statuses={statuses}
                           phases={phases}
+                          currentStatus={currentStatus}
                         />
                       </div>
                     )
@@ -323,16 +332,35 @@ export function DeviceTable({
 
   const canEdit = can(userRole, ACTIONS.EDIT_DEVICE)
   const canCreate = can(userRole, ACTIONS.CREATE_DEVICE)
+  const canChangeStatus = can(userRole, ACTIONS.CHANGE_STATUS)
+  const canDelete = can(userRole, ACTIONS.SOFT_DELETE)
 
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
   const [editVersion, setEditVersion] = useState(1)
+  // Track the original status of the device being edited for transition filtering
+  const [editOriginalStatus, setEditOriginalStatus] = useState<string | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [rowError, setRowError] = useState<string | null>(null)
   const [showFilters, setShowFilters] = useState(
     !!(searchParams.get('model') || searchParams.get('buildFrom') ||
        searchParams.get('buildTo') || searchParams.get('shipFrom') || searchParams.get('shipTo'))
   )
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showBulkStatus, setShowBulkStatus] = useState(false)
+  const [bulkStatusVal, setBulkStatusVal] = useState<string>('__unchanged__')
+  const [bulkPhaseVal, setBulkPhaseVal] = useState<string>('__unchanged__')
+
+  // Preset state
+  const [presets, setPresets] = useState<FilterPreset[]>([])
+  const [presetsLoaded, setPresetsLoaded] = useState(false)
+  const [showSavePreset, setShowSavePreset] = useState(false)
+  const [presetName, setPresetName] = useState('')
+
+  // Inline editing state
+  const [inlineCell, setInlineCell] = useState<{ id: string; field: keyof DeviceInput; version: number } | null>(null)
+  const [inlineValue, setInlineValue] = useState<string>('')
+  const [inlineSaving, setInlineSaving] = useState(false)
 
   const activeSort = searchParams.get('sort') ?? ''
   const activeDir  = searchParams.get('dir')  ?? ''
@@ -369,12 +397,14 @@ export function DeviceTable({
     setEditingId(device.id)
     setEditData(deviceToInput(device))
     setEditVersion(device.version)
+    setEditOriginalStatus(device.status)
     setRowError(null)
   }
 
   function startNew() {
     setEditingId('new')
     setEditData({ ...EMPTY })
+    setEditOriginalStatus(undefined)
     setRowError(null)
   }
 
@@ -411,10 +441,20 @@ export function DeviceTable({
 
       if (editingId === 'new') {
         const res = await createDeviceRowAction(payload)
-        if ('error' in res) { setRowError(res.error); return }
+        if ('error' in res) {
+          setRowError(res.error)
+          toast.error(res.error)
+          return
+        }
+        toast.success('Device created')
       } else {
         const res = await updateDeviceRowAction(editingId!, payload, editVersion)
-        if ('error' in res) { setRowError(res.error); return }
+        if ('error' in res) {
+          setRowError(res.error)
+          toast.error(res.error)
+          return
+        }
+        toast.success('Device updated')
       }
       setEditingId(null)
       router.refresh()
@@ -423,11 +463,147 @@ export function DeviceTable({
     }
   }
 
-  const totalPages = Math.ceil(total / pageSize)
+  // Preset handlers
+  async function loadPresets() {
+    if (presetsLoaded) return
+    const data = await listPresetsAction()
+    setPresets(data)
+    setPresetsLoaded(true)
+  }
+
+  async function handleBulkDelete() {
+    if (!confirm(`Soft-delete ${selectedIds.size} device(s)?`)) return
+    const items = devices
+      .filter(d => selectedIds.has(d.id))
+      .map(d => ({ id: d.id, version: d.version }))
+    const res = await bulkSoftDeleteAction(items)
+    if ('error' in res) {
+      setRowError(res.error)
+      toast.error(res.error)
+      return
+    }
+    if (res.conflicts.length > 0) {
+      const msg = `Deleted ${res.deleted}. Failed to delete ${res.conflicts.length} device(s) — they may have already been removed.`
+      setRowError(msg)
+      toast.warning(`${res.conflicts.length} conflict(s) — try refreshing`)
+    } else {
+      toast.success(`Deleted ${res.deleted} device(s)`)
+    }
+    setSelectedIds(new Set())
+    router.refresh()
+  }
+
+  function handleBulkExport() {
+    const ids = Array.from(selectedIds).join(',')
+    window.location.href = `/devices/export?ids=${encodeURIComponent(ids)}`
+    toast.success('Export started')
+  }
+
+  function handleExportXlsx() {
+    const params = new URLSearchParams()
+    if (searchParams.get('q')) params.set('q', searchParams.get('q')!)
+    if (searchParams.get('status')) params.set('status', searchParams.get('status')!)
+    if (searchParams.get('phase')) params.set('phase', searchParams.get('phase')!)
+    if (searchParams.get('customer')) params.set('customer', searchParams.get('customer')!)
+    params.set('format', 'xlsx')
+    window.open(`/devices/export?${params.toString()}`, '_blank')
+    toast.success('Excel export started')
+  }
+
+  async function handleBulkStatusConfirm() {
+    const items = devices
+      .filter(d => selectedIds.has(d.id))
+      .map(d => ({ id: d.id, version: d.version }))
+    const newStatus = bulkStatusVal === '__unchanged__' ? null : bulkStatusVal
+    const newPhase = bulkPhaseVal === '__unchanged__' ? null : bulkPhaseVal
+    const res = await bulkChangeStatusAction(items, newStatus, newPhase)
+    if ('error' in res) {
+      setRowError(res.error)
+      toast.error(res.error)
+      return
+    }
+    if (res.conflicts.length > 0) {
+      setRowError(`Updated ${res.updated}. ${res.conflicts.length} device(s) had conflicts and were skipped.`)
+      toast.warning(`${res.conflicts.length} conflict(s) — try refreshing`)
+    } else {
+      toast.success(`Updated ${res.updated} device(s)`)
+    }
+    setShowBulkStatus(false)
+    setBulkStatusVal('__unchanged__')
+    setBulkPhaseVal('__unchanged__')
+    setSelectedIds(new Set())
+    router.refresh()
+  }
+
+  // For the bulk status dialog, compute an intersection of allowed next statuses
+  // across all selected devices. Fall back to showing all statuses if complex/empty.
+  const bulkAllowedStatuses: StatusOption[] = (() => {
+    if (!allowedNextStatuses || selectedIds.size === 0) return statuses
+    const selectedDevices = devices.filter(d => selectedIds.has(d.id))
+    if (selectedDevices.length === 0) return statuses
+    const sets = selectedDevices.map(d => new Set(allowedNextStatuses!(d.status)))
+    const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
+    return intersection.length > 0 ? intersection : statuses
+  })()
 
   const actionsCol = canEdit ? (
     <ColTh section="status"><span className="sr-only">Actions</span></ColTh>
   ) : null
+
+  async function handleSavePreset() {
+    const qs = searchParams.toString()
+    if (!presetName.trim()) return
+    const result = await savePresetAction(presetName.trim(), qs)
+    if ('error' in result) {
+      toast.error(result.error)
+    } else {
+      setPresets(p => [result.preset, ...p])
+      toast.success('Filter preset saved')
+    }
+    setPresetName('')
+    setShowSavePreset(false)
+  }
+
+  async function handleDeletePreset(id: string) {
+    const result = await deletePresetAction(id)
+    if ('error' in result) {
+      toast.error(result.error)
+    } else {
+      setPresets(p => p.filter(x => x.id !== id))
+      toast.success('Preset deleted')
+    }
+  }
+
+  function applyPreset(queryString: string) {
+    startTransition(() => router.push(`${pathname}?${queryString}`))
+  }
+
+  function startInlineEdit(device: DeviceRow, field: keyof DeviceInput) {
+    if (!canEdit) return
+    const cur = (device as Record<string, unknown>)[field as string]
+    setInlineCell({ id: device.id, field, version: device.version })
+    setInlineValue(cur == null ? '' : String(cur))
+  }
+
+  async function commitInlineEdit() {
+    if (!inlineCell) return
+    setInlineSaving(true)
+    try {
+      const patch: Partial<DeviceInput> = { [inlineCell.field]: inlineValue === '' ? null : inlineValue }
+      const result = await updateDeviceRowAction(inlineCell.id, patch as DeviceInput, inlineCell.version)
+      if ('error' in result) {
+        toast.error(result.error)
+      } else {
+        toast.success('Saved')
+        router.refresh()
+      }
+    } finally {
+      setInlineSaving(false)
+      setInlineCell(null)
+    }
+  }
+
+  const totalPages = Math.ceil(total / pageSize)
 
   return (
     <div className="space-y-4">
@@ -443,7 +619,79 @@ export function DeviceTable({
         onSave={handleSave}
         onCancel={cancelEdit}
         onChange={handleChange}
+        currentStatus={editOriginalStatus}
       />
+
+      {/* Bulk status dialog */}
+      <Dialog open={showBulkStatus} onOpenChange={o => { if (!o) { setShowBulkStatus(false); setBulkStatusVal('__unchanged__'); setBulkPhaseVal('__unchanged__') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change Status / Phase</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">{selectedIds.size} device(s) selected. Choose values to apply — leave "Unchanged" to keep each device&apos;s current value.</p>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <select
+                value={bulkStatusVal}
+                onChange={e => setBulkStatusVal(e.target.value)}
+                className={SELECT_CLASS}
+              >
+                <option value="__unchanged__">— Unchanged —</option>
+                {bulkAllowedStatuses.map(s => (
+                  <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Phase</Label>
+              <select
+                value={bulkPhaseVal}
+                onChange={e => setBulkPhaseVal(e.target.value)}
+                className={SELECT_CLASS}
+              >
+                <option value="__unchanged__">— Unchanged —</option>
+                {phases.map(p => (
+                  <option key={p.code} value={p.code}>{p.label_en} · {p.label_zh}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowBulkStatus(false); setBulkStatusVal('__unchanged__'); setBulkPhaseVal('__unchanged__') }}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkStatusConfirm}>
+              Apply to {selectedIds.size} device(s)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-md">
+          <span className="text-sm text-blue-700 font-medium">{selectedIds.size} selected</span>
+          {canChangeStatus && (
+            <Button size="sm" variant="outline" onClick={() => setShowBulkStatus(true)}>
+              Change Status/Phase
+            </Button>
+          )}
+          {canChangeStatus && (
+            <Button size="sm" variant="outline" onClick={handleBulkExport}>
+              Export Selected
+            </Button>
+          )}
+          {canDelete && (
+            <Button size="sm" variant="destructive" onClick={handleBulkDelete}>
+              Delete Selected
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="space-y-2">
@@ -486,12 +734,59 @@ export function DeviceTable({
             <SlidersHorizontal className="h-4 w-4 mr-1" />
             Filters
           </Button>
+          <DropdownMenu onOpenChange={(open) => { if (open) loadPresets() }}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Bookmark className="h-4 w-4 mr-1" />Presets
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {presets.length === 0 && !presetsLoaded && (
+                <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
+              )}
+              {presetsLoaded && presets.length === 0 && (
+                <DropdownMenuItem disabled>No saved presets</DropdownMenuItem>
+              )}
+              {presets.map((p) => (
+                <DropdownMenuItem key={p.id} className="flex items-center justify-between group pr-1" onSelect={(e) => e.preventDefault()}>
+                  <span className="truncate flex-1 cursor-pointer" onClick={() => applyPreset(p.query_string)}>{p.name}</span>
+                  <Button
+                    variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover:opacity-100 ml-1 shrink-0"
+                    onClick={(e) => { e.stopPropagation(); handleDeletePreset(p.id) }}
+                  >
+                    <Trash2 className="h-3 w-3 text-destructive" />
+                  </Button>
+                </DropdownMenuItem>
+              ))}
+              {presets.length > 0 && <DropdownMenuSeparator />}
+              {showSavePreset ? (
+                <div className="px-2 py-1.5 flex gap-1">
+                  <Input
+                    placeholder="Preset name…"
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setShowSavePreset(false) }}
+                    className="h-7 text-xs flex-1"
+                    autoFocus
+                  />
+                  <Button size="sm" className="h-7 px-2" onClick={handleSavePreset}>Save</Button>
+                </div>
+              ) : (
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setShowSavePreset(true) }}>
+                  <BookmarkPlus className="h-4 w-4 mr-2" />Save current filters
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="ml-auto flex gap-2">
             <Link href={`/devices/export?${searchParams.toString()}`}>
               <Button variant="outline" size="sm">
                 <Download className="h-4 w-4 mr-1" />Export CSV
               </Button>
             </Link>
+            <Button variant="outline" size="sm" onClick={handleExportXlsx}>
+              <Download className="h-4 w-4 mr-1" />Export Excel
+            </Button>
             {canCreate && (
               <Button size="sm" onClick={startNew}>
                 <Plus className="h-4 w-4 mr-1" />New Row
@@ -560,6 +855,7 @@ export function DeviceTable({
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr>
+              <th className="w-8 bg-gray-600 px-2 py-1.5" />
               <GroupTh label="设备信息" sub="Device Info"              colSpan={3} section="device" />
               <GroupTh label="PCBA-A (电源板 Amplifier Board)"         colSpan={4} section="pcbaA" />
               <GroupTh label="PCBA-B (控制板 Accessory Board)"         colSpan={4} section="pcbaB" />
@@ -568,6 +864,14 @@ export function DeviceTable({
               <GroupTh label="状态 Status & Notes" colSpan={canEdit ? 4 : 3} section="status" />
             </tr>
             <tr>
+              <th className="w-8 bg-gray-600 px-2 py-1.5 text-center">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size === devices.length && devices.length > 0}
+                  onChange={e => setSelectedIds(e.target.checked ? new Set(devices.map(d => d.id)) : new Set())}
+                  className="rounded border-gray-300"
+                />
+              </th>
               <ColTh section="device" sortKey="device_sn" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Device S/N<br /><span className="opacity-70">设备序列号</span></ColTh>
               <ColTh section="device" sortKey="product_name" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Product Name<br /><span className="opacity-70">产品名称</span></ColTh>
               <ColTh section="device" sortKey="model_no" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Model No.<br /><span className="opacity-70">产品型号</span></ColTh>
@@ -603,35 +907,116 @@ export function DeviceTable({
             ) : (
               devices.map((device, i) => (
                 <tr key={device.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/30'} group`}>
+                  <td className="px-2 py-1.5 align-top">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(device.id)}
+                      onChange={e => setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        e.target.checked ? next.add(device.id) : next.delete(device.id)
+                        return next
+                      })}
+                      className="rounded border-gray-300"
+                    />
+                  </td>
                   <Td>
-                    {(() => {
-                      const ws = warrantyState(device.warranty_expiry)
-                      return (
-                        <span className="inline-flex items-center gap-1">
-                          {ws === 'expired' && (
-                            <span title={`Warranty expired ${device.warranty_expiry ?? ''}`}>
-                              <AlertTriangle className="h-3.5 w-3.5 text-red-500 shrink-0" />
-                            </span>
-                          )}
-                          {ws === 'soon' && (
-                            <span title={`Warranty expires ${device.warranty_expiry ?? ''}`}>
-                              <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
-                            </span>
-                          )}
-                          <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
-                            {n(device.device_sn)}
-                          </Link>
+                    <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
+                      {inlineCell?.id === device.id && inlineCell.field === 'device_sn' ? (
+                        <Input
+                          className="h-6 text-xs px-1 py-0 w-full"
+                          value={inlineValue}
+                          onChange={(e) => setInlineValue(e.target.value)}
+                          onBlur={commitInlineEdit}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitInlineEdit()
+                            if (e.key === 'Escape') setInlineCell(null)
+                          }}
+                          autoFocus
+                          disabled={inlineSaving}
+                        />
+                      ) : (
+                        <span
+                          className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                          onDoubleClick={() => startInlineEdit(device, 'device_sn')}
+                        >
+                          {n(device.device_sn)}
                         </span>
-                      )
-                    })()}
+                      )}
+                    </Link>
                   </Td>
                   <Td>{n(device.product_name)}</Td>
-                  <Td className="font-mono">{n(device.model_no)}</Td>
-                  <Td className="font-mono">{n(device.pcba_a_sn)}</Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'model_no' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'model_no')}
+                      >
+                        {n(device.model_no)}
+                      </span>
+                    )}
+                  </Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'pcba_a_sn' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'pcba_a_sn')}
+                      >
+                        {n(device.pcba_a_sn)}
+                      </span>
+                    )}
+                  </Td>
                   <Td className="font-mono">{n(device.pcba_a_hw_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_a_bom_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_a_fw_ver)}</Td>
-                  <Td className="font-mono">{n(device.pcba_b_sn)}</Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'pcba_b_sn' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'pcba_b_sn')}
+                      >
+                        {n(device.pcba_b_sn)}
+                      </span>
+                    )}
+                  </Td>
                   <Td className="font-mono">{n(device.pcba_b_hw_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_b_bom_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_b_fw_ver)}</Td>
@@ -641,8 +1026,52 @@ export function DeviceTable({
                   <Td className="tabular-nums">{n(device.ship_date)}</Td>
                   <Td className="tabular-nums">{n(device.warranty_expiry)}</Td>
                   <Td className="tabular-nums text-right">{device.qty ?? '—'}</Td>
-                  <Td>{n(device.destination)}</Td>
-                  <Td>{n(device.customer)}</Td>
+                  <Td>
+                    {inlineCell?.id === device.id && inlineCell.field === 'destination' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'destination')}
+                      >
+                        {n(device.destination)}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    {inlineCell?.id === device.id && inlineCell.field === 'customer' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'customer')}
+                      >
+                        {n(device.customer)}
+                      </span>
+                    )}
+                  </Td>
                   <Td><StatusBadge status={device.status} /></Td>
                   <Td><PhaseBadge phase={device.phase} /></Td>
                   <Td className="max-w-[200px] whitespace-pre-wrap">{n(device.remarks)}</Td>

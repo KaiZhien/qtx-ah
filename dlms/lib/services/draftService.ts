@@ -4,6 +4,49 @@ import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { ExtractedDeviceDraft, DeviceRow, DeviceInput, Role } from '@/lib/types'
 
+/**
+ * Map an extracted_payload fields object → DeviceInput, applying the same
+ * defaults used by the draft-promotion flow. Used both when promoting a draft
+ * and when the invoice confirm modal calls createDevice directly.
+ */
+export function fieldsToDeviceInput(
+  fields: Record<string, { value: unknown; confidence?: number; source_quote?: string }>
+): DeviceInput {
+  return {
+    device_sn:      (fields.device_sn?.value as string) || null,
+    product_name:   (fields.product_name?.value as string) || null,
+    model_no:       (fields.model_no?.value as string) || null,
+    pcba_a_sn:      (fields.pcba_a_sn?.value as string) ?? '',
+    pcba_a_hw_rev:  (fields.pcba_a_hw_rev?.value as string) ?? '',
+    pcba_a_bom_rev: (fields.pcba_a_bom_rev?.value as string) ?? '',
+    pcba_a_fw_ver:  (fields.pcba_a_fw_ver?.value as string) ?? '',
+    pcba_b_sn:      (fields.pcba_b_sn?.value as string) || null,
+    pcba_b_hw_rev:  (fields.pcba_b_hw_rev?.value as string) || null,
+    pcba_b_bom_rev: (fields.pcba_b_bom_rev?.value as string) || null,
+    pcba_b_fw_ver:  (fields.pcba_b_fw_ver?.value as string) || null,
+    screen_model:   (fields.screen_model?.value as string) || null,
+    hmi_ver:        (fields.hmi_ver?.value as string) || null,
+    build_date:     (fields.build_date?.value as string) || null,
+    ship_date:      (fields.ship_date?.value as string) || null,
+    qty:            fields.qty?.value != null ? Number(fields.qty.value) : null,
+    destination:    (fields.destination?.value as string) || null,
+    customer:       (fields.customer?.value as string) || null,
+    status:         (fields.status?.value as string) ?? 'In Production',
+    phase:          (fields.phase?.value as string) ?? 'MP',
+    remarks:        (fields.remarks?.value as string) || null,
+  }
+}
+
+export async function getPendingDraftCount(): Promise<number> {
+  const supabase = createAdminClient()
+  const { count, error } = await supabase
+    .from('extracted_device_draft')
+    .select('*', { count: 'exact', head: true })
+    .eq('status', 'pending_review')
+  if (error) throw new Error(error.message)
+  return count ?? 0
+}
+
 export async function listDrafts(): Promise<ExtractedDeviceDraft[]> {
   const supabase = createAdminClient()
   const { data, error } = await supabase
@@ -52,30 +95,7 @@ export async function promoteDraft(
     fields?: Record<string, { value: unknown; confidence?: number; source_quote?: string }>
   }
 
-  const fields = payload?.fields ?? {}
-  const deviceInput: DeviceInput = {
-    device_sn:      (fields.device_sn?.value as string) || null,
-    product_name:   (fields.product_name?.value as string) || null,
-    model_no:       (fields.model_no?.value as string) || null,
-    pcba_a_sn:      (fields.pcba_a_sn?.value as string) ?? '',
-    pcba_a_hw_rev:  (fields.pcba_a_hw_rev?.value as string) ?? '',
-    pcba_a_bom_rev: (fields.pcba_a_bom_rev?.value as string) ?? '',
-    pcba_a_fw_ver:  (fields.pcba_a_fw_ver?.value as string) ?? '',
-    pcba_b_sn:      (fields.pcba_b_sn?.value as string) || null,
-    pcba_b_hw_rev:  (fields.pcba_b_hw_rev?.value as string) || null,
-    pcba_b_bom_rev: (fields.pcba_b_bom_rev?.value as string) || null,
-    pcba_b_fw_ver:  (fields.pcba_b_fw_ver?.value as string) || null,
-    screen_model:   (fields.screen_model?.value as string) || null,
-    hmi_ver:        (fields.hmi_ver?.value as string) || null,
-    build_date:     (fields.build_date?.value as string) || null,
-    ship_date:      (fields.ship_date?.value as string) || null,
-    qty:            fields.qty?.value != null ? Number(fields.qty.value) : null,
-    destination:    (fields.destination?.value as string) || null,
-    customer:       (fields.customer?.value as string) || null,
-    status:         (fields.status?.value as string) ?? 'In Production',
-    phase:          (fields.phase?.value as string) ?? 'MP',
-    remarks:        (fields.remarks?.value as string) || null,
-  }
+  const deviceInput: DeviceInput = fieldsToDeviceInput(payload?.fields ?? {})
 
   // Create the device attributed to the reviewer
   const device = await createDevice(deviceInput, reviewerActorId, actorRole)

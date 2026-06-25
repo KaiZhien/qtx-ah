@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google'
 import { Toaster } from 'sonner'
 import { Header } from '@/components/layout/Header'
 import { getCurrentUser } from '@/lib/auth/session'
+import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin'] })
@@ -20,6 +21,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <Header user={user} />
         <main className="container mx-auto py-6 px-4">{children}</main>
         <Toaster richColors position="top-right" />
+        <KeyboardShortcuts />
       </body>
     </html>
   )

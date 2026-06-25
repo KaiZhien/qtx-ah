@@ -1,54 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requirePermission } from '@/lib/auth/session'
-import { ACTIONS } from '@/lib/auth/permissions'
-import { listDevices } from '@/lib/services/deviceService'
-import { CSV_EXPORT_HEADERS } from '@/lib/i18n/fields'
-
-function csvCell(val: unknown): string {
-  if (val === null || val === undefined) return ''
-  const s = String(val)
-  // Quote if contains comma, double-quote, newline, or carriage return (RFC 4180)
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return '"' + s.replaceAll('"', '""') + '"'
-  }
-  return s
-}
+import { getCurrentUser } from '@/lib/auth/session'
+import { can, ACTIONS } from '@/lib/auth/permissions'
+import { createAdminClient } from '@/lib/supabase/server'
+import { FIELD_LABELS } from '@/lib/i18n/fields'
+import { buildDeviceWorkbook } from '@/lib/services/exportService'
+import type { Role, DeviceRow } from '@/lib/types'
 
 export async function GET(req: NextRequest) {
-  try {
-    await requirePermission(ACTIONS.EXPORT_DATA)
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.EXPORT_DATA)) {
+    return new NextResponse('Unauthorized', { status: 401 })
+  }
 
-    const { searchParams } = req.nextUrl
-    const status = searchParams.get('status') ?? undefined
-    const phase = searchParams.get('phase') ?? undefined
-    const search = searchParams.get('search') ?? undefined
-    const customer = searchParams.get('customer') ?? undefined
+  const { searchParams } = new URL(req.url)
+  const ids = searchParams.get('ids')?.split(',').filter(Boolean) ?? []
+  const q = searchParams.get('q') ?? ''
+  const status = searchParams.get('status') ?? ''
+  const phase = searchParams.get('phase') ?? ''
+  const customer = searchParams.get('customer') ?? ''
 
-    const { rows } = await listDevices({ status, phase, search, customer, pageSize: 10000 })
+  const supabase = createAdminClient()
+  let query = supabase.from('device').select('*').is('deleted_at', null)
 
-    // Build CSV using the same logic as exportDevicesAction
-    const headers = Object.values(CSV_EXPORT_HEADERS)
-    const keys = Object.keys(CSV_EXPORT_HEADERS) as (keyof typeof CSV_EXPORT_HEADERS)[]
+  if (ids.length > 0) {
+    // Export only selected IDs — ignore other filters
+    query = query.in('id', ids)
+  } else {
+    // Apply regular filters
+    if (q) {
+      const raw = q.trim()
+      if (/^[A-Za-z0-9\-_ ~]+$/.test(raw)) {
+        const term = raw.toUpperCase()
+        query = query.or([
+          `pcba_a_sn_normalized.ilike.%${term}%`,
+          `pcba_b_sn_normalized.ilike.%${term}%`,
+          `device_sn_normalized.ilike.%${term}%`,
+          `customer.ilike.%${term}%`,
+          `product_name.ilike.%${term}%`,
+          `model_no.ilike.%${term}%`,
+          `screen_model.ilike.%${term}%`,
+          `destination.ilike.%${term}%`,
+        ].join(','))
+      }
+    }
+    if (status) query = query.eq('status', status)
+    if (phase) query = query.eq('phase', phase)
+    if (customer) query = query.ilike('customer', `%${customer}%`)
+  }
 
-    const csvRows = rows.map(row =>
-      keys
-        .map(k => {
-          const val = (row as Record<string, unknown>)[k]
-          return csvCell(val)
-        })
-        .join(',')
-    )
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(10000)
+  if (error) {
+    return new NextResponse('Export failed', { status: 500 })
+  }
 
-    const csv = [headers.join(','), ...csvRows].join('\n')
+  const rows = (data ?? []) as DeviceRow[]
+  const format = searchParams.get('format') ?? 'csv'
 
-    return new NextResponse(csv, {
+  if (format === 'xlsx') {
+    const buffer = await buildDeviceWorkbook(rows)
+    const date = new Date().toISOString().slice(0, 10)
+    return new NextResponse(buffer as unknown as BodyInit, {
+      status: 200,
       headers: {
-        'Content-Type': 'text/csv',
-        'Content-Disposition': `attachment; filename="devices-${new Date().toISOString().split('T')[0]}.csv"`,
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="devices-${date}.xlsx"`,
       },
     })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Export failed'
-    return NextResponse.json({ error: message }, { status: 500 })
   }
+
+
+  const headers = Object.keys(FIELD_LABELS).join(',')
+  const csvRows = rows.map((d) =>
+    Object.keys(FIELD_LABELS)
+      .map((k) => {
+        const v = (d as Record<string, unknown>)[k]
+        if (v == null) return ''
+        let str = String(v)
+        // Prefix formula-injection characters so spreadsheet apps don't execute them
+        if (/^[=+\-@\t\r]/.test(str)) str = `\t${str}`
+        return str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\t')
+          ? `"${str.replace(/"/g, '""')}"`
+          : str
+      })
+      .join(',')
+  )
+  const csv = [headers, ...csvRows].join('\n')
+
+  return new NextResponse(csv, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="devices-${new Date().toISOString().slice(0, 10)}.csv"`,
+    },
+  })
 }
