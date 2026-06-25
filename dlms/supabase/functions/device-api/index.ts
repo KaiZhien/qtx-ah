@@ -56,10 +56,18 @@ serve(async (req) => {
         .range(from, to)
 
       if (q) {
-        const term = normalizeSerial(q)
-        query = query.or(
-          `pcba_a_sn_normalized.ilike.%${term}%,device_sn_normalized.ilike.%${term}%,customer.ilike.%${q}%,model_no.ilike.%${q}%`
-        )
+        const term = normalizeSerial(q) // already [A-Z0-9]-safe
+        // Strip PostgREST filter-syntax chars from q before embedding in the or() string
+        const safeQ = q.replace(/[,.()"'\\{}\[\]]/g, ' ').trim()
+        if (safeQ) {
+          query = query.or(
+            `pcba_a_sn_normalized.ilike.%${term}%,device_sn_normalized.ilike.%${term}%,customer.ilike.%${safeQ}%,model_no.ilike.%${safeQ}%`
+          )
+        } else if (term) {
+          query = query.or(
+            `pcba_a_sn_normalized.ilike.%${term}%,device_sn_normalized.ilike.%${term}%`
+          )
+        }
       }
       if (status) query = query.eq('status', status)
       if (phase) query = query.eq('phase', phase)
