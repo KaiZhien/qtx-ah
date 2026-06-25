@@ -10,8 +10,9 @@ import { getDeviceHistory } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
 
 import { can, ACTIONS } from '@/lib/auth/permissions'
-import { GROUP_LABELS } from '@/lib/i18n/fields'
+import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import type { Role } from '@/lib/types'
+import { formatDistanceToNow } from 'date-fns'
 import { Edit, Trash2 } from 'lucide-react'
 import { DeleteDeviceButton } from './DeleteDeviceButton'
 
@@ -60,7 +61,6 @@ export default async function DeviceDetailPage({ params }: PageProps) {
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
-          <TabsTrigger value="documents" disabled>Documents (Phase 2)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="details" className="space-y-6 mt-4">
@@ -84,8 +84,11 @@ export default async function DeviceDetailPage({ params }: PageProps) {
                       {entry.action}
                     </Badge>
                     <span className="text-muted-foreground">{entry.actor_email ?? 'System'}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {new Date(entry.occurred_at).toLocaleString()}
+                    <span
+                      className="text-xs text-muted-foreground tabular-nums"
+                      title={new Date(entry.occurred_at).toLocaleString()}
+                    >
+                      {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
                     </span>
                   </div>
                   {entry.changed_columns.length > 0 && (
@@ -95,7 +98,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
                         const newVal = (entry.new_values as Record<string, unknown>)[col]
                         return (
                           <div key={col} className="flex gap-2">
-                            <span className="font-medium w-32 shrink-0">{col}</span>
+                            <span className="font-medium w-32 shrink-0">{FIELD_LABELS[col]?.en ?? col}</span>
                             <span className="text-red-600 line-through">{String(oldVal ?? '')}</span>
                             <span className="text-muted-foreground">→</span>
                             <span className="text-green-700">{String(newVal ?? '')}</span>

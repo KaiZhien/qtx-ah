@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { createAdminClient } from '@/lib/supabase/server'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
+import { buildDeviceWorkbook } from '@/lib/services/exportService'
 import type { Role, DeviceRow } from '@/lib/types'
 
 export async function GET(req: NextRequest) {
@@ -53,6 +54,21 @@ export async function GET(req: NextRequest) {
   }
 
   const rows = (data ?? []) as DeviceRow[]
+  const format = searchParams.get('format') ?? 'csv'
+
+  if (format === 'xlsx') {
+    const buffer = await buildDeviceWorkbook(rows)
+    const date = new Date().toISOString().slice(0, 10)
+    return new NextResponse(buffer as unknown as BodyInit, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="devices-${date}.xlsx"`,
+      },
+    })
+  }
+
+
   const headers = Object.keys(FIELD_LABELS).join(',')
   const csvRows = rows.map((d) =>
     Object.keys(FIELD_LABELS)

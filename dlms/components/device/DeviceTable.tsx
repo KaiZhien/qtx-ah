@@ -477,6 +477,17 @@ export function DeviceTable({
     toast.success('Export started')
   }
 
+  function handleExportXlsx() {
+    const params = new URLSearchParams()
+    if (searchParams.get('q')) params.set('q', searchParams.get('q')!)
+    if (searchParams.get('status')) params.set('status', searchParams.get('status')!)
+    if (searchParams.get('phase')) params.set('phase', searchParams.get('phase')!)
+    if (searchParams.get('customer')) params.set('customer', searchParams.get('customer')!)
+    params.set('format', 'xlsx')
+    window.open(`/devices/export?${params.toString()}`, '_blank')
+    toast.success('Excel export started')
+  }
+
   async function handleBulkStatusConfirm() {
     const items = devices
       .filter(d => selectedIds.has(d.id))
@@ -512,6 +523,7 @@ export function DeviceTable({
     const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
     return intersection.length > 0 ? intersection : statuses
   })()
+
 
   const actionsCol = canEdit ? (
     <ColTh section="status"><span className="sr-only">Actions</span></ColTh>
@@ -652,6 +664,9 @@ export function DeviceTable({
                 <Download className="h-4 w-4 mr-1" />Export CSV
               </Button>
             </Link>
+            <Button variant="outline" size="sm" onClick={handleExportXlsx}>
+              <Download className="h-4 w-4 mr-1" />Export Excel
+            </Button>
             {canCreate && (
               <Button size="sm" onClick={startNew}>
                 <Plus className="h-4 w-4 mr-1" />New Row
