@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Upload, FileText, Image } from 'lucide-react'
 import { ExtractedDeviceConfirmModal } from '@/components/device/ExtractedDeviceConfirmModal'
 import { extractInvoiceAction } from './actions'
+import { toast } from 'sonner'
 import type { StatusOption, PhaseOption } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
 
@@ -48,6 +49,7 @@ export function UploadClient({ statuses, phases }: UploadClientProps) {
 
     if ('error' in result) {
       setState({ status: 'error', message: result.error })
+      toast.error(result.error)
     } else {
       setState({
         status: 'extracted',

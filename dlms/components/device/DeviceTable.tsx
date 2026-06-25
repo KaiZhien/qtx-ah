@@ -12,9 +12,19 @@ import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
 import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
 import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction } from '@/app/devices/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
+import { toast } from 'sonner'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
+// allowedNextStatuses is being created by the parallel agent — import it for status filtering
+// If the module isn't ready yet, the fallback logic below handles missing gracefully
+let allowedNextStatuses: ((status: string) => string[]) | undefined
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  allowedNextStatuses = require('@/lib/domain/statusTransitions').allowedNextStatuses
+} catch {
+  allowedNextStatuses = undefined
+}
 
 interface DeviceTableProps {
   devices: DeviceRow[]
@@ -145,18 +155,24 @@ const SELECT_CLASS =
   'focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
 
 function FieldControl({
-  fieldKey, data, onChange, statuses, phases,
+  fieldKey, data, onChange, statuses, phases, currentStatus,
 }: {
   fieldKey: string
   data: DeviceInput
   onChange: (f: keyof DeviceInput, v: string | number | null) => void
   statuses: StatusOption[]
   phases: PhaseOption[]
+  currentStatus?: string
 }) {
   const raw = data[fieldKey as keyof DeviceInput]
   const strVal = raw == null ? '' : String(raw)
 
   if (fieldKey === 'status') {
+    // Filter statuses to only allowed transitions if we know the current status and the module is available
+    const filteredStatuses = (allowedNextStatuses && currentStatus)
+      ? statuses.filter(s => allowedNextStatuses!(currentStatus).includes(s.code))
+      : statuses
+
     return (
       <select
         value={strVal}
@@ -164,7 +180,7 @@ function FieldControl({
         className={SELECT_CLASS}
       >
         <option value="">Select status…</option>
-        {statuses.map(s => (
+        {filteredStatuses.map(s => (
           <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
         ))}
       </select>
@@ -220,7 +236,7 @@ function FieldControl({
 }
 
 function DeviceFormModal({
-  open, isNew, data, statuses, phases, saving, rowError, onSave, onCancel, onChange,
+  open, isNew, data, statuses, phases, saving, rowError, onSave, onCancel, onChange, currentStatus,
 }: {
   open: boolean
   isNew: boolean
@@ -232,6 +248,7 @@ function DeviceFormModal({
   onSave: () => void
   onCancel: () => void
   onChange: (field: keyof DeviceInput, value: string | number | null) => void
+  currentStatus?: string
 }) {
   return (
     <Dialog open={open} onOpenChange={o => { if (!o) onCancel() }}>
@@ -265,6 +282,7 @@ function DeviceFormModal({
                           onChange={onChange}
                           statuses={statuses}
                           phases={phases}
+                          currentStatus={currentStatus}
                         />
                       </div>
                     )
@@ -315,6 +333,8 @@ export function DeviceTable({
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
   const [editVersion, setEditVersion] = useState(1)
+  // Track the original status of the device being edited for transition filtering
+  const [editOriginalStatus, setEditOriginalStatus] = useState<string | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [rowError, setRowError] = useState<string | null>(null)
   const [showFilters, setShowFilters] = useState(
@@ -361,12 +381,14 @@ export function DeviceTable({
     setEditingId(device.id)
     setEditData(deviceToInput(device))
     setEditVersion(device.version)
+    setEditOriginalStatus(device.status)
     setRowError(null)
   }
 
   function startNew() {
     setEditingId('new')
     setEditData({ ...EMPTY })
+    setEditOriginalStatus(undefined)
     setRowError(null)
   }
 
@@ -403,10 +425,20 @@ export function DeviceTable({
 
       if (editingId === 'new') {
         const res = await createDeviceRowAction(payload)
-        if ('error' in res) { setRowError(res.error); return }
+        if ('error' in res) {
+          setRowError(res.error)
+          toast.error(res.error)
+          return
+        }
+        toast.success('Device created')
       } else {
         const res = await updateDeviceRowAction(editingId!, payload, editVersion)
-        if ('error' in res) { setRowError(res.error); return }
+        if ('error' in res) {
+          setRowError(res.error)
+          toast.error(res.error)
+          return
+        }
+        toast.success('Device updated')
       }
       setEditingId(null)
       router.refresh()
@@ -423,9 +455,17 @@ export function DeviceTable({
       .filter(d => selectedIds.has(d.id))
       .map(d => ({ id: d.id, version: d.version }))
     const res = await bulkSoftDeleteAction(items)
-    if ('error' in res) { setRowError(res.error); return }
+    if ('error' in res) {
+      setRowError(res.error)
+      toast.error(res.error)
+      return
+    }
     if (res.conflicts.length > 0) {
-      setRowError(`Deleted ${res.deleted}. Failed to delete ${res.conflicts.length} device(s) — they may have already been removed.`)
+      const msg = `Deleted ${res.deleted}. Failed to delete ${res.conflicts.length} device(s) — they may have already been removed.`
+      setRowError(msg)
+      toast.warning(`${res.conflicts.length} conflict(s) — try refreshing`)
+    } else {
+      toast.success(`Deleted ${res.deleted} device(s)`)
     }
     setSelectedIds(new Set())
     router.refresh()
@@ -434,6 +474,7 @@ export function DeviceTable({
   function handleBulkExport() {
     const ids = Array.from(selectedIds).join(',')
     window.location.href = `/devices/export?ids=${encodeURIComponent(ids)}`
+    toast.success('Export started')
   }
 
   async function handleBulkStatusConfirm() {
@@ -443,9 +484,16 @@ export function DeviceTable({
     const newStatus = bulkStatusVal === '__unchanged__' ? null : bulkStatusVal
     const newPhase = bulkPhaseVal === '__unchanged__' ? null : bulkPhaseVal
     const res = await bulkChangeStatusAction(items, newStatus, newPhase)
-    if ('error' in res) { setRowError(res.error); return }
+    if ('error' in res) {
+      setRowError(res.error)
+      toast.error(res.error)
+      return
+    }
     if (res.conflicts.length > 0) {
       setRowError(`Updated ${res.updated}. ${res.conflicts.length} device(s) had conflicts and were skipped.`)
+      toast.warning(`${res.conflicts.length} conflict(s) — try refreshing`)
+    } else {
+      toast.success(`Updated ${res.updated} device(s)`)
     }
     setShowBulkStatus(false)
     setBulkStatusVal('__unchanged__')
@@ -453,6 +501,17 @@ export function DeviceTable({
     setSelectedIds(new Set())
     router.refresh()
   }
+
+  // For the bulk status dialog, compute an intersection of allowed next statuses
+  // across all selected devices. Fall back to showing all statuses if complex/empty.
+  const bulkAllowedStatuses: StatusOption[] = (() => {
+    if (!allowedNextStatuses || selectedIds.size === 0) return statuses
+    const selectedDevices = devices.filter(d => selectedIds.has(d.id))
+    if (selectedDevices.length === 0) return statuses
+    const sets = selectedDevices.map(d => new Set(allowedNextStatuses!(d.status)))
+    const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
+    return intersection.length > 0 ? intersection : statuses
+  })()
 
   const actionsCol = canEdit ? (
     <ColTh section="status"><span className="sr-only">Actions</span></ColTh>
@@ -472,6 +531,7 @@ export function DeviceTable({
         onSave={handleSave}
         onCancel={cancelEdit}
         onChange={handleChange}
+        currentStatus={editOriginalStatus}
       />
 
       {/* Bulk status dialog */}
@@ -490,7 +550,7 @@ export function DeviceTable({
                 className={SELECT_CLASS}
               >
                 <option value="__unchanged__">— Unchanged —</option>
-                {statuses.map(s => (
+                {bulkAllowedStatuses.map(s => (
                   <option key={s.code} value={s.code}>{s.label_en} · {s.label_zh}</option>
                 ))}
               </select>

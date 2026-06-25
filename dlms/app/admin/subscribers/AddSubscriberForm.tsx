@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { addSubscriberAction } from './actions'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 
 export function AddSubscriberForm() {
   const router = useRouter()
@@ -18,6 +19,9 @@ export function AddSubscriberForm() {
       await addSubscriberAction(email)
       setEmail('')
       router.refresh()
+      toast.success('Subscriber added')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add subscriber')
     } finally {
       setSaving(false)
     }

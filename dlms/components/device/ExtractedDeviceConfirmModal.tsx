@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
@@ -17,6 +18,7 @@ import { AlertCircle, AlertTriangle } from 'lucide-react'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { deviceSchema } from '@/lib/domain/validation'
 import { confirmInvoiceDeviceAction } from '@/app/drafts/upload/actions'
+import { toast } from 'sonner'
 import type { DeviceInput, StatusOption, PhaseOption } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
 
@@ -77,6 +79,7 @@ export function ExtractedDeviceConfirmModal({
 }: ExtractedDeviceConfirmModalProps) {
   const router = useRouter()
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [existingDeviceId, setExistingDeviceId] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const form = useForm<DeviceInput>({
@@ -89,6 +92,7 @@ export function ExtractedDeviceConfirmModal({
   async function handleConfirm(data: DeviceInput) {
     setIsSubmitting(true)
     setSubmitError(null)
+    setExistingDeviceId(null)
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -97,12 +101,19 @@ export function ExtractedDeviceConfirmModal({
 
       if ('error' in result) {
         setSubmitError(result.error)
+        toast.error(result.error)
+        if ('existingId' in result && result.existingId) {
+          setExistingDeviceId(result.existingId as string)
+        }
       } else {
+        toast.success('Device created successfully')
         onClose()
         router.push(`/devices/${result.id}`)
       }
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Confirm failed')
+      const msg = err instanceof Error ? err.message : 'Confirm failed'
+      setSubmitError(msg)
+      toast.error(msg)
     } finally {
       setIsSubmitting(false)
     }
@@ -138,7 +149,18 @@ export function ExtractedDeviceConfirmModal({
         {submitError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{submitError}</AlertDescription>
+            <AlertDescription>
+              {existingDeviceId ? (
+                <>
+                  A device with this PCBA-A S/N already exists.{' '}
+                  <Link href={`/devices/${existingDeviceId}`} className="underline font-medium">
+                    View existing device
+                  </Link>
+                </>
+              ) : (
+                submitError
+              )}
+            </AlertDescription>
           </Alert>
         )}
 

@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { toggleSubscriberAction } from './actions'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 
 interface Props { id: string; active: boolean }
 
@@ -12,9 +13,15 @@ export function ToggleActiveButton({ id, active }: Props) {
 
   async function toggle() {
     setPending(true)
-    await toggleSubscriberAction(id, !active)
-    router.refresh()
-    setPending(false)
+    try {
+      await toggleSubscriberAction(id, !active)
+      router.refresh()
+      toast.success(active ? 'Subscriber deactivated' : 'Subscriber activated')
+    } catch {
+      toast.error(active ? 'Failed to deactivate subscriber' : 'Failed to activate subscriber')
+    } finally {
+      setPending(false)
+    }
   }
 
   return (

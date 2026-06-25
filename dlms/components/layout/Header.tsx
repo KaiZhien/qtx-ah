@@ -32,6 +32,12 @@ export function Header({ user }: HeaderProps) {
           {can(role, ACTIONS.MANAGE_USERS) && (
             <Link href="/admin/subscribers" className="text-muted-foreground hover:text-foreground transition-colors">Subscribers</Link>
           )}
+          {can(role, ACTIONS.MANAGE_USERS) && (
+            <Link href="/admin/users" className="text-muted-foreground hover:text-foreground transition-colors">Users</Link>
+          )}
+          {can(role, ACTIONS.MANAGE_VOCABULARIES) && (
+            <Link href="/admin/vocabularies" className="text-muted-foreground hover:text-foreground transition-colors">Vocabularies</Link>
+          )}
         </nav>
         <div className="ml-auto flex items-center gap-3">
           {user && (

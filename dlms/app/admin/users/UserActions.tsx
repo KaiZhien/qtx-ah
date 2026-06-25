@@ -4,6 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button'
 import { updateRoleAction, deactivateUserAction, reactivateUserAction } from './actions'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import type { Role } from '@/lib/types'
 
 const ROLES: Role[] = ['viewer', 'engineer', 'admin']
@@ -15,24 +16,42 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
 
   async function handleRoleChange(newRole: string) {
     setSaving(true)
-    await updateRoleAction(userId, newRole as Role)
-    setRole(newRole)
-    router.refresh()
-    setSaving(false)
+    try {
+      await updateRoleAction(userId, newRole as Role)
+      setRole(newRole)
+      router.refresh()
+      toast.success('Role updated')
+    } catch {
+      toast.error('Failed to update role')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleDeactivate() {
     setSaving(true)
-    await deactivateUserAction(userId)
-    router.refresh()
-    setSaving(false)
+    try {
+      await deactivateUserAction(userId)
+      router.refresh()
+      toast.success('User deactivated')
+    } catch {
+      toast.error('Failed to deactivate user')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleReactivate() {
     setSaving(true)
-    await reactivateUserAction(userId)
-    router.refresh()
-    setSaving(false)
+    try {
+      await reactivateUserAction(userId)
+      router.refresh()
+      toast.success('User reactivated')
+    } catch {
+      toast.error('Failed to reactivate user')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (

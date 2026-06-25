@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { addStatusAction, addPhaseAction } from './actions'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 
 interface AddVocabFormProps { table: 'status_option' | 'phase_option' }
 
@@ -23,6 +24,9 @@ export function AddVocabForm({ table }: AddVocabFormProps) {
       else await addPhaseAction(code, en, zh)
       setCode(''); setEn(''); setZh('')
       router.refresh()
+      toast.success('Entry added')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add entry')
     } finally {
       setSaving(false)
     }
