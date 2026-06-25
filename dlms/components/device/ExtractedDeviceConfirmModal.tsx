@@ -22,6 +22,14 @@ import { toast } from 'sonner'
 import type { DeviceInput, StatusOption, PhaseOption } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
 
+type FieldCorrection = {
+  field: string
+  extracted: string | null
+  corrected: string | null
+  confidence: number
+}
+
+
 interface ExtractedDeviceConfirmModalProps {
   open: boolean
   onClose: () => void
@@ -100,7 +108,25 @@ export function ExtractedDeviceConfirmModal({
       const formData = new FormData()
       formData.append('file', file)
 
-      const result = await confirmInvoiceDeviceAction(data, formData, fileHash, fields)
+      // Compute corrections: fields where user changed Claude's extracted value
+      const defaults = buildDefaultValues(fields)
+      const corrections: FieldCorrection[] = []
+      for (const key of Object.keys(data) as (keyof DeviceInput)[]) {
+        const extracted = defaults[key] ?? null
+        const corrected = data[key] ?? null
+        const extractedStr = extracted == null ? null : String(extracted)
+        const correctedStr = corrected == null ? null : String(corrected)
+        if (extractedStr !== correctedStr) {
+          corrections.push({
+            field: key as string,
+            extracted: extractedStr,
+            corrected: correctedStr,
+            confidence: fields[key as string]?.confidence ?? 1,
+          })
+        }
+      }
+
+      const result = await confirmInvoiceDeviceAction(data, formData, fileHash, fields, corrections)
 
       if ('error' in result) {
         setSubmitError(result.error)

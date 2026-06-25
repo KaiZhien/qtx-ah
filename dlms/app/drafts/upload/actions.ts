@@ -22,6 +22,14 @@ type ExtractResult =
   | { fields: ExtractedFields; fileHash: string; fileName: string; mediaType: string }
   | { error: string }
 
+type FieldCorrection = {
+  field: string
+  extracted: string | null
+  corrected: string | null
+  confidence: number
+}
+
+
 /**
  * Upload an invoice file, extract device fields via Claude vision, and return the
  * extracted fields for the confirm modal. Nothing is persisted to Storage or DB here.
@@ -73,6 +81,7 @@ export async function confirmInvoiceDeviceAction(
   formData: FormData,
   fileHash: string,
   extractedFields: ExtractedFields,
+  corrections: FieldCorrection[] = [],
 ): Promise<ConfirmResult> {
   const user = await getCurrentUser()
   if (!user || !can(user.role as Role, ACTIONS.CREATE_DEVICE)) {
@@ -140,6 +149,7 @@ export async function confirmInvoiceDeviceAction(
           extraction_model_version: 'claude-sonnet-4-6',
           reviewed_by: user.id,
           promoted_device_id: device.id,
+          corrections: corrections.length > 0 ? corrections : null,
         },
         { onConflict: 'source_file_hash', ignoreDuplicates: false }
       )
