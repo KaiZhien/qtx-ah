@@ -22,8 +22,11 @@ node_modules/
 package-lock.json
 
 .worktrees/
+.claire/
 
 .playwright-mcp/
+
+dlms/supabase/.temp/
 
 # AI tooling artifacts
 .superpowers/
