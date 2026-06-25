@@ -3,9 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { listDrafts } from '@/lib/services/draftService'
+import { requireAuth } from '@/lib/auth/session'
 import { FileText, Upload } from 'lucide-react'
 
 export default async function DraftsPage() {
+  await requireAuth()
   const drafts = await listDrafts()
 
   return (
