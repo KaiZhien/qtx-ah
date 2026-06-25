@@ -1,4 +1,5 @@
 'use client'
+import { useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Button } from '@/components/ui/button'
@@ -19,12 +20,14 @@ interface DeviceFormProps {
   onSubmit: (data: DeviceInput) => Promise<void>
   isSubmitting?: boolean
   conflictError?: string | null
+  submitLabel?: string
+  onPcbaSnChange?: (pcbaASn: string, pcbaBSn: string) => void
 }
 
 const TEXTAREA_FIELDS = new Set(['remarks'])
 const DATE_FIELDS = new Set(['build_date', 'ship_date'])
 
-export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitting, conflictError }: DeviceFormProps) {
+export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitting, conflictError, submitLabel, onPcbaSnChange }: DeviceFormProps) {
   const form = useForm<DeviceInput>({
     resolver: zodResolver(deviceSchema) as any,
     defaultValues: initialData ? {
@@ -53,6 +56,16 @@ export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitti
   })
 
   const errors = form.formState.errors
+
+  useEffect(() => {
+    if (!onPcbaSnChange) return
+    const { unsubscribe } = form.watch((values, { name }) => {
+      if (name === 'pcba_a_sn' || name === 'pcba_b_sn') {
+        onPcbaSnChange(values.pcba_a_sn ?? '', values.pcba_b_sn ?? '')
+      }
+    })
+    return unsubscribe
+  }, [form, onPcbaSnChange])
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
@@ -139,7 +152,7 @@ export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitti
 
       <div className="flex gap-3 pt-2">
         <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'Saving...' : (initialData ? 'Save Changes' : 'Create Device')}
+          {isSubmitting ? 'Saving...' : (submitLabel ?? (initialData ? 'Save Changes' : 'Create Device'))}
         </Button>
         <Button type="button" variant="outline" onClick={() => history.back()}>
           Cancel

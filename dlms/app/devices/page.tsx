@@ -10,7 +10,7 @@ interface PageProps {
   searchParams: {
     q?: string; status?: string; phase?: string; customer?: string; model?: string
     buildFrom?: string; buildTo?: string; shipFrom?: string; shipTo?: string; page?: string
-    sort?: string; dir?: string
+    sort?: string; dir?: string; batchCreated?: string
   }
 }
 
@@ -41,9 +41,16 @@ export default async function DevicesPage({ searchParams }: PageProps) {
     getExpiringWarrantyCount(),
   ])
 
+  const batchCreated = searchParams.batchCreated ? Number(searchParams.batchCreated) : null
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Devices</h1>
+      {batchCreated && batchCreated > 1 && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">
+          {batchCreated} devices created successfully.
+        </div>
+      )}
       <WarrantyBanner count={expiringCount} />
       <DeviceTable
         devices={rows}

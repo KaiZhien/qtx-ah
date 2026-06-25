@@ -5,6 +5,7 @@ import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
+import { pairSerialRanges } from '@/lib/domain/serialRange'
 import type { DeviceInput, Role } from '@/lib/types'
 
 export async function createDeviceAction(input: DeviceInput) {
@@ -13,6 +14,37 @@ export async function createDeviceAction(input: DeviceInput) {
   const device = await createDevice(input, user.id, user.role as Role)
   revalidatePath('/devices')
   redirect(`/devices/${device.id}`)
+}
+
+// Batch creation: expands serial ranges and creates one device per unit.
+// Single unit falls through to the normal device detail page.
+export async function createDeviceBatchAction(input: DeviceInput): Promise<never> {
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.CREATE_DEVICE)) throw new Error('Unauthorized')
+
+  const result = pairSerialRanges(input.pcba_a_sn ?? '', input.pcba_b_sn ?? null)
+  if ('error' in result) throw new Error(result.error)
+
+  const { units } = result
+  if (units.length === 0) throw new Error('No serial numbers provided')
+
+  if (units.length === 1) {
+    const device = await createDevice(
+      { ...input, pcba_a_sn: units[0].pcba_a_sn, ...(units[0].pcba_b_sn != null ? { pcba_b_sn: units[0].pcba_b_sn } : {}), qty: 1 },
+      user.id, user.role as Role
+    )
+    revalidatePath('/devices')
+    redirect(`/devices/${device.id}`)
+  }
+
+  for (const unit of units) {
+    await createDevice(
+      { ...input, pcba_a_sn: unit.pcba_a_sn, ...(unit.pcba_b_sn != null ? { pcba_b_sn: unit.pcba_b_sn } : { pcba_b_sn: undefined }), qty: 1 },
+      user.id, user.role as Role
+    )
+  }
+  revalidatePath('/devices')
+  redirect(`/devices?batchCreated=${units.length}`)
 }
 
 export async function updateDeviceAction(id: string, input: Partial<DeviceInput>, version: number) {

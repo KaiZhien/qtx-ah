@@ -26,5 +26,5 @@ export async function previewExcelAction(bytes: Uint8Array): Promise<ImportPrevi
   const user = await getCurrentUser()
   if (!user || !can(user.role as Role, ACTIONS.IMPORT_DATA)) throw new Error('Unauthorized')
   const [statuses, phases] = await Promise.all([getStatuses(), getPhases()])
-  return previewExcelBuffer(bytes.buffer, statuses.map(s => s.code), phases.map(p => p.code))
+  return previewExcelBuffer(bytes.buffer as ArrayBuffer, statuses.map(s => s.code), phases.map(p => p.code))
 }
