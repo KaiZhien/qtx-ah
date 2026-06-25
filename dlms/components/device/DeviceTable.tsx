@@ -8,12 +8,15 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X } from 'lucide-react'
+import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X, Bookmark, BookmarkPlus, Trash2 } from 'lucide-react'
 import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction } from '@/app/devices/actions'
+import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/devices/presets/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { toast } from 'sonner'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
+import type { FilterPreset } from '@/lib/services/filterPresetService'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
 // allowedNextStatuses is being created by the parallel agent — import it for status filtering
@@ -346,6 +349,17 @@ export function DeviceTable({
   const [bulkStatusVal, setBulkStatusVal] = useState<string>('__unchanged__')
   const [bulkPhaseVal, setBulkPhaseVal] = useState<string>('__unchanged__')
 
+  // Preset state
+  const [presets, setPresets] = useState<FilterPreset[]>([])
+  const [presetsLoaded, setPresetsLoaded] = useState(false)
+  const [showSavePreset, setShowSavePreset] = useState(false)
+  const [presetName, setPresetName] = useState('')
+
+  // Inline editing state
+  const [inlineCell, setInlineCell] = useState<{ id: string; field: keyof DeviceInput; version: number } | null>(null)
+  const [inlineValue, setInlineValue] = useState<string>('')
+  const [inlineSaving, setInlineSaving] = useState(false)
+
   const activeSort = searchParams.get('sort') ?? ''
   const activeDir  = searchParams.get('dir')  ?? ''
 
@@ -447,7 +461,13 @@ export function DeviceTable({
     }
   }
 
-  const totalPages = Math.ceil(total / pageSize)
+  // Preset handlers
+  async function loadPresets() {
+    if (presetsLoaded) return
+    const data = await listPresetsAction()
+    setPresets(data)
+    setPresetsLoaded(true)
+  }
 
   async function handleBulkDelete() {
     if (!confirm(`Soft-delete ${selectedIds.size} device(s)?`)) return
@@ -524,10 +544,64 @@ export function DeviceTable({
     return intersection.length > 0 ? intersection : statuses
   })()
 
-
   const actionsCol = canEdit ? (
     <ColTh section="status"><span className="sr-only">Actions</span></ColTh>
   ) : null
+
+  async function handleSavePreset() {
+    const qs = searchParams.toString()
+    if (!presetName.trim()) return
+    const result = await savePresetAction(presetName.trim(), qs)
+    if ('error' in result) {
+      toast.error(result.error)
+    } else {
+      setPresets(p => [result.preset, ...p])
+      toast.success('Filter preset saved')
+    }
+    setPresetName('')
+    setShowSavePreset(false)
+  }
+
+  async function handleDeletePreset(id: string) {
+    const result = await deletePresetAction(id)
+    if ('error' in result) {
+      toast.error(result.error)
+    } else {
+      setPresets(p => p.filter(x => x.id !== id))
+      toast.success('Preset deleted')
+    }
+  }
+
+  function applyPreset(queryString: string) {
+    startTransition(() => router.push(`${pathname}?${queryString}`))
+  }
+
+  function startInlineEdit(device: DeviceRow, field: keyof DeviceInput) {
+    if (!canEdit) return
+    const cur = (device as Record<string, unknown>)[field as string]
+    setInlineCell({ id: device.id, field, version: device.version })
+    setInlineValue(cur == null ? '' : String(cur))
+  }
+
+  async function commitInlineEdit() {
+    if (!inlineCell) return
+    setInlineSaving(true)
+    try {
+      const patch: Partial<DeviceInput> = { [inlineCell.field]: inlineValue === '' ? null : inlineValue }
+      const result = await updateDeviceRowAction(inlineCell.id, patch as DeviceInput, inlineCell.version)
+      if ('error' in result) {
+        toast.error(result.error)
+      } else {
+        toast.success('Saved')
+        router.refresh()
+      }
+    } finally {
+      setInlineSaving(false)
+      setInlineCell(null)
+    }
+  }
+
+  const totalPages = Math.ceil(total / pageSize)
 
   return (
     <div className="space-y-4">
@@ -658,6 +732,50 @@ export function DeviceTable({
             <SlidersHorizontal className="h-4 w-4 mr-1" />
             Filters
           </Button>
+          <DropdownMenu onOpenChange={(open) => { if (open) loadPresets() }}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Bookmark className="h-4 w-4 mr-1" />Presets
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {presets.length === 0 && !presetsLoaded && (
+                <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
+              )}
+              {presetsLoaded && presets.length === 0 && (
+                <DropdownMenuItem disabled>No saved presets</DropdownMenuItem>
+              )}
+              {presets.map((p) => (
+                <DropdownMenuItem key={p.id} className="flex items-center justify-between group pr-1" onSelect={(e) => e.preventDefault()}>
+                  <span className="truncate flex-1 cursor-pointer" onClick={() => applyPreset(p.query_string)}>{p.name}</span>
+                  <Button
+                    variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover:opacity-100 ml-1 shrink-0"
+                    onClick={(e) => { e.stopPropagation(); handleDeletePreset(p.id) }}
+                  >
+                    <Trash2 className="h-3 w-3 text-destructive" />
+                  </Button>
+                </DropdownMenuItem>
+              ))}
+              {presets.length > 0 && <DropdownMenuSeparator />}
+              {showSavePreset ? (
+                <div className="px-2 py-1.5 flex gap-1">
+                  <Input
+                    placeholder="Preset name…"
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setShowSavePreset(false) }}
+                    className="h-7 text-xs flex-1"
+                    autoFocus
+                  />
+                  <Button size="sm" className="h-7 px-2" onClick={handleSavePreset}>Save</Button>
+                </div>
+              ) : (
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setShowSavePreset(true) }}>
+                  <BookmarkPlus className="h-4 w-4 mr-2" />Save current filters
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="ml-auto flex gap-2">
             <Link href={`/devices/export?${searchParams.toString()}`}>
               <Button variant="outline" size="sm">
@@ -800,16 +918,102 @@ export function DeviceTable({
                   </td>
                   <Td>
                     <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
-                      {n(device.device_sn)}
+                      {inlineCell?.id === device.id && inlineCell.field === 'device_sn' ? (
+                        <Input
+                          className="h-6 text-xs px-1 py-0 w-full"
+                          value={inlineValue}
+                          onChange={(e) => setInlineValue(e.target.value)}
+                          onBlur={commitInlineEdit}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitInlineEdit()
+                            if (e.key === 'Escape') setInlineCell(null)
+                          }}
+                          autoFocus
+                          disabled={inlineSaving}
+                        />
+                      ) : (
+                        <span
+                          className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                          onDoubleClick={() => startInlineEdit(device, 'device_sn')}
+                        >
+                          {n(device.device_sn)}
+                        </span>
+                      )}
                     </Link>
                   </Td>
                   <Td>{n(device.product_name)}</Td>
-                  <Td className="font-mono">{n(device.model_no)}</Td>
-                  <Td className="font-mono">{n(device.pcba_a_sn)}</Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'model_no' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'model_no')}
+                      >
+                        {n(device.model_no)}
+                      </span>
+                    )}
+                  </Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'pcba_a_sn' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'pcba_a_sn')}
+                      >
+                        {n(device.pcba_a_sn)}
+                      </span>
+                    )}
+                  </Td>
                   <Td className="font-mono">{n(device.pcba_a_hw_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_a_bom_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_a_fw_ver)}</Td>
-                  <Td className="font-mono">{n(device.pcba_b_sn)}</Td>
+                  <Td className="font-mono">
+                    {inlineCell?.id === device.id && inlineCell.field === 'pcba_b_sn' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'pcba_b_sn')}
+                      >
+                        {n(device.pcba_b_sn)}
+                      </span>
+                    )}
+                  </Td>
                   <Td className="font-mono">{n(device.pcba_b_hw_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_b_bom_rev)}</Td>
                   <Td className="font-mono">{n(device.pcba_b_fw_ver)}</Td>
@@ -818,8 +1022,52 @@ export function DeviceTable({
                   <Td className="tabular-nums">{n(device.build_date)}</Td>
                   <Td className="tabular-nums">{n(device.ship_date)}</Td>
                   <Td className="tabular-nums text-right">{device.qty ?? '—'}</Td>
-                  <Td>{n(device.destination)}</Td>
-                  <Td>{n(device.customer)}</Td>
+                  <Td>
+                    {inlineCell?.id === device.id && inlineCell.field === 'destination' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'destination')}
+                      >
+                        {n(device.destination)}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    {inlineCell?.id === device.id && inlineCell.field === 'customer' ? (
+                      <Input
+                        className="h-6 text-xs px-1 py-0 w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitInlineEdit()
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}
+                        onDoubleClick={() => startInlineEdit(device, 'customer')}
+                      >
+                        {n(device.customer)}
+                      </span>
+                    )}
+                  </Td>
                   <Td><StatusBadge status={device.status} /></Td>
                   <Td><PhaseBadge phase={device.phase} /></Td>
                   <Td className="max-w-[200px] whitespace-pre-wrap">{n(device.remarks)}</Td>
