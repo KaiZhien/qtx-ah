@@ -21,11 +21,17 @@ export async function buildDeviceWorkbook(rows: DeviceRow[]): Promise<Buffer> {
     fgColor: { argb: 'FFE8EAF6' },
   }
 
-  // Data rows
+  // Data rows — prefix formula-injection chars so Excel doesn't execute them
   for (const device of rows) {
     const row: Record<string, unknown> = {}
     for (const key of Object.keys(FIELD_LABELS)) {
-      row[key] = (device as Record<string, unknown>)[key] ?? ''
+      const raw = (device as Record<string, unknown>)[key]
+      if (raw == null || raw === '') {
+        row[key] = ''
+      } else {
+        const str = String(raw)
+        row[key] = /^[=+\-@\t\r]/.test(str) ? `\t${str}` : str
+      }
     }
     ws.addRow(row)
   }

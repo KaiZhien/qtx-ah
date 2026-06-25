@@ -75,8 +75,10 @@ export async function GET(req: NextRequest) {
       .map((k) => {
         const v = (d as Record<string, unknown>)[k]
         if (v == null) return ''
-        const str = String(v)
-        return str.includes(',') || str.includes('"') || str.includes('\n')
+        let str = String(v)
+        // Prefix formula-injection characters so spreadsheet apps don't execute them
+        if (/^[=+\-@\t\r]/.test(str)) str = `\t${str}`
+        return str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\t')
           ? `"${str.replace(/"/g, '""')}"`
           : str
       })
