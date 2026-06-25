@@ -1,4 +1,6 @@
 import { previewCsvRows } from '@/lib/services/importService'
+import { previewExcelBuffer } from '@/lib/services/excelImportService'
+import ExcelJS from 'exceljs'
 
 const VALID_STATUSES = ['Stock', 'In Use', 'Repair']
 const VALID_PHASES = ['Production', 'Validation', 'Rework']
@@ -136,5 +138,119 @@ describe('previewCsvRows — mixed batches', () => {
     expect(rows[0].valid).toBe(true)
     expect(rows[1].valid).toBe(false)
     expect(rows[2].valid).toBe(true)
+  })
+})
+
+// ─── Excel import path ────────────────────────────────────────────────────────
+
+const VS = ['Stock', 'In Use', 'Repair', 'Shipped']
+const VP = ['Production', 'Validation', 'MP']
+
+const BASE_ROW = {
+  pcba_a_sn: 'EE-A-0001', pcba_a_hw_rev: 'V1', pcba_a_bom_rev: 'R1', pcba_a_fw_ver: '1.0',
+  status: 'Shipped', phase: 'MP',
+}
+
+async function makeWorkbook(dataRows: Record<string, string>[]): Promise<ArrayBuffer> {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Traceability')
+  // Header row — use unambiguous prefixed headers so resolveHeader can match them
+  ws.addRow([
+    'Device S/N\n设备序列号', 'Product Name\n产品名称', 'Model No.\n产品型号',
+    'PCBA-A S/N\n电源板序列号', 'PCBA-A HW Rev\n硬件版本', 'PCBA-A BOM Rev\nBOM版本', 'PCBA-A FW Ver\n固件版本',
+    'PCBA-B S/N\n控制板序列号', 'PCBA-B HW Rev\n硬件版本', 'PCBA-B BOM Rev\nBOM版本', 'PCBA-B FW Ver\n固件版本',
+    'Screen Model\n屏幕型号', 'HMI Ver\nHMI软件版本',
+    'Build Date\n生产日期', 'Ship Date\n出货日期', 'Qty\n数量',
+    'Destination\n目的地', 'Customer\n客户',
+    'Status\n状态', 'Phase\n阶段', 'Remarks\n备注',
+  ])
+  // Data rows — order matches header
+  for (const row of dataRows) {
+    ws.addRow([
+      row.device_sn ?? '', row.product_name ?? '', row.model_no ?? '',
+      row.pcba_a_sn ?? '', row.pcba_a_hw_rev ?? '', row.pcba_a_bom_rev ?? '', row.pcba_a_fw_ver ?? '',
+      row.pcba_b_sn ?? '', row.pcba_b_hw_rev ?? '', row.pcba_b_bom_rev ?? '', row.pcba_b_fw_ver ?? '',
+      row.screen_model ?? '', row.hmi_ver ?? '',
+      row.build_date ?? '', row.ship_date ?? '', row.qty ?? '',
+      row.destination ?? '', row.customer ?? '',
+      row.status ?? '', row.phase ?? '', row.remarks ?? '',
+    ])
+  }
+  const buf = await wb.xlsx.writeBuffer()
+  return buf as ArrayBuffer
+}
+
+describe('previewExcelBuffer', () => {
+  it('resolves combined bilingual headers', async () => {
+    const buf = await makeWorkbook([BASE_ROW])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(1)
+    expect(rows[0].parsed?.pcba_a_sn).toBe('EE-A-0001')
+  })
+
+  it('single row → 1 device row', async () => {
+    const buf = await makeWorkbook([BASE_ROW])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(1)
+    expect(rows[0].valid).toBe(true)
+    expect(rows[0].parsed?.qty).toBe(1)
+  })
+
+  it('range row → N device rows (lockstep)', async () => {
+    const rangeRow = {
+      ...BASE_ROW,
+      pcba_a_sn: 'EE-A-0001 to 0003',
+      pcba_b_sn: 'EE-B-0001 to 0003',
+      pcba_b_hw_rev: 'V1',
+      pcba_b_bom_rev: 'R1',
+      pcba_b_fw_ver: '1.0',
+    }
+    const buf = await makeWorkbook([rangeRow])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(3)
+    expect(rows.every((r) => r.valid)).toBe(true)
+    expect(rows[0].parsed?.pcba_a_sn).toBe('EE-A-0001')
+    expect(rows[0].parsed?.pcba_b_sn).toBe('EE-B-0001')
+    expect(rows[2].parsed?.pcba_a_sn).toBe('EE-A-0003')
+  })
+
+  it('"and" notation row → rejected', async () => {
+    const andRow = { ...BASE_ROW, pcba_a_sn: 'EE-A-0001 and EE-A-0003' }
+    const buf = await makeWorkbook([andRow])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(1)
+    expect(rows[0].valid).toBe(false)
+    expect(rows[0].errors.some((e) => e.includes('cannot be auto-expanded'))).toBe(true)
+  })
+
+  it('skips fully empty rows', async () => {
+    const buf = await makeWorkbook([BASE_ROW, {}, BASE_ROW])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(2)
+  })
+
+  it('invalid status → rejected', async () => {
+    const badStatusRow = { ...BASE_ROW, status: 'Unknown' }
+    const buf = await makeWorkbook([badStatusRow])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows[0].valid).toBe(false)
+    expect(rows[0].errors.some((e) => e.includes('Unknown'))).toBe(true)
+  })
+
+  it('15-unit range (real-world data)', async () => {
+    const rangeRow = {
+      ...BASE_ROW,
+      pcba_a_sn: 'EE-02A-2603-0001 to 0015',
+      pcba_b_sn: 'EE-01-B2020-002-A0001 to 0015',
+      pcba_b_hw_rev: 'V1',
+      pcba_b_bom_rev: 'R1',
+      pcba_b_fw_ver: '1.0',
+    }
+    const buf = await makeWorkbook([rangeRow])
+    const rows = await previewExcelBuffer(buf, VS, VP)
+    expect(rows.length).toBe(15)
+    expect(rows.every((r) => r.valid)).toBe(true)
+    expect(rows[14].parsed?.pcba_a_sn).toBe('EE-02A-2603-0015')
+    expect(rows[14].parsed?.pcba_b_sn).toBe('EE-01-B2020-002-A0015')
   })
 })
