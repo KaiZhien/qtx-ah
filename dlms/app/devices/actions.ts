@@ -1,7 +1,7 @@
 'use server'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices } from '@/lib/services/deviceService'
+import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices, getDeviceByPcbaSn } from '@/lib/services/deviceService'
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
@@ -41,10 +41,22 @@ export async function softDeleteAction(id: string) {
 }
 
 // Inline table create — does not redirect, returns the new row
-export async function createDeviceRowAction(input: DeviceInput): Promise<{ id: string } | { error: string }> {
+export async function createDeviceRowAction(
+  input: DeviceInput
+): Promise<{ id: string } | { error: string; existingId?: string }> {
   try {
     const user = await getCurrentUser()
     if (!user || !can(user.role as Role, ACTIONS.CREATE_DEVICE)) return { error: 'Unauthorized' }
+
+    // Duplicate detection: check for an existing device with the same PCBA-A S/N
+    const existing = await getDeviceByPcbaSn(input.pcba_a_sn)
+    if (existing) {
+      return {
+        error: `A device with PCBA-A S/N "${input.pcba_a_sn}" already exists`,
+        existingId: existing.id,
+      }
+    }
+
     const device = await createDevice(input, user.id, user.role as Role)
     revalidatePath('/devices')
     return { id: device.id }
