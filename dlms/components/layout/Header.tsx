@@ -1,8 +1,8 @@
 import Link from 'next/link'
 import { Cpu } from 'lucide-react'
 import { RoleSwitcher } from './RoleSwitcher'
+import { MainNav } from './MainNav'
 import type { AppUser } from '@/lib/types'
-import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
 
 interface HeaderProps { user: AppUser | null }
@@ -17,34 +17,7 @@ export function Header({ user }: HeaderProps) {
           <span>DLMS</span>
           <span className="text-muted-foreground text-sm font-normal">· QuantumTX</span>
         </Link>
-        <nav className="flex items-center gap-4 text-sm">
-          <Link href="/" className="text-muted-foreground hover:text-foreground transition-colors">Dashboard</Link>
-          <Link href="/devices" className="text-muted-foreground hover:text-foreground transition-colors">Devices</Link>
-          {can(role, ACTIONS.VIEW_ANALYTICS) && (
-            <Link href="/analytics" className="text-muted-foreground hover:text-foreground transition-colors">Analytics</Link>
-          )}
-          {can(role, ACTIONS.VIEW_ANALYTICS) && (
-            <Link href="/traceability" className="text-muted-foreground hover:text-foreground transition-colors">Traceability</Link>
-          )}
-          {can(role, ACTIONS.IMPORT_DATA) && (
-            <Link href="/import" className="text-muted-foreground hover:text-foreground transition-colors">Import</Link>
-          )}
-          {can(role, ACTIONS.CONFIRM_DRAFT) && (
-            <Link href="/drafts" className="text-muted-foreground hover:text-foreground transition-colors">Drafts</Link>
-          )}
-          {can(role, ACTIONS.MANAGE_USERS) && (
-            <Link href="/admin/audit" className="text-muted-foreground hover:text-foreground transition-colors">Admin</Link>
-          )}
-          {can(role, ACTIONS.MANAGE_USERS) && (
-            <Link href="/admin/subscribers" className="text-muted-foreground hover:text-foreground transition-colors">Subscribers</Link>
-          )}
-          {can(role, ACTIONS.MANAGE_USERS) && (
-            <Link href="/admin/users" className="text-muted-foreground hover:text-foreground transition-colors">Users</Link>
-          )}
-          {can(role, ACTIONS.MANAGE_VOCABULARIES) && (
-            <Link href="/admin/vocabularies" className="text-muted-foreground hover:text-foreground transition-colors">Vocabularies</Link>
-          )}
-        </nav>
+        <MainNav role={role} />
         <div className="ml-auto flex items-center gap-3">
           {user && (
             <span className="text-xs text-muted-foreground hidden sm:inline">{user.email} · {user.role}</span>
