@@ -31,6 +31,12 @@ describe('viewer permissions', () => {
   it('cannot manage users', () => {
     expect(can('viewer', ACTIONS.MANAGE_USERS)).toBe(false)
   })
+  it('cannot assign device', () => {
+    expect(can('viewer', ACTIONS.ASSIGN_DEVICE)).toBe(false)
+  })
+  it('cannot log service event', () => {
+    expect(can('viewer', ACTIONS.LOG_SERVICE_EVENT)).toBe(false)
+  })
 })
 
 describe('engineer permissions', () => {
@@ -64,6 +70,12 @@ describe('engineer permissions', () => {
   it('cannot view full audit log (cross-system)', () => {
     expect(can('engineer', ACTIONS.VIEW_FULL_AUDIT_LOG)).toBe(false)
   })
+  it('can assign device', () => {
+    expect(can('engineer', ACTIONS.ASSIGN_DEVICE)).toBe(true)
+  })
+  it('can log service event', () => {
+    expect(can('engineer', ACTIONS.LOG_SERVICE_EVENT)).toBe(true)
+  })
 })
 
 describe('admin permissions', () => {
@@ -94,5 +106,35 @@ describe('VIEW_ANALYTICS permission', () => {
   })
   it('system cannot view_analytics', () => {
     expect(can('system', ACTIONS.VIEW_ANALYTICS)).toBe(false)
+  })
+})
+
+describe('ASSIGN_DEVICE permission', () => {
+  it('viewer cannot assign_device', () => {
+    expect(can('viewer', ACTIONS.ASSIGN_DEVICE)).toBe(false)
+  })
+  it('engineer can assign_device', () => {
+    expect(can('engineer', ACTIONS.ASSIGN_DEVICE)).toBe(true)
+  })
+  it('admin can assign_device', () => {
+    expect(can('admin', ACTIONS.ASSIGN_DEVICE)).toBe(true)
+  })
+  it('system cannot assign_device', () => {
+    expect(can('system', ACTIONS.ASSIGN_DEVICE)).toBe(false)
+  })
+})
+
+describe('LOG_SERVICE_EVENT permission', () => {
+  it('viewer cannot log_service_event', () => {
+    expect(can('viewer', ACTIONS.LOG_SERVICE_EVENT)).toBe(false)
+  })
+  it('engineer can log_service_event', () => {
+    expect(can('engineer', ACTIONS.LOG_SERVICE_EVENT)).toBe(true)
+  })
+  it('admin can log_service_event', () => {
+    expect(can('admin', ACTIONS.LOG_SERVICE_EVENT)).toBe(true)
+  })
+  it('system cannot log_service_event', () => {
+    expect(can('system', ACTIONS.LOG_SERVICE_EVENT)).toBe(false)
   })
 })
