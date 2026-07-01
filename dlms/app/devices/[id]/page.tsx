@@ -17,14 +17,22 @@ import { getPredecessor, getSuccessor } from '@/lib/services/successionService'
 import { LinkReplacementForm } from './LinkReplacementForm'
 import { ComponentsTab } from '@/components/device/ComponentsTab'
 import { ChangeHistoryTab } from '@/components/device/ChangeHistoryTab'
+import { AssignmentCard } from '@/components/device/AssignmentCard'
+import { ServiceLogTab } from '@/components/device/ServiceLogTab'
+import { listAssignees } from '@/lib/services/assignmentService'
+import { listServiceEvents } from '@/lib/services/serviceEventService'
+import { listUsers } from '@/lib/services/userService'
 
 interface PageProps { params: { id: string } }
 
 export default async function DeviceDetailPage({ params }: PageProps) {
   const user = await requireAuth()
-  const [device, history] = await Promise.all([
+  const [device, history, assignees, serviceEvents, users] = await Promise.all([
     getDevice(params.id),
     getDeviceHistory(params.id),
+    listAssignees(params.id),
+    listServiceEvents(params.id),
+    listUsers(),
   ])
 
   if (!device || device.deleted_at) notFound()
@@ -36,6 +44,8 @@ export default async function DeviceDetailPage({ params }: PageProps) {
   ])
 
   const role = (user?.role ?? 'viewer') as Role
+  const canAssign = can(role, ACTIONS.ASSIGN_DEVICE)
+  const canLog = can(role, ACTIONS.LOG_SERVICE_EVENT)
   const primaryId = device.device_sn || device.pcba_a_sn
 
   return (
@@ -70,6 +80,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="components">Components</TabsTrigger>
           <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
+          <TabsTrigger value="service">Service Log ({serviceEvents.length})</TabsTrigger>
         </TabsList>
 
         <TabsContent value="details" className="space-y-6 mt-4">
@@ -107,6 +118,13 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <p className="text-xs text-muted-foreground">
             Created {new Date(device.created_at).toLocaleString()} · Version {device.version}
           </p>
+
+          <AssignmentCard
+            deviceId={device.id}
+            initialAssignees={assignees}
+            allUsers={users}
+            canAssign={canAssign}
+          />
         </TabsContent>
 
         <TabsContent value="components">
@@ -115,6 +133,14 @@ export default async function DeviceDetailPage({ params }: PageProps) {
 
         <TabsContent value="history">
           <ChangeHistoryTab history={history} />
+        </TabsContent>
+
+        <TabsContent value="service">
+          <ServiceLogTab
+            deviceId={device.id}
+            initialEvents={serviceEvents}
+            canLog={canLog}
+          />
         </TabsContent>
       </Tabs>
     </div>

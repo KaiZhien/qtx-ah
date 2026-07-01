@@ -731,6 +731,13 @@ export function DeviceTable({
             </SelectContent>
           </Select>
           <Button
+            variant={searchParams.get('myQueue') === '1' ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => updateParam('myQueue', searchParams.get('myQueue') === '1' ? '' : '1')}
+          >
+            My Queue
+          </Button>
+          <Button
             variant={showFilters ? 'secondary' : 'outline'}
             size="sm"
             onClick={() => setShowFilters(v => !v)}
