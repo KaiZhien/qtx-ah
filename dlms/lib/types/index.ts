@@ -103,6 +103,15 @@ export type ListDevicesParams = {
   buildDateTo?: string
   shipDateFrom?: string
   shipDateTo?: string
+  // Component-revision filters (exact match). Used by the traceability drill-through.
+  pcba_a_hw_rev?: string
+  pcba_a_bom_rev?: string
+  pcba_a_fw_ver?: string
+  pcba_b_hw_rev?: string
+  pcba_b_bom_rev?: string
+  pcba_b_fw_ver?: string
+  screen_model?: string
+  hmi_ver?: string
   sort?: string
   dir?: string
   page?: number

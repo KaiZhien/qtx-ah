@@ -11,6 +11,10 @@ interface PageProps {
     q?: string; status?: string; phase?: string; customer?: string; model?: string
     buildFrom?: string; buildTo?: string; shipFrom?: string; shipTo?: string; page?: string
     sort?: string; dir?: string; batchCreated?: string
+    // Component-revision filters (traceability drill-through)
+    pcba_a_hw_rev?: string; pcba_a_bom_rev?: string; pcba_a_fw_ver?: string
+    pcba_b_hw_rev?: string; pcba_b_bom_rev?: string; pcba_b_fw_ver?: string
+    screen_model?: string;  hmi_ver?: string
   }
 }
 
@@ -30,6 +34,14 @@ export default async function DevicesPage({ searchParams }: PageProps) {
       buildDateTo: searchParams.buildTo,
       shipDateFrom: searchParams.shipFrom,
       shipDateTo: searchParams.shipTo,
+      pcba_a_hw_rev: searchParams.pcba_a_hw_rev,
+      pcba_a_bom_rev: searchParams.pcba_a_bom_rev,
+      pcba_a_fw_ver: searchParams.pcba_a_fw_ver,
+      pcba_b_hw_rev: searchParams.pcba_b_hw_rev,
+      pcba_b_bom_rev: searchParams.pcba_b_bom_rev,
+      pcba_b_fw_ver: searchParams.pcba_b_fw_ver,
+      screen_model: searchParams.screen_model,
+      hmi_ver: searchParams.hmi_ver,
       sort: searchParams.sort,
       dir: searchParams.dir,
       page,

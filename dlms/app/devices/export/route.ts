@@ -46,6 +46,23 @@ export async function GET(req: NextRequest) {
     if (status) query = query.eq('status', status)
     if (phase) query = query.eq('phase', phase)
     if (customer) query = query.ilike('customer', `%${customer}%`)
+    // Component-revision exact-match filters (traceability drill-through)
+    const pcbaAHwRev  = searchParams.get('pcba_a_hw_rev')  ?? ''
+    const pcbaABomRev = searchParams.get('pcba_a_bom_rev') ?? ''
+    const pcbaAFwVer  = searchParams.get('pcba_a_fw_ver')  ?? ''
+    const pcbaBHwRev  = searchParams.get('pcba_b_hw_rev')  ?? ''
+    const pcbaBBomRev = searchParams.get('pcba_b_bom_rev') ?? ''
+    const pcbaBFwVer  = searchParams.get('pcba_b_fw_ver')  ?? ''
+    const screenModel = searchParams.get('screen_model')   ?? ''
+    const hmiVer      = searchParams.get('hmi_ver')        ?? ''
+    if (pcbaAHwRev)  query = query.eq('pcba_a_hw_rev',  pcbaAHwRev)
+    if (pcbaABomRev) query = query.eq('pcba_a_bom_rev', pcbaABomRev)
+    if (pcbaAFwVer)  query = query.eq('pcba_a_fw_ver',  pcbaAFwVer)
+    if (pcbaBHwRev)  query = query.eq('pcba_b_hw_rev',  pcbaBHwRev)
+    if (pcbaBBomRev) query = query.eq('pcba_b_bom_rev', pcbaBBomRev)
+    if (pcbaBFwVer)  query = query.eq('pcba_b_fw_ver',  pcbaBFwVer)
+    if (screenModel) query = query.eq('screen_model',   screenModel)
+    if (hmiVer)      query = query.eq('hmi_ver',        hmiVer)
   }
 
   const { data, error } = await query.order('created_at', { ascending: false }).limit(10000)

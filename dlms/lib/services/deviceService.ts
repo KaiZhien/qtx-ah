@@ -10,6 +10,8 @@ import { normalizeSerial } from '@/lib/domain/normalize'
 import { isValidTransition } from '@/lib/domain/statusTransitions'
 import { AppError } from '@/lib/types'
 import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role } from '@/lib/types'
+import { isTraceableField, groupDevicesByDimension } from '@/lib/domain/componentTraceability'
+import type { TraceabilityGroup } from '@/lib/domain/componentTraceability'
 
 // NOTE: setSessionContext() was removed — it was a dead no-op stub that never
 // actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
@@ -20,6 +22,9 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   const {
     search, status, phase, customer, model,
     buildDateFrom, buildDateTo, shipDateFrom, shipDateTo,
+    pcba_a_hw_rev, pcba_a_bom_rev, pcba_a_fw_ver,
+    pcba_b_hw_rev, pcba_b_bom_rev, pcba_b_fw_ver,
+    screen_model, hmi_ver,
     sort, dir,
     page = 1, pageSize = 50, includeDeleted = false,
   } = params
@@ -58,6 +63,15 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   if (buildDateTo)   query = query.lte('build_date', buildDateTo)
   if (shipDateFrom)  query = query.gte('ship_date', shipDateFrom)
   if (shipDateTo)    query = query.lte('ship_date', shipDateTo)
+  // Component-revision exact-match filters (traceability drill-through)
+  if (pcba_a_hw_rev)  query = query.eq('pcba_a_hw_rev',  pcba_a_hw_rev)
+  if (pcba_a_bom_rev) query = query.eq('pcba_a_bom_rev', pcba_a_bom_rev)
+  if (pcba_a_fw_ver)  query = query.eq('pcba_a_fw_ver',  pcba_a_fw_ver)
+  if (pcba_b_hw_rev)  query = query.eq('pcba_b_hw_rev',  pcba_b_hw_rev)
+  if (pcba_b_bom_rev) query = query.eq('pcba_b_bom_rev', pcba_b_bom_rev)
+  if (pcba_b_fw_ver)  query = query.eq('pcba_b_fw_ver',  pcba_b_fw_ver)
+  if (screen_model)   query = query.eq('screen_model',   screen_model)
+  if (hmi_ver)        query = query.eq('hmi_ver',        hmi_ver)
 
   const SORTABLE = new Set([
     'device_sn', 'product_name', 'model_no', 'pcba_a_sn', 'pcba_b_sn',
@@ -293,6 +307,26 @@ export async function getDistinctCustomers(): Promise<string[]> {
     }
   }
   return result
+}
+
+/**
+ * Group all active devices by a component-revision field (traceability lookup).
+ * Returns one bucket per distinct revision value, sorted by device count desc.
+ * Throws a validation AppError for non-traceable fields (injection guard).
+ */
+export async function getComponentTraceability(field: string): Promise<TraceabilityGroup[]> {
+  if (!isTraceableField(field)) {
+    throw new AppError({ type: 'validation', message: `"${field}" is not a traceable component field`, errors: {} })
+  }
+  const supabase = createAdminClient()
+  const { data, error } = await supabase
+    .from('device')
+    .select(`id, qty, ${field}`)
+    .is('deleted_at', null)
+  if (error) throw new Error(error.message)
+  // Cast via unknown: the dynamic column select confuses Supabase's template-literal
+  // type inference; we only access id, qty, and field at runtime.
+  return groupDevicesByDimension((data ?? []) as unknown as DeviceRow[], field)
 }
 
 /**

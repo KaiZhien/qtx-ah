@@ -344,7 +344,11 @@ export function DeviceTable({
   const [rowError, setRowError] = useState<string | null>(null)
   const [showFilters, setShowFilters] = useState(
     !!(searchParams.get('model') || searchParams.get('buildFrom') ||
-       searchParams.get('buildTo') || searchParams.get('shipFrom') || searchParams.get('shipTo'))
+       searchParams.get('buildTo') || searchParams.get('shipFrom') || searchParams.get('shipTo') ||
+       searchParams.get('pcba_a_hw_rev') || searchParams.get('pcba_a_bom_rev') ||
+       searchParams.get('pcba_a_fw_ver') || searchParams.get('pcba_b_hw_rev') ||
+       searchParams.get('pcba_b_bom_rev') || searchParams.get('pcba_b_fw_ver') ||
+       searchParams.get('screen_model') || searchParams.get('hmi_ver'))
   )
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBulkStatus, setShowBulkStatus] = useState(false)
@@ -841,6 +845,78 @@ export function DeviceTable({
                 defaultValue={searchParams.get('shipTo') ?? ''}
                 onChange={(e) => updateParam('shipTo', e.target.value)}
                 className="h-8 w-36 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-A HW Rev</Label>
+              <Input
+                placeholder="e.g. 2.1"
+                defaultValue={searchParams.get('pcba_a_hw_rev') ?? ''}
+                onChange={(e) => updateParam('pcba_a_hw_rev', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-A BOM Rev</Label>
+              <Input
+                placeholder="e.g. A"
+                defaultValue={searchParams.get('pcba_a_bom_rev') ?? ''}
+                onChange={(e) => updateParam('pcba_a_bom_rev', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-A FW Ver</Label>
+              <Input
+                placeholder="e.g. 1.0.0"
+                defaultValue={searchParams.get('pcba_a_fw_ver') ?? ''}
+                onChange={(e) => updateParam('pcba_a_fw_ver', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-B HW Rev</Label>
+              <Input
+                placeholder="e.g. 1.0"
+                defaultValue={searchParams.get('pcba_b_hw_rev') ?? ''}
+                onChange={(e) => updateParam('pcba_b_hw_rev', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-B BOM Rev</Label>
+              <Input
+                placeholder="e.g. B"
+                defaultValue={searchParams.get('pcba_b_bom_rev') ?? ''}
+                onChange={(e) => updateParam('pcba_b_bom_rev', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">PCBA-B FW Ver</Label>
+              <Input
+                placeholder="e.g. 2.0.0"
+                defaultValue={searchParams.get('pcba_b_fw_ver') ?? ''}
+                onChange={(e) => updateParam('pcba_b_fw_ver', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">Screen Model</Label>
+              <Input
+                placeholder="e.g. 7in-LCD"
+                defaultValue={searchParams.get('screen_model') ?? ''}
+                onChange={(e) => updateParam('screen_model', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">HMI Ver</Label>
+              <Input
+                placeholder="e.g. v2"
+                defaultValue={searchParams.get('hmi_ver') ?? ''}
+                onChange={(e) => updateParam('hmi_ver', e.target.value)}
+                className="h-8 w-28 text-xs font-mono"
               />
             </div>
             <Button variant="ghost" size="sm" onClick={clearAllFilters} className="h-8 text-xs text-muted-foreground">

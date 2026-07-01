@@ -23,6 +23,9 @@ export function Header({ user }: HeaderProps) {
           {can(role, ACTIONS.VIEW_ANALYTICS) && (
             <Link href="/analytics" className="text-muted-foreground hover:text-foreground transition-colors">Analytics</Link>
           )}
+          {can(role, ACTIONS.VIEW_ANALYTICS) && (
+            <Link href="/traceability" className="text-muted-foreground hover:text-foreground transition-colors">Traceability</Link>
+          )}
           {can(role, ACTIONS.IMPORT_DATA) && (
             <Link href="/import" className="text-muted-foreground hover:text-foreground transition-colors">Import</Link>
           )}
