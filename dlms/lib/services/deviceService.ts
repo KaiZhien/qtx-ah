@@ -12,6 +12,7 @@ import { AppError } from '@/lib/types'
 import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role } from '@/lib/types'
 import { isTraceableField, groupDevicesByDimension } from '@/lib/domain/componentTraceability'
 import type { TraceabilityGroup } from '@/lib/domain/componentTraceability'
+import { getAssignedDeviceIds } from './assignmentService'
 
 // NOTE: setSessionContext() was removed — it was a dead no-op stub that never
 // actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
@@ -72,6 +73,12 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   if (pcba_b_fw_ver)  query = query.eq('pcba_b_fw_ver',  pcba_b_fw_ver)
   if (screen_model)   query = query.eq('screen_model',   screen_model)
   if (hmi_ver)        query = query.eq('hmi_ver',        hmi_ver)
+
+  if (params.myQueueUserId) {
+    const assignedIds = await getAssignedDeviceIds(params.myQueueUserId)
+    if (assignedIds.length === 0) return { rows: [], total: 0 }
+    query = query.in('id', assignedIds)
+  }
 
   const SORTABLE = new Set([
     'device_sn', 'product_name', 'model_no', 'pcba_a_sn', 'pcba_b_sn',
