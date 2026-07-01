@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { addServiceEventAction } from '@/app/devices/actions'
 import {
   groupServiceEventsByDate,
+  formatOccurredOn,
   type ServiceEventWithActor,
 } from '@/lib/domain/serviceEvents'
 
@@ -103,7 +104,7 @@ export function ServiceLogTab({ deviceId, initialEvents, canLog }: ServiceLogTab
               <div key={event.id} className="border rounded-md p-3 text-sm space-y-1 bg-background">
                 <p className="whitespace-pre-wrap">{event.description}</p>
                 <p className="text-xs text-muted-foreground">
-                  {event.actor_email ?? 'Unknown'} · {event.occurred_on}
+                  {event.actor_email ?? 'Unknown'} · {formatOccurredOn(event.occurred_on)}
                 </p>
               </div>
             ))}
