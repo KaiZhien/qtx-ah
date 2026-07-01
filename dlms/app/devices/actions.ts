@@ -2,6 +2,8 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createDevice, updateDevice, changeStatus, softDeleteDevice, listDevices, getDevice, getDeviceByPcbaSn } from '@/lib/services/deviceService'
+import { assignDevice, unassignDevice } from '@/lib/services/assignmentService'
+import { addServiceEvent } from '@/lib/services/serviceEventService'
 import { getCurrentUser } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
@@ -186,4 +188,46 @@ export async function exportDevicesAction(params: {
       .join(',')
   )
   return [headers, ...csvRows].join('\n')
+}
+
+export async function assignDeviceAction(
+  deviceId: string, userId: string
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.ASSIGN_DEVICE)) return { error: 'Unauthorized' }
+    await assignDevice(deviceId, userId, user.id, user.role as Role)
+    revalidatePath(`/devices/${deviceId}`)
+    return { ok: true }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Assign failed' }
+  }
+}
+
+export async function unassignDeviceAction(
+  deviceId: string, userId: string
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.ASSIGN_DEVICE)) return { error: 'Unauthorized' }
+    await unassignDevice(deviceId, userId, user.id, user.role as Role)
+    revalidatePath(`/devices/${deviceId}`)
+    return { ok: true }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Unassign failed' }
+  }
+}
+
+export async function addServiceEventAction(
+  deviceId: string, description: string, occurredOn: string
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.LOG_SERVICE_EVENT)) return { error: 'Unauthorized' }
+    await addServiceEvent({ deviceId, description, occurredOn }, user.id, user.role as Role)
+    revalidatePath(`/devices/${deviceId}`)
+    return { ok: true }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Save failed' }
+  }
 }
