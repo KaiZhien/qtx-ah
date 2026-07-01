@@ -2,7 +2,6 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { DeviceGroupSection } from '@/components/device/DeviceGroupSection'
 import { StatusBadge, PhaseBadge } from '@/components/device/DeviceStatusBadge'
 import { getDevice } from '@/lib/services/deviceService'
@@ -10,14 +9,14 @@ import { getDeviceHistory } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
 
 import { can, ACTIONS } from '@/lib/auth/permissions'
-import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
+import { GROUP_LABELS } from '@/lib/i18n/fields'
 import type { Role } from '@/lib/types'
-import { formatDistanceToNow } from 'date-fns'
-import { Edit, Trash2 } from 'lucide-react'
+import { Edit } from 'lucide-react'
 import { DeleteDeviceButton } from './DeleteDeviceButton'
 import { getPredecessor, getSuccessor } from '@/lib/services/successionService'
 import { LinkReplacementForm } from './LinkReplacementForm'
 import { ComponentsTab } from '@/components/device/ComponentsTab'
+import { ChangeHistoryTab } from '@/components/device/ChangeHistoryTab'
 
 interface PageProps { params: { id: string } }
 
@@ -114,45 +113,8 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <ComponentsTab device={device} history={history} />
         </TabsContent>
 
-        <TabsContent value="history" className="mt-4">
-          {history.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No change history yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {history.map((entry) => (
-                <div key={entry.id} className="border rounded-md p-3 space-y-1 text-sm">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge variant={entry.action === 'soft_delete' ? 'destructive' : 'outline'} className="text-xs">
-                      {entry.action}
-                    </Badge>
-                    <span className="text-muted-foreground">{entry.actor_email ?? 'System'}</span>
-                    <span
-                      className="text-xs text-muted-foreground tabular-nums"
-                      title={new Date(entry.occurred_at).toLocaleString()}
-                    >
-                      {formatDistanceToNow(new Date(entry.occurred_at), { addSuffix: true })}
-                    </span>
-                  </div>
-                  {entry.changed_columns.length > 0 && (
-                    <div className="text-xs space-y-0.5">
-                      {entry.changed_columns.map((col) => {
-                        const oldVal = (entry.old_values as Record<string, unknown> | null)?.[col]
-                        const newVal = (entry.new_values as Record<string, unknown>)[col]
-                        return (
-                          <div key={col} className="flex gap-2">
-                            <span className="font-medium w-32 shrink-0">{FIELD_LABELS[col]?.en ?? col}</span>
-                            <span className="text-red-600 line-through">{String(oldVal ?? '')}</span>
-                            <span className="text-muted-foreground">→</span>
-                            <span className="text-green-700">{String(newVal ?? '')}</span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        <TabsContent value="history">
+          <ChangeHistoryTab history={history} />
         </TabsContent>
       </Tabs>
     </div>
