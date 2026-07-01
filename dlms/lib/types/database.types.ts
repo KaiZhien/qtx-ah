@@ -234,6 +234,52 @@ export type Database = {
           },
         ]
       }
+      device_assignment: {
+        Row: {
+          assigned_at: string
+          assigned_by: string
+          device_id: string
+          id: string
+          user_id: string
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by: string
+          device_id: string
+          id?: string
+          user_id: string
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by?: string
+          device_id?: string
+          id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "device_assignment_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "app_user"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "device_assignment_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "device"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "device_assignment_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_user"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       device_filter_preset: {
         Row: {
           created_at: string
@@ -391,6 +437,48 @@ export type Database = {
           id?: string
         }
         Relationships: []
+      }
+      service_event: {
+        Row: {
+          created_at: string
+          created_by: string
+          description: string
+          device_id: string
+          id: string
+          occurred_on: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          description: string
+          device_id: string
+          id?: string
+          occurred_on?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          description?: string
+          device_id?: string
+          id?: string
+          occurred_on?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "service_event_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "app_user"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_event_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "device"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       status_option: {
         Row: {
