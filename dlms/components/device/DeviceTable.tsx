@@ -1074,7 +1074,29 @@ export function DeviceTable({
                   </Td>
                   <Td><StatusBadge status={device.status} /></Td>
                   <Td><PhaseBadge phase={device.phase} /></Td>
-                  <Td className="max-w-[200px] whitespace-pre-wrap">{n(device.remarks)}</Td>
+                  <Td className="max-w-[200px]">
+                    {inlineCell?.id === device.id && inlineCell.field === 'remarks' ? (
+                      <Textarea
+                        className="text-xs min-h-[3rem] w-full"
+                        value={inlineValue}
+                        onChange={(e) => setInlineValue(e.target.value)}
+                        onBlur={commitInlineEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitInlineEdit() }
+                          if (e.key === 'Escape') setInlineCell(null)
+                        }}
+                        autoFocus
+                        disabled={inlineSaving}
+                      />
+                    ) : (
+                      <span
+                        className={`whitespace-pre-wrap ${canEdit ? 'cursor-pointer hover:bg-muted/60 rounded px-0.5 -mx-0.5' : ''}`}
+                        onDoubleClick={() => canEdit && startInlineEdit(device, 'remarks')}
+                      >
+                        {n(device.remarks)}
+                      </span>
+                    )}
+                  </Td>
                   {canEdit && (
                     <Td>
                       <button
