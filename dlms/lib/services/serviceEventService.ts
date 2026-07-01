@@ -42,6 +42,9 @@ export async function addServiceEvent(
   if (trimmed.length > 2000) {
     throw new AppError({ type: 'validation', message: 'Description must be 2000 characters or fewer', errors: { description: ['Description must be 2000 characters or fewer'] } })
   }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) {
+    throw new AppError({ type: 'validation', message: 'occurredOn must be YYYY-MM-DD', errors: { occurredOn: ['Must be a valid date in YYYY-MM-DD format'] } })
+  }
 
   const supabase = createAdminClient()
   const { data, error } = await (supabase.from('service_event') as any)
