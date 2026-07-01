@@ -17,6 +17,7 @@ import { Edit, Trash2 } from 'lucide-react'
 import { DeleteDeviceButton } from './DeleteDeviceButton'
 import { getPredecessor, getSuccessor } from '@/lib/services/successionService'
 import { LinkReplacementForm } from './LinkReplacementForm'
+import { ComponentsTab } from '@/components/device/ComponentsTab'
 
 interface PageProps { params: { id: string } }
 
@@ -68,6 +69,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
       <Tabs defaultValue="details">
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="components">Components</TabsTrigger>
           <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
         </TabsList>
 
@@ -106,6 +108,10 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <p className="text-xs text-muted-foreground">
             Created {new Date(device.created_at).toLocaleString()} · Version {device.version}
           </p>
+        </TabsContent>
+
+        <TabsContent value="components">
+          <ComponentsTab device={device} history={history} />
         </TabsContent>
 
         <TabsContent value="history" className="mt-4">
