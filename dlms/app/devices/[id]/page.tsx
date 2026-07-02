@@ -4,6 +4,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { DeviceGroupSection } from '@/components/device/DeviceGroupSection'
 import { StatusBadge, PhaseBadge } from '@/components/device/DeviceStatusBadge'
+import { Badge } from '@/components/ui/badge'
+import { serviceStatus } from '@/lib/domain/serviceSchedule'
+import { formatOccurredOn } from '@/lib/domain/serviceEvents'
 import { getDevice } from '@/lib/services/deviceService'
 import { getDeviceHistory } from '@/lib/services/auditService'
 import { requireAuth } from '@/lib/auth/session'
@@ -47,6 +50,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
   const canAssign = can(role, ACTIONS.ASSIGN_DEVICE)
   const canLog = can(role, ACTIONS.LOG_SERVICE_EVENT)
   const primaryId = device.device_sn || device.pcba_a_sn
+  const svc = serviceStatus(serviceEvents[0]?.occurred_on ?? null, device.ship_date)
 
   return (
     <div className="space-y-6">
@@ -57,6 +61,11 @@ export default async function DeviceDetailPage({ params }: PageProps) {
             <h1 className="text-xl font-bold font-mono">{primaryId}</h1>
             <StatusBadge status={device.status} />
             <PhaseBadge phase={device.phase} />
+            {svc.overdue ? (
+              <Badge variant="destructive">Overdue for service</Badge>
+            ) : svc.baselineDate ? (
+              <Badge variant="gray">Last serviced {formatOccurredOn(svc.baselineDate)}</Badge>
+            ) : null}
           </div>
           {device.customer && (
             <p className="text-sm text-muted-foreground mt-1">{device.customer}</p>

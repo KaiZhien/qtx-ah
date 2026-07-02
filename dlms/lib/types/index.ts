@@ -120,6 +120,7 @@ export type ListDevicesParams = {
   pageSize?: number
   includeDeleted?: boolean
   myQueueUserId?: string   // when set, filter to devices assigned to this user
+  serviceOverdue?: boolean // when set, filter to devices overdue for a service event
 }
 
 export type AuditEntry = {

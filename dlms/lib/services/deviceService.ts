@@ -13,6 +13,7 @@ import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role } fro
 import { isTraceableField, groupDevicesByDimension } from '@/lib/domain/componentTraceability'
 import type { TraceabilityGroup } from '@/lib/domain/componentTraceability'
 import { getAssignedDeviceIds } from './assignmentService'
+import { getOverdueServiceDeviceIds } from './serviceScheduleService'
 
 // NOTE: setSessionContext() was removed — it was a dead no-op stub that never
 // actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
@@ -74,10 +75,19 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
   if (screen_model)   query = query.eq('screen_model',   screen_model)
   if (hmi_ver)        query = query.eq('hmi_ver',        hmi_ver)
 
-  if (params.myQueueUserId) {
-    const assignedIds = await getAssignedDeviceIds(params.myQueueUserId)
-    if (assignedIds.length === 0) return { rows: [], total: 0 }
-    query = query.in('id', assignedIds)
+  if (params.myQueueUserId || params.serviceOverdue) {
+    let ids: string[] | null = null
+
+    if (params.myQueueUserId) {
+      ids = await getAssignedDeviceIds(params.myQueueUserId)
+    }
+    if (params.serviceOverdue) {
+      const overdueIds = await getOverdueServiceDeviceIds()
+      ids = ids ? ids.filter((id) => overdueIds.includes(id)) : overdueIds
+    }
+
+    if (!ids || ids.length === 0) return { rows: [], total: 0 }
+    query = query.in('id', ids)
   }
 
   const SORTABLE = new Set([

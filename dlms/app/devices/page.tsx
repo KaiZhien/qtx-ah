@@ -1,10 +1,12 @@
 import { Suspense } from 'react'
 import { DeviceTable } from '@/components/device/DeviceTable'
 import { listDevices, getDistinctCustomers, getExpiringWarrantyCount } from '@/lib/services/deviceService'
+import { getOverdueServiceCount } from '@/lib/services/serviceScheduleService'
 import { getStatuses, getPhases } from '@/lib/services/vocabularyService'
 import { requireAuth } from '@/lib/auth/session'
 import type { Role } from '@/lib/types'
 import { WarrantyBanner } from '@/components/device/WarrantyBanner'
+import { ServiceOverdueBanner } from '@/components/device/ServiceOverdueBanner'
 
 interface PageProps {
   searchParams: {
@@ -16,6 +18,7 @@ interface PageProps {
     pcba_b_hw_rev?: string; pcba_b_bom_rev?: string; pcba_b_fw_ver?: string
     screen_model?: string;  hmi_ver?: string
     myQueue?: string
+    serviceOverdue?: string
   }
 }
 
@@ -24,7 +27,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
   const page = Number(searchParams.page ?? '1')
   const pageSize = 50
 
-  const [{ rows, total }, statuses, phases, customers, expiringCount] = await Promise.all([
+  const [{ rows, total }, statuses, phases, customers, expiringCount, overdueCount] = await Promise.all([
     listDevices({
       search: searchParams.q,
       status: searchParams.status,
@@ -46,6 +49,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
       sort: searchParams.sort,
       dir: searchParams.dir,
       myQueueUserId: searchParams.myQueue === '1' ? user.id : undefined,
+      serviceOverdue: searchParams.serviceOverdue === '1',
       page,
       pageSize,
     }),
@@ -53,6 +57,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
     getPhases(),
     getDistinctCustomers(),
     getExpiringWarrantyCount(),
+    getOverdueServiceCount(),
   ])
 
   const batchCreated = searchParams.batchCreated ? Number(searchParams.batchCreated) : null
@@ -66,6 +71,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
         </div>
       )}
       <WarrantyBanner count={expiringCount} />
+      <ServiceOverdueBanner count={overdueCount} />
       <DeviceTable
         devices={rows}
         total={total}
