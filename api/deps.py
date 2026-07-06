@@ -26,21 +26,10 @@ def verify_api_key(request: Request) -> None:
 
 
 def _get_model_files() -> dict:
-    """Return model file paths for serving.
-
-    If QTX_USE_RAISE_AUGMENTED=1 and the augmented regression model exists,
-    use it in place of the baseline. Falls back to baseline if file is absent.
-    """
-    use_augmented = os.environ.get("QTX_USE_RAISE_AUGMENTED", "0") == "1"
-    augmented_path = MODELS_DIR / "regression_xgb_raise_augmented.joblib"
-    regression_path = (
-        augmented_path
-        if use_augmented and augmented_path.exists()
-        else MODELS_DIR / "regression_xgb.joblib"
-    )
+    """Return model file paths for serving."""
     return {
         "classifier": MODELS_DIR / "classifier_xgb.joblib",
-        "regression": regression_path,
+        "regression": MODELS_DIR / "regression_xgb.joblib",
         "dropout":    MODELS_DIR / "dropout_xgb.joblib",
         "dosage":     MODELS_DIR / "dosage_frequency.joblib",
     }

@@ -39,7 +39,7 @@ export const GROUP_LABELS: Array<{
     key: 'shipment',
     en: 'Shipment Info',
     zh: '出货信息',
-    fields: ['build_date', 'ship_date', 'qty', 'destination', 'customer'],
+    fields: ['build_date', 'ship_date', 'next_service_date', 'qty', 'destination', 'customer'],
   },
   {
     key: 'status_notes',
@@ -65,6 +65,7 @@ export const FIELD_LABELS: Record<string, BilingualLabel> = {
   hmi_ver:        { en: 'HMI Ver',      zh: 'HMI软件版本' },
   build_date:     { en: 'Build Date',   zh: '生产日期' },
   ship_date:       { en: 'Ship Date',       zh: '出货日期' },
+  next_service_date: { en: 'Next Service Date', zh: '下次维护日期' },
   warranty_expiry: { en: 'Warranty Expiry', zh: '保修到期' },
   qty:             { en: 'Qty',             zh: '数量' },
   destination:    { en: 'Destination',  zh: '目的地' },

@@ -9,14 +9,16 @@ const DEV_COOKIE = 'dlms-dev-user-id'
 
 /**
  * Get the currently authenticated user.
- * In dev mode (NEXT_PUBLIC_DEV_MODE=true), reads the demo user from a cookie
- * and looks them up in app_user. Falls back to Supabase Auth in all other cases.
+ * In dev mode (DLMS_DEV_MODE=true, non-production only), reads the demo user from a
+ * cookie and looks them up in app_user. Falls back to Supabase Auth in all other cases.
+ * DLMS_DEV_MODE is a NON-public server-only var, so it can never be enabled from the
+ * client bundle, and the NODE_ENV guard ensures it is inert in production builds.
  */
 export async function getCurrentUser(): Promise<AppUser | null> {
   const supabase = createClient()
 
-  // Dev mode: cookie-based role switching for demos
-  if (process.env.NEXT_PUBLIC_DEV_MODE === 'true') {
+  // Dev mode: cookie-based role switching for demos (dev-only, server-only)
+  if (process.env.DLMS_DEV_MODE === 'true' && process.env.NODE_ENV !== 'production') {
     const cookieStore = cookies()
     const devUserId = cookieStore.get(DEV_COOKIE)?.value
     if (devUserId) {

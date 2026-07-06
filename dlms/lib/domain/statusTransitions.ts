@@ -39,13 +39,13 @@ const ALL_KNOWN_STATUSES = Object.keys(TRANSITIONS)
 
 /**
  * Returns true if the transition from → to is permitted.
- * Also returns true if `from` is an unknown status code,
- * so devices with unrecognised statuses are never blocked.
+ * Fails closed: an unknown source status code has no allowed transitions,
+ * so it returns false rather than silently permitting any change.
  */
 export function isValidTransition(from: string, to: string): boolean {
   if (!(from in TRANSITIONS)) {
-    // Unknown source status — allow any transition to avoid blocking
-    return true
+    // Unknown source status — fail closed (no allowed transitions)
+    return false
   }
   return TRANSITIONS[from].includes(to)
 }

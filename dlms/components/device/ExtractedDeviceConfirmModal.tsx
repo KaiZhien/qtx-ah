@@ -17,7 +17,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AlertCircle, AlertTriangle } from 'lucide-react'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { deviceSchema } from '@/lib/domain/validation'
-import { confirmInvoiceDeviceAction } from '@/app/drafts/upload/actions'
+import { confirmInvoiceDeviceAction, saveDraftForReviewAction } from '@/app/drafts/upload/actions'
 import { toast } from 'sonner'
 import type { DeviceInput, StatusOption, PhaseOption } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
@@ -35,6 +35,8 @@ interface ExtractedDeviceConfirmModalProps {
   onClose: () => void
   /** Optional callback after a device is successfully created. Receives the new device ID. */
   onSuccess?: (deviceId: string) => void
+  /** Optional callback after the extraction is saved as a pending_review draft (no device created). */
+  onSaved?: () => void
   fields: ExtractedFields
   statuses: StatusOption[]
   phases: PhaseOption[]
@@ -82,6 +84,7 @@ export function ExtractedDeviceConfirmModal({
   open,
   onClose,
   onSuccess,
+  onSaved,
   fields,
   statuses,
   phases,
@@ -145,6 +148,37 @@ export function ExtractedDeviceConfirmModal({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Confirm failed'
+      setSubmitError(msg)
+      toast.error(msg)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // Save the extraction as a pending_review draft (no device created).
+  // Uses the original extracted fields — the reviewer refines them later in /drafts.
+  async function handleSaveForReview() {
+    setIsSubmitting(true)
+    setSubmitError(null)
+    setExistingDeviceId(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const result = await saveDraftForReviewAction(formData, fileHash, fields)
+      if ('error' in result) {
+        setSubmitError(result.error)
+        toast.error(result.error)
+      } else {
+        toast.success('Saved for review')
+        if (onSaved) {
+          onSaved()
+        } else {
+          onClose()
+          router.push('/drafts')
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Save failed'
       setSubmitError(msg)
       toast.error(msg)
     } finally {
@@ -306,6 +340,9 @@ export function ExtractedDeviceConfirmModal({
           <DialogFooter className="pt-2">
             <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
               Cancel
+            </Button>
+            <Button type="button" variant="secondary" onClick={handleSaveForReview} disabled={isSubmitting}>
+              {isSubmitting ? 'Saving…' : 'Save for review'}
             </Button>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? 'Saving device...' : 'Confirm & Create Device'}

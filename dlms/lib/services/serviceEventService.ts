@@ -5,6 +5,7 @@
 
 import { createAdminClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
+import { parseSheetDate } from '@/lib/domain/normalize'
 import { AppError } from '@/lib/types'
 import type { ServiceEvent, Role } from '@/lib/types'
 import type { ServiceEventWithActor } from '@/lib/domain/serviceEvents'
@@ -42,8 +43,17 @@ export async function addServiceEvent(
   if (trimmed.length > 2000) {
     throw new AppError({ type: 'validation', message: 'Description must be 2000 characters or fewer', errors: { description: ['Description must be 2000 characters or fewer'] } })
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) {
-    throw new AppError({ type: 'validation', message: 'occurredOn must be YYYY-MM-DD', errors: { occurredOn: ['Must be a valid date in YYYY-MM-DD format'] } })
+  // Must be YYYY-MM-DD AND a real calendar date — rejects e.g. 2025-13-40 / 2025-02-30
+  let calendarValid = false
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) {
+    try {
+      calendarValid = parseSheetDate(input.occurredOn) === input.occurredOn
+    } catch {
+      calendarValid = false
+    }
+  }
+  if (!calendarValid) {
+    throw new AppError({ type: 'validation', message: 'occurredOn must be a valid date in YYYY-MM-DD format', errors: { occurredOn: ['Must be a valid date in YYYY-MM-DD format'] } })
   }
 
   const supabase = createAdminClient()

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getDraft } from '@/lib/services/draftService'
-import { requireAuth } from '@/lib/auth/session'
+import { requirePermission } from '@/lib/auth/session'
+import { ACTIONS } from '@/lib/auth/permissions'
 import { PromoteDraftButton } from './PromoteDraftButton'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,7 +10,7 @@ import { FIELD_LABELS } from '@/lib/i18n/fields'
 interface PageProps { params: { id: string } }
 
 export default async function DraftDetailPage({ params }: PageProps) {
-  await requireAuth()
+  await requirePermission(ACTIONS.CONFIRM_DRAFT)
   const draft = await getDraft(params.id)
   if (!draft) notFound()
 

@@ -30,6 +30,25 @@ export async function assignDevice(
     throw new AppError({ type: 'permission', message: 'You do not have permission to assign devices' })
   }
   const supabase = createAdminClient()
+
+  // Device must exist and not be soft-deleted
+  const { data: device, error: deviceErr } = await (supabase.from('device') as any)
+    .select('id, deleted_at')
+    .eq('id', deviceId)
+    .single()
+  if (deviceErr || !device || device.deleted_at) {
+    throw new AppError({ type: 'validation', message: 'Device not found or has been deleted', errors: {} })
+  }
+
+  // Target user must exist, be active, and be an assignable role (engineer or admin)
+  const { data: target, error: userErr } = await (supabase.from('app_user') as any)
+    .select('id, role, active')
+    .eq('id', userId)
+    .single()
+  if (userErr || !target || !target.active || !['engineer', 'admin'].includes(target.role)) {
+    throw new AppError({ type: 'validation', message: 'Target user must be an active engineer or admin', errors: {} })
+  }
+
   const { error } = await (supabase.from('device_assignment') as any)
     .upsert(
       { device_id: deviceId, user_id: userId, assigned_by: actorId },

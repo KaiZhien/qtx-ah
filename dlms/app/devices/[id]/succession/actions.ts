@@ -7,11 +7,12 @@ import type { Role } from '@/lib/types'
 export async function linkReplacementAction(
   oldId: string,
   newId: string,
+  version: number,
 ): Promise<{ ok: true } | { error: string }> {
   const user = await getCurrentUser()
   if (!user) return { error: 'Unauthorized' }
   try {
-    await linkReplacement(oldId, newId, user.id, user.role as Role)
+    await linkReplacement(oldId, newId, version, user.id, user.role as Role)
     revalidatePath(`/devices/${oldId}`)
     revalidatePath(`/devices/${newId}`)
     return { ok: true }

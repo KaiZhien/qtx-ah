@@ -34,7 +34,7 @@ _SYSTEM_PROMPT = (
     "Gait speed frailty threshold < 0.6 m/s; "
     "VAS pain MCID = 1.5–2 points (0–10 scale); "
     "SPPB MCID = 1 point. "
-    "Population-level response patterns (RAISE multi-centre validation, n=206, observational): "
+    "Population-level response patterns (RAISE 4-centre validation, n=162, observational): "
     "Frail patients (has_frailty=true or baseline SPPB ≤8) show ~5× greater SPPB improvement than higher-functioning patients — "
     "frame expectations accordingly and highlight even modest gains in this group as clinically meaningful. "
     "Diabetes (has_diabetes=true): diabetic patients showed significantly greater SPPB improvement (+1.25 pts, ANCOVA-adjusted p=0.015) "

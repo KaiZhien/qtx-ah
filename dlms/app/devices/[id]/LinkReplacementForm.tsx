@@ -5,14 +5,14 @@ import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
 import { linkReplacementAction } from './succession/actions'
 
-export function LinkReplacementForm({ deviceId }: { deviceId: string }) {
+export function LinkReplacementForm({ deviceId, version }: { deviceId: string; version: number }) {
   const [newId, setNewId] = useState('')
   const [saving, setSaving] = useState(false)
 
   async function handleLink() {
     if (!newId.trim()) return
     setSaving(true)
-    const result = await linkReplacementAction(deviceId, newId.trim())
+    const result = await linkReplacementAction(deviceId, newId.trim(), version)
     setSaving(false)
     if ('error' in result) {
       toast.error(result.error)

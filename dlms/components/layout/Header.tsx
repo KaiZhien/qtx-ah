@@ -22,7 +22,10 @@ export function Header({ user }: HeaderProps) {
           {user && (
             <span className="text-xs text-muted-foreground hidden sm:inline">{user.email} · {user.role}</span>
           )}
-          {process.env.NEXT_PUBLIC_DEV_MODE === 'true' && (
+          {/* dev-only + server-only: DLMS_DEV_MODE is a non-public var, readable here
+              because Header is a Server Component. The RoleSwitcher child only ever
+              renders in non-production dev demos. */}
+          {process.env.DLMS_DEV_MODE === 'true' && process.env.NODE_ENV !== 'production' && (
             <RoleSwitcher currentUserId={user?.id} currentRole={user?.role as Role | undefined} />
           )}
         </div>

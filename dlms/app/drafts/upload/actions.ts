@@ -161,3 +161,84 @@ export async function confirmInvoiceDeviceAction(
     return { error: msg }
   }
 }
+
+type SaveDraftResult =
+  | { id: string }
+  | { error: string }
+
+/**
+ * Save for review: upload the original invoice to private Storage and insert an
+ * extracted_device_draft row with status 'pending_review'. Unlike confirm, this
+ * does NOT create a device — the draft surfaces in /drafts for later human review.
+ */
+export async function saveDraftForReviewAction(
+  formData: FormData,
+  fileHash: string,
+  extractedFields: ExtractedFields,
+): Promise<SaveDraftResult> {
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.CREATE_DEVICE)) {
+    return { error: 'Unauthorized — engineer or admin role required' }
+  }
+
+  const file = formData.get('file') as File | null
+  if (!file) return { error: 'File missing from save request' }
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const supabase = createAdminClient()
+
+    // Derive extension from MIME (same mapping as confirm)
+    const extMap: Record<string, string> = {
+      'application/pdf': 'pdf',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/png': 'png',
+    }
+    const ext = extMap[file.type] ?? 'bin'
+    const year = new Date().getFullYear()
+    const storagePath = `${year}/${fileHash}.${ext}`
+
+    // Upload to the private invoices bucket
+    const { error: uploadError } = await supabase.storage
+      .from('invoices')
+      .upload(storagePath, buffer, {
+        contentType: file.type,
+        upsert: false,  // reject if already uploaded (idempotency)
+      })
+
+    if (uploadError && uploadError.message !== 'The resource already exists') {
+      return { error: `File upload failed: ${uploadError.message}` }
+    }
+
+    const sourceFilePath = `invoices/${storagePath}`
+
+    // Insert as a pending_review draft — no device created here.
+    // source_file_hash is UNIQUE → upsert makes re-saving the same file idempotent.
+    const { data, error } = await (supabase
+      .from('extracted_device_draft') as any)
+      .upsert(
+        {
+          source_file_path: sourceFilePath,
+          source_file_hash: fileHash,
+          status: 'pending_review',
+          extracted_payload: {
+            version: '1',
+            fields: extractedFields,
+          },
+          extraction_model_version: 'claude-sonnet-4-6',
+        },
+        { onConflict: 'source_file_hash', ignoreDuplicates: false }
+      )
+      .select('id')
+      .single()
+
+    if (error) return { error: `Save failed: ${error.message}` }
+
+    revalidatePath('/drafts')
+    return { id: (data as { id: string }).id }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Save failed'
+    return { error: msg }
+  }
+}
