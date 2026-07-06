@@ -25,7 +25,7 @@ interface DeviceFormProps {
 }
 
 const TEXTAREA_FIELDS = new Set(['remarks'])
-const DATE_FIELDS = new Set(['build_date', 'ship_date'])
+const DATE_FIELDS = new Set(['build_date', 'ship_date', 'next_service_date'])
 
 export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitting, conflictError, submitLabel, onPcbaSnChange }: DeviceFormProps) {
   const form = useForm<DeviceInput>({
@@ -46,6 +46,7 @@ export function DeviceForm({ initialData, statuses, phases, onSubmit, isSubmitti
       hmi_ver: initialData.hmi_ver,
       build_date: initialData.build_date,
       ship_date: initialData.ship_date,
+      next_service_date: initialData.next_service_date,
       qty: initialData.qty,
       destination: initialData.destination,
       customer: initialData.customer,

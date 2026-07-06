@@ -40,6 +40,15 @@ export const deviceSchema = z.object({
     if (!v || v.trim() === '') return null
     return parseSheetDate(v)
   }),
+  next_service_date: z.string().nullable().optional().superRefine((v, ctx) => {
+    if (!v || v.trim() === '') return
+    try { parseSheetDate(v) } catch (e) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: (e as Error).message })
+    }
+  }).transform((v) => {
+    if (!v || v.trim() === '') return null
+    return parseSheetDate(v)
+  }),
   qty:           z.union([z.number().int().nonnegative(), z.string(), z.null(), z.undefined()])
     .transform((v) => coerceQty(v as string | number | null | undefined))
     .optional()

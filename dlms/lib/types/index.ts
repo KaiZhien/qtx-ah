@@ -27,6 +27,7 @@ export type DeviceInput = {
   hmi_ver?: string | null
   build_date?: string | null
   ship_date?: string | null
+  next_service_date?: string | null
   qty?: number | null
   destination?: string | null
   customer?: string | null
@@ -41,6 +42,13 @@ export type ImportPreviewRow = {
   valid: boolean
   errors: string[]
   parsed?: DeviceInput
+}
+
+export type ImportResult = {
+  imported: number
+  skippedInvalid: number
+  skippedDuplicate: number
+  failed: { rowIndex: number; error: string }[]
 }
 
 export type DeviceStats = {

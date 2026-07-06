@@ -30,12 +30,19 @@ interface PageProps { params: { id: string } }
 
 export default async function DeviceDetailPage({ params }: PageProps) {
   const user = await requireAuth()
+  const role = (user?.role ?? 'viewer') as Role
+  const canViewHistory = can(role, ACTIONS.VIEW_AUDIT_LOG)
+  const canAssign = can(role, ACTIONS.ASSIGN_DEVICE)
+  const canLog = can(role, ACTIONS.LOG_SERVICE_EVENT)
+
+  // Only fetch the change-history and the staff directory for roles allowed to see
+  // them — viewers must not receive audit history or the full user list.
   const [device, history, assignees, serviceEvents, users] = await Promise.all([
     getDevice(params.id),
-    getDeviceHistory(params.id),
+    canViewHistory ? getDeviceHistory(params.id) : Promise.resolve([]),
     listAssignees(params.id),
     listServiceEvents(params.id),
-    listUsers(),
+    canAssign ? listUsers() : Promise.resolve([]),
   ])
 
   if (!device || device.deleted_at) notFound()
@@ -46,9 +53,6 @@ export default async function DeviceDetailPage({ params }: PageProps) {
     replacedById ? getSuccessor(replacedById) : Promise.resolve(null),
   ])
 
-  const role = (user?.role ?? 'viewer') as Role
-  const canAssign = can(role, ACTIONS.ASSIGN_DEVICE)
-  const canLog = can(role, ACTIONS.LOG_SERVICE_EVENT)
   const primaryId = device.device_sn || device.pcba_a_sn
   const svc = serviceStatus(serviceEvents[0]?.occurred_on ?? null, device.ship_date)
 
@@ -88,7 +92,9 @@ export default async function DeviceDetailPage({ params }: PageProps) {
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="components">Components</TabsTrigger>
-          <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
+          {canViewHistory && (
+            <TabsTrigger value="history">Change History ({history.length})</TabsTrigger>
+          )}
           <TabsTrigger value="service">Service Log ({serviceEvents.length})</TabsTrigger>
         </TabsList>
 
@@ -119,7 +125,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
                 </div>
               )}
               {!successor && can(role, ACTIONS.EDIT_DEVICE) && (
-                <LinkReplacementForm deviceId={device.id} />
+                <LinkReplacementForm deviceId={device.id} version={device.version} />
               )}
             </div>
           )}
@@ -131,18 +137,20 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <AssignmentCard
             deviceId={device.id}
             initialAssignees={assignees}
-            allUsers={users}
+            allUsers={canAssign ? users : []}
             canAssign={canAssign}
           />
         </TabsContent>
 
         <TabsContent value="components">
-          <ComponentsTab device={device} history={history} />
+          <ComponentsTab device={device} history={history} canViewHistory={canViewHistory} />
         </TabsContent>
 
-        <TabsContent value="history">
-          <ChangeHistoryTab history={history} />
-        </TabsContent>
+        {canViewHistory && (
+          <TabsContent value="history">
+            <ChangeHistoryTab history={history} />
+          </TabsContent>
+        )}
 
         <TabsContent value="service">
           <ServiceLogTab

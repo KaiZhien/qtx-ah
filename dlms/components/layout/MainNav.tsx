@@ -53,6 +53,7 @@ function buildNav(role: Role): NavEntry[] {
       group: {
         label: 'Data',
         items: [
+          { label: 'New device', href: '/devices/new', gate: () => can(role, ACTIONS.CREATE_DEVICE) },
           { label: 'Import', href: '/import', gate: () => can(role, ACTIONS.IMPORT_DATA) },
           { label: 'Drafts', href: '/drafts', gate: () => can(role, ACTIONS.CONFIRM_DRAFT) },
         ],

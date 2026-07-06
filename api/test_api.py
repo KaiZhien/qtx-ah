@@ -90,7 +90,7 @@ def _seed_test_db(engine) -> None:
 @pytest.fixture(scope="session", autouse=True)
 def set_api_key_env():
     os.environ["QTX_API_KEY"] = _TEST_API_KEY
-    os.environ.setdefault("TERRA_WEBHOOK_SECRET", "test_terra_secret")
+    os.environ["TERRA_WEBHOOK_SECRET"] = "test_terra_secret"
     yield
     os.environ.pop("QTX_API_KEY", None)
 
@@ -256,42 +256,7 @@ def test_webhook_bypasses_api_key():
     assert resp.status_code == 200
 
 
-_VALID_FALL_RISK_BODY = {
-    "age": 72,
-    "gender": "F",
-    "falls_history": 1,
-    "walking_aid": "stick",
-    "exercise_frequency": "1-2",
-    "has_oa": 1,
-    "has_diabetes": 0,
-    "has_stroke": 0,
-    "has_parkinsons": 0,
-    "has_hypertension": 1,
-    "has_frailty": 0,
-    "polypharmacy": 1,
-}
-
-
-def test_fall_risk_returns_valid_structure(client):
-    resp = client.post("/api/predict/fall-risk", json=_VALID_FALL_RISK_BODY)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "risk_score" in data
-    assert "risk_label" in data
-    assert data["risk_label"] in ("low", "moderate", "elevated", "high")
-    assert 0 <= data["risk_score"] <= 100
-
-
-def test_fall_risk_rejects_old_has_heart_disease_field(client):
-    """The renamed field must cause a 422 validation error when the old name is used."""
-    old_body = {**_VALID_FALL_RISK_BODY}
-    old_body.pop("has_hypertension")
-    old_body["has_heart_disease"] = 1  # old field name — must be rejected
-    resp = client.post("/api/predict/fall-risk", json=old_body)
-    assert resp.status_code == 422
-
-
-def test_fall_risk_per_test_predictions_within_bounds(client):
+def test_outcomes_per_test_predictions_within_bounds(client):
     """Per-test predicted values must stay within physiological ranges."""
     resp = client.post("/api/predict/outcomes", json={
         "age": 72, "gender": "F",

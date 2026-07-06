@@ -24,9 +24,10 @@ const SECTION_COLORS: Record<ComponentGroupKey, { header: string; border: string
 interface ComponentsTabProps {
   device: DeviceRow
   history: AuditEntry[]
+  canViewHistory: boolean
 }
 
-export function ComponentsTab({ device, history }: ComponentsTabProps) {
+export function ComponentsTab({ device, history, canViewHistory }: ComponentsTabProps) {
   const timeline = buildComponentTimeline(history, device)
 
   return (
@@ -45,7 +46,13 @@ export function ComponentsTab({ device, history }: ComponentsTabProps) {
               {/* Current config */}
               <DeviceGroupSection groupKey={group.groupKey} device={device} showEmpty={false} />
 
-              {/* Timeline */}
+              {/* Timeline — audit history is gated; viewers see a restriction note
+                  instead of a misleading "no changes recorded" empty state. */}
+              {!canViewHistory ? (
+                <p className="text-xs text-muted-foreground italic">
+                  Change history is restricted to engineers and admins.
+                </p>
+              ) : (
               <div>
                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
                   Change History
@@ -107,6 +114,7 @@ export function ComponentsTab({ device, history }: ComponentsTabProps) {
                   </div>
                 )}
               </div>
+              )}
             </div>
           </div>
         )

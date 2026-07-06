@@ -22,6 +22,7 @@ type QueueItem = {
   fields?: ExtractedFields
   fileHash?: string
   deviceId?: string
+  savedDraft?: boolean
 }
 
 const ACCEPTED_TYPES = '.pdf,.jpg,.jpeg,.png'
@@ -133,6 +134,15 @@ export function UploadClient({ statuses, phases }: UploadClientProps) {
     })
   }
 
+  function handleSavedForReview(id: string) {
+    setQueue(q => {
+      const updated = q.map(i => i.id === id ? { ...i, status: 'done' as const, savedDraft: true } : i)
+      setActiveConfirmId(null)
+      setTimeout(() => processQueue(updated), 0)
+      return updated
+    })
+  }
+
   function handleConfirmCancel(id: string) {
     setQueue(q => {
       const updated = q.map(i =>
@@ -210,6 +220,14 @@ export function UploadClient({ statuses, phases }: UploadClientProps) {
                       → Device created
                     </a>
                   )}
+                  {item.status === 'done' && item.savedDraft && (
+                    <a
+                      href="/drafts"
+                      className="text-xs text-primary hover:underline mt-0.5 inline-block"
+                    >
+                      → Saved to drafts
+                    </a>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <StatusBadge item={item} />
@@ -244,6 +262,7 @@ export function UploadClient({ statuses, phases }: UploadClientProps) {
             open
             onClose={() => handleConfirmCancel(activeItem.id)}
             onSuccess={(deviceId) => handleConfirmSuccess(activeItem.id, deviceId)}
+            onSaved={() => handleSavedForReview(activeItem.id)}
             fields={activeItem.fields}
             statuses={statuses}
             phases={phases}
