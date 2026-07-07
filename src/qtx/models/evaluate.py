@@ -49,20 +49,6 @@ def _build_sklearn_imputer(strategy: str, seed: int):
     return SimpleImputer(strategy="median")
 
 
-def _build_xgb_estimator(task: str, seed: int):
-    """Return an unfitted XGBoost estimator for use inside a Pipeline.
-
-    task: "classifier" or "regressor"
-    XGBoost handles NaN natively — no imputer step is needed alongside this estimator.
-    """
-    from xgboost import XGBClassifier, XGBRegressor
-
-    common_kwargs = dict(random_state=seed, n_jobs=-1, verbosity=0, tree_method="hist")
-    if task == "regressor":
-        return XGBRegressor(**common_kwargs)
-    return XGBClassifier(**common_kwargs)
-
-
 # ---------------------------------------------------------------------------
 # CV helpers
 # ---------------------------------------------------------------------------

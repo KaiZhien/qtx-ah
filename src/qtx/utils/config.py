@@ -69,11 +69,6 @@ def get_cleaning_config() -> dict[str, Any]:
     return _load_yaml("cleaning.yaml")
 
 
-def get_schema_config() -> dict[str, Any]:
-    """Load and return config/schema.yaml."""
-    return _load_yaml("schema.yaml")
-
-
 def get_phenotypes_config() -> dict[str, Any]:
     """Load and return config/phenotypes.yaml."""
     return _load_yaml("phenotypes.yaml")

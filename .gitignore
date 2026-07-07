@@ -17,7 +17,6 @@ __pycache__/
 dist/
 *.egg-info/
 .DS_Store
-web/tsconfig.tsbuildinfo
 node_modules/
 package-lock.json
 
@@ -38,6 +37,5 @@ PROMPTS.pdf
 TESTING.md
 **/retrain_state.json
 SETUP.md
-HANDOFF.md
 PROMPT.md
 QuantumTX-DLMS-PRD.md

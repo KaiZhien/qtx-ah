@@ -1,123 +1,113 @@
-# QTX-AH — QuantumTX Alexandra Hospital Analytics Pipeline
+# QTX-AH — QuantumTX Alexandra Hospital Clinical Intelligence Platform
 
-A reproducible, config-driven Python pipeline for analysing rehabilitation outcomes from QuantumTX's magnetic-mitohormesis therapy programme at Alexandra Hospital (AH) Singapore. Covers data ingestion → cleaning → phenotyping → outcomes → EDA → modelling → a Next.js clinical intelligence web app.
+A config-driven analytics and clinical-intelligence platform for QuantumTX's magnetic-mitohormesis therapy programme at Alexandra Hospital (AH) Singapore. The repository contains four co-located systems:
 
-> **Dataset:** 1,716 patient records (2024), six functional assessment blocks (VAS, TUG, 5×SST, Normal Gait Speed, Fast Gait Speed, SPPB), ~34.7% follow-up rate.
+1. **ML pipeline** (`src/qtx`, `scripts/`, `config/`) — reproducible Python pipeline: ingestion → cleaning → phenotyping → outcomes → EDA → model training.
+2. **Clinical API** (`api/`) — FastAPI + PostgreSQL 17 + pgvector backend serving predictions, AI insights, wearable ingestion, and PDF reports. Deployed on Railway.
+3. **Clinician dashboard** (`web/`) — Next.js 14 app for cohort analytics and per-patient clinical views, including a patient-facing trajectory simulator. Deployed on Vercel.
+4. **DLMS** (`dlms/`) — a separate Device Lifecycle Management System (Next.js 14 App Router + Supabase) for tracking the physical therapy devices. Deployed independently on Vercel + Supabase cloud.
+
+> **Datasets:** 1,716 AH patient records (2024) across six functional assessment blocks (VAS, TUG, 5×SST, Normal Gait Speed, Fast Gait Speed, SPPB), ~34.7% follow-up rate — plus the RAISE multi-centre eldercare validation cohort (n=206, narrative-only; see [RAISE Dataset](#raise-dataset)).
 
 ---
 
 ## Security
 
-All secrets (API keys, database credentials) are gitignored via `.env` — never committed. Copy `.env.example` to `.env` and fill in real values. A pre-commit hook at `.git/hooks/pre-commit` blocks accidental commits of `.env` files and Anthropic key patterns; re-install it after each fresh clone.
+All secrets (API keys, database credentials) are gitignored via `.env` — never committed. Copy `.env.example` to `.env` and fill in real values (see [Environment Variables](#environment-variables)). A pre-commit hook at `.git/hooks/pre-commit` blocks accidental commits of `.env` files and Anthropic key patterns; re-install it after each fresh clone.
 
-**Before granting external access:** run BFG Repo Cleaner or `git filter-branch` to confirm no secrets exist in git history. See `HANDOFF.md → Environment files` for the full warning and instructions.
+**Before granting external access:** verify no secrets exist in git history (`git log --all -p -- '.env*'`, plus a pattern scan for `sk-ant-`, `eyJ`, `postgres://…:…@`). If anything is found, rewrite history with `git filter-repo` or BFG Repo Cleaner and rotate the exposed keys.
 
----
+Auth model at a glance:
 
-## Current Results (v0.2.0, Approach B — iterative imputation + XGBoost)
-
-> Numbers from a full `make model` run on the 2024 AH dataset with 46-feature matrix and iterative MICE imputation. Both GBM and XGBoost estimators are trained; XGBoost is the recommended estimator. Update this section after retraining on new data.
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Patients | 1,716 | 49 legacy (`OLD…`) records included but excluded from primary models |
-| Follow-up rate | 34.7% (596 / 1,716) | Dropout is the primary data-quality challenge |
-| Overall responders | 69.5% of follow-up (414 / 596) | ≥ MCID on 2+ tests |
-| Classified by phenotype | 39.9% (684 / 1,716) | 60.1% Unclassified — most have no comorbidity tags |
-| **Regression XGB** R² (composite improvement) | **0.125** | RMSE ~0.58, n ≈ 596; iterative imputation |
-| **Regression GBM** R² | 0.110 | RMSE ~0.59, n ≈ 596 |
-| **Classifier XGB** AUC-ROC (overall responder) | **0.739** | AUC-PR ~0.88, F1 ~0.72, n ≈ 596 |
-| **Classifier GBM** AUC-ROC | 0.677 | n ≈ 596 |
-| **Dropout XGB** AUC-ROC (predicts non-completion) | **0.998** | F1 ~0.99, n = 1,716; all rows usable |
-| **Dropout GBM** AUC-ROC | 0.992 | n = 1,716 |
-
-**Top phenotype groups** (of classified patients): Joint disease 25%, Frailty/Sarcopenia 11%, Spine/Back 8%, Soft-tissue injury 6%, Neurological 4%.
-
-**Interpretation notes:**
-- XGBoost handles NaN natively (no imputer step in pipeline) and outperforms GBM on all three tasks.
-- Classifier AUC-ROC crossed the 0.70 clinical target with XGBoost + iterative imputation vs 0.63 in v0.1.0 (complete-case GBM).
-- The dropout model's near-perfect AUC-ROC (0.998) reflects that missing baseline data is itself the strongest predictor of non-completion — a real clinical signal, not leakage.
-- All metrics are 5-fold stratified CV. See `reports/modelling.html` for SHAP importances, calibration curves, and full sensitivity analysis across four imputation strategies.
-
-### How to track metrics
-
-```bash
-# Train all 6 models and print terminal summary
-make model
-
-# View full HTML report (metrics, SHAP, calibration, sensitivity)
-open reports/modelling.html
-
-# Run test suite (99 tests)
-make test
-
-# Run a quick smoke-check without full pipeline
-PYTHONPATH=src .venv/bin/pytest tests/test_models.py -v
-```
-
-The terminal summary printed by `make model` shows N, AUC-ROC ± std, AUC-PR, Brier, and F1 for all six model blocks, plus best hyperparameters.
+| Surface | Mechanism |
+|---------|-----------|
+| Clinical API (all `/api/*` routes) | `X-Api-Key` header (`QTX_API_KEY`) enforced by middleware |
+| Admin endpoints (`/api/admin/*`) | Separate `X-Admin-Key` header (`QTX_ADMIN_KEY`), constant-time compare |
+| Terra webhooks (`/webhooks/*`) | HMAC-SHA256 signature verification + 300 s replay window |
+| DLMS | Supabase Auth + RBAC (viewer / engineer / admin) enforced in server actions and RLS; sign-up restricted to `@quantumtx.com` |
 
 ---
 
 ## Table of Contents
 
-1. [Background](#background)
-2. [Project Structure](#project-structure)
-3. [Quick Start](#quick-start)
-4. [Pipeline Reference](#pipeline-reference)
-5. [Configuration System](#configuration-system)
-6. [Outputs & Reports](#outputs--reports)
-7. [Modelling](#modelling)
-8. [Phenotype Rules](#phenotype-rules)
-9. [Adding a New Model](#adding-a-new-model)
-10. [Testing](#testing)
-11. [Data Dictionary](#data-dictionary)
-12. [Clinical Context](#clinical-context)
+1. [Repository Structure](#repository-structure)
+2. [Quick Start](#quick-start)
+3. [Environment Variables](#environment-variables)
+4. [Model Results](#model-results)
+5. [Pipeline Reference](#pipeline-reference)
+6. [Configuration System](#configuration-system)
+7. [Clinical API](#clinical-api)
+8. [Dual-Loop ML + AI](#dual-loop-ml--ai)
+9. [RAISE Dataset](#raise-dataset)
+10. [Wearable Integration](#wearable-integration)
+11. [Web Dashboard](#web-dashboard)
+12. [DLMS — Device Lifecycle Management](#dlms--device-lifecycle-management)
+13. [Outputs & Reports](#outputs--reports)
+14. [Phenotype Rules](#phenotype-rules)
+15. [Adding a New Model](#adding-a-new-model)
+16. [Testing](#testing)
+17. [Data Dictionary](#data-dictionary)
+18. [Clinical Context](#clinical-context)
 
 ---
 
-## Background
-
-QuantumTX Pte Ltd (NUS / ETH Zürich spinoff) commercialises magnetic-mitohormesis therapy — a non-invasive magnetic-field treatment that induces mitochondrial activation in skeletal muscle. The Alexandra Hospital demo centre runs a structured programme with pre- and post-functional assessments.
-
-This pipeline converts a hand-cleaned Excel workbook into a versioned, analyst-ready dataset, a trained set of predictive models, and a clinician-facing web application. Every threshold, rule, and assumption lives in `config/` — the clinical team can refine the phenotype taxonomy or MCID thresholds without touching Python.
-
----
-
-## Project Structure
+## Repository Structure
 
 ```
 quantumtx-ah/
 ├── config/                   # All rules, thresholds, and assumptions — edit here, not in code
 │   ├── settings.yaml         # Paths, random seed, log level
-│   ├── schema.yaml           # Canonical column names, dtypes, allowed values
+│   ├── schema.yaml           # Canonical column names, dtypes, allowed values (reference)
 │   ├── cleaning.yaml         # NA tokens, case maps, plausibility ranges, age bands
 │   ├── phenotypes.yaml       # 3-layer taxonomy: 14 groups, 9 regions, 24 condition flags
 │   ├── outcomes.yaml         # MCIDs, composite method, responder threshold
 │   ├── missingness.yaml      # Per-feature imputation policy
+│   ├── dosage.yaml           # Dosage-frequency model config
 │   └── models.yaml           # Feature lists, hyperparameters, sensitivity variants
 │
 ├── data/
 │   ├── inputs/               # Source Excel files — READ ONLY, gitignored
-│   ├── processed/            # Versioned Parquet snapshots
-│   └── audit/                # Per-stage audit logs (CSV)
+│   ├── processed/            # Versioned Parquet snapshots (gitignored)
+│   └── audit/                # Per-stage audit logs (CSV, gitignored)
 │
-├── src/qtx/
+├── src/qtx/                  # Pipeline library
 │   ├── io/                   # Excel ingestion, Parquet persistence
 │   ├── clean/                # NA harmonisation, type coercion, plausibility flags, audit log
 │   ├── phenotype/            # YAML-driven regex classifier, coverage & unmatched reports
 │   ├── outcomes/             # Change scores, composite z-score, MCID responder flags
-│   ├── missing/              # Missingness profiling, four imputation strategies
 │   ├── features/             # Modelling matrix builder, pandera schema validation
 │   ├── models/               # Regression, classifier, dropout models; evaluate & SHAP
 │   ├── eda/                  # Descriptive tables, Plotly figures, self-contained HTML report
 │   └── utils/                # Config loader (YAML → dict, cached), Rich logging
 │
-├── scripts/                  # One-off CLIs (01_ingest → 07_export_dashboard_data)
+├── api/                      # FastAPI clinical API (Railway)
+│   ├── main.py               # App entry; API-key middleware, CORS, router mounting
+│   ├── db.py / deps.py       # SQLAlchemy engine, model registry, hot-reload
+│   ├── models/               # ORM: patients, sessions, predictions, insights, wearables
+│   ├── routers/              # 14 routers (see Clinical API section)
+│   ├── services/             # prediction, insight, retrain, calibration, anomaly, trend,
+│   │                         #   ingest, report, terra, voyage, claude_client, wearable_features
+│   └── templates/            # WeasyPrint PDF report template
+│
+├── web/                      # Next.js 14 clinician dashboard (Vercel, port 3000)
+│   ├── app/                  # / (dashboard), /patient/[sn], /admin
+│   ├── components/           # pages/, clinical/, charts/, patient/, ui/
+│   └── lib/                  # api.ts (all fetches), types.ts, constants.ts
+│
+├── dlms/                     # Device Lifecycle Management System (self-contained app)
+│   ├── app/                  # Next.js App Router pages + server actions (port 3001)
+│   ├── lib/                  # domain/ (pure logic), services/, auth/ (RBAC), supabase/
+│   ├── components/           # device/, analytics/, import/, layout/, ui/ (shadcn)
+│   ├── supabase/             # migrations/, seed.sql, edge functions (device-api,
+│   │                         #   warranty-alerts, weekly-digest)
+│   └── __tests__/            # Vitest suite
+│
+├── scripts/                  # Pipeline stages (01–08, 10), DB migrations & seeds (11–25)
+├── e2e/                      # Playwright E2E tests against the web dashboard
+├── tests/                    # Backend pytest suite (incl. hypothesis property tests)
 ├── notebooks/                # Exploration notebooks
 ├── reports/                  # Generated HTML reports (gitignored)
-├── models/                   # Trained joblib artefacts (gitignored)
-└── tests/                    # pytest + hypothesis property-based tests
+└── models/                   # Trained joblib artefacts (XGB tracked for deploys; GBM gitignored)
 ```
 
 ---
@@ -126,45 +116,100 @@ quantumtx-ah/
 
 ### Prerequisites
 
-- Python 3.11+
-- The source Excel files in `data/inputs/` (gitignored — copy them in manually):
+- Python 3.12 (`.python-version`; pyproject allows ≥3.11,<3.13)
+- PostgreSQL 17 + pgvector (`brew install postgresql@17 pgvector pango`)
+- Node 20+
+- Source Excel files in `data/inputs/` (gitignored — copy in manually):
   - `QTX_AX(nov 2025) - Reet & Jun Yi.xlsx` — raw source
   - `QTX_AH_2024_organised.xlsx` — reference cleaned workbook
 
-### Install
+### Install & run the analytics stack
 
 ```bash
 cd quantumtx-ah
+pip install -e .                       # or: poetry install
 
-# Option A — pip editable install (fastest)
-pip install -e .
+# Database (first time)
+psql postgres -c "CREATE USER qtx WITH PASSWORD 'secret';"
+psql postgres -c "CREATE DATABASE qtxah OWNER qtx;"
+psql qtxah    -c "CREATE EXTENSION IF NOT EXISTS vector; GRANT ALL ON SCHEMA public TO qtx;"
 
-# Option B — Poetry
-poetry install
+cp .env.example .env                   # fill in keys (see Environment Variables)
+make setup                             # setup.sh: runs all DB migrations + seeding
+
+make all                               # full pipeline: ingest → … → train (3–8 min)
+make dev                               # API :8000 + web dashboard :3000
 ```
 
-### Run everything
+`web/.env.local` needs `NEXT_PUBLIC_API_URL=http://localhost:8000` and `NEXT_PUBLIC_API_KEY` matching `QTX_API_KEY`.
+
+### Run the DLMS
+
+The DLMS is independent of the analytics stack:
 
 ```bash
-make all
+cd dlms
+npm install
+npm run setup        # scripts/setup.sh — local Supabase + migrations
+npm run dev          # http://localhost:3001
 ```
 
-This executes the full pipeline end-to-end. Estimated runtime: 3–8 minutes depending on machine (model training dominates).
+Production deploys are manual: `vercel deploy --prod --yes` from `dlms/` after merging to `main` (git push does **not** auto-deploy).
 
-### Start the web UI
+---
 
-```bash
-make dev
-# API at http://localhost:8000, Next.js app at http://localhost:3000
-```
+## Environment Variables
 
-> The legacy Streamlit dashboard has been removed — use `make dev` to start the web UI.
+Copy `.env.example` → `.env` at the repo root. Generate keys with `python3 -c "import secrets; print(secrets.token_hex(32))"`.
+
+| Variable | Purpose |
+|----------|---------|
+| `QTX_API_KEY` | Internal API key; required on all non-webhook API routes (`X-Api-Key`) |
+| `QTX_ADMIN_KEY` | Admin key for model hot-reload/retrain endpoints (`X-Admin-Key`); must differ from `QTX_API_KEY` |
+| `DATABASE_URL` | e.g. `postgresql+psycopg2://qtx:secret@localhost:5432/qtxah` |
+| `ANTHROPIC_API_KEY` | Claude (insights, Q&A, treatment briefs). **BAA required before sending real patient data in production** |
+| `VOYAGE_API_KEY` | Voyage-3-lite embeddings (512 dims) for semantic retrieval |
+| `ALLOWED_ORIGINS` | Comma-separated CORS allowlist (default `http://localhost:3000`) |
+| `RETRAIN_THRESHOLD` | Sessions since last retrain that trigger auto-retrain (default 50) |
+| `CALIBRATION_DRIFT_THRESHOLD` / `CALIBRATION_MIN_COHORT_N` | Drift-based retrain gate (default 0.30 / 20) |
+| `TERRA_DEV_ID` / `TERRA_API_KEY` / `TERRA_WEBHOOK_SECRET` | Terra wearable integration |
+| `LOG_LEVEL` | API log level (default `INFO`) |
+
+The DLMS keeps its own env (`dlms/.env.local` / Vercel): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`. Dev-mode role switching uses the server-only `DLMS_DEV_MODE` flag and is inert in production builds.
+
+---
+
+## Model Results
+
+Latest full `make model` run on the 2024 AH dataset (Approach B — 46-feature matrix, iterative MICE imputation; both GBM and XGBoost trained, XGBoost recommended). Update this section after retraining on new data.
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Patients | 1,716 | 49 legacy (`OLD…`) records included but excluded from primary models |
+| Follow-up rate | 34.7% (596 / 1,716) | Dropout is the primary data-quality challenge |
+| Overall responders | 69.5% of follow-up (414 / 596) | ≥ MCID on 2+ tests |
+| Classified by phenotype | 39.9% (684 / 1,716) | 60.1% Unclassified — most have no comorbidity tags |
+| **Regression XGB** R² (composite improvement) | **0.125** | RMSE ~0.58, n ≈ 596 |
+| Regression GBM R² | 0.110 | RMSE ~0.59 |
+| **Classifier XGB** AUC-ROC (overall responder) | **0.739** | AUC-PR ~0.88, F1 ~0.72 |
+| Classifier GBM AUC-ROC | 0.677 | |
+| **Dropout XGB** AUC-ROC (predicts non-completion) | **0.998** | F1 ~0.99, n = 1,716 |
+| Dropout GBM AUC-ROC | 0.992 | |
+
+A fourth model family — **dosage frequency** (`make dosage`, `models/dosage_frequency.joblib`) — recommends a usage-frequency label with calibrated confidence.
+
+**Top phenotype groups** (of classified patients): Joint disease 25%, Frailty/Sarcopenia 11%, Spine/Back 8%, Soft-tissue injury 6%, Neurological 4%.
+
+**Interpretation notes:**
+- XGBoost handles NaN natively (no imputer step in its pipeline) and outperforms GBM on all three tasks.
+- The dropout model's near-perfect AUC-ROC reflects that missing baseline data is itself the strongest predictor of non-completion — a real clinical signal, not leakage.
+- All metrics are 5-fold stratified CV. `reports/modelling.html` has SHAP importances, calibration curves, and the sensitivity analysis across four imputation strategies.
 
 ---
 
 ## Pipeline Reference
 
-Each stage is an independent script. Run them individually or chain with `make all`.
+Each stage is an independent script. Run individually or chain with `make all`.
 
 | Stage | Make target | Script | Input → Output |
 |-------|------------|--------|----------------|
@@ -173,20 +218,22 @@ Each stage is an independent script. Run them individually or chain with `make a
 | 3. Phenotype | `make phenotype` | `scripts/03_phenotype.py` | cleaned → `phenotyped.parquet` + `reports/unmatched_tags.csv` |
 | 4. Outcomes | `make outcomes` | `scripts/04_outcomes.py` | phenotyped → `outcomes.parquet` |
 | 5. EDA | `make eda` | `scripts/05_eda.py` | featured → `reports/eda.html` |
-| 6. Features | _(called by 07)_ | `scripts/07_export_dashboard_data.py` | outcomes → `featured.parquet` + `dashboard_data.parquet` |
+| 6. Features | `make features` | `scripts/07_export_dashboard_data.py` | outcomes → `featured.parquet` + `dashboard_data.parquet` |
 | 7. Models | `make model` | `scripts/06_train_models.py` | featured → `models/*.joblib` + `reports/modelling.html` |
+| 8. Dosage | `make dosage` | `scripts/08_train_dosage_model.py` | featured → `models/dosage_frequency.joblib` |
 
-Run individual stages with `PYTHONPATH=src python scripts/01_ingest.py` (or via `make`).
+Beyond the training pipeline, `scripts/` also holds operational CLIs:
+
+- `10_reconcile_wearables.py` (`make reconcile-wearables`) — link Terra users to patients
+- `11_seed_database.py`, `16_ingest_raise_data.py`, `20_normalize_raise_usage_frequency.py`, `25_compute_cohort_response_curves.py`, `26_backfill_predictions.py` — DB seeding/backfills (run by `setup.sh`)
+- `12/13/15/19/22/23/24_migrate_*.py` — idempotent schema migrations (run by `setup.sh`)
+- `17_raise_model_evaluation.py` — offline RAISE covariate-shift evaluation
+- `18_scheduled_retrain.py` — spawned by the API's auto-retrain services
+- `21_calibration_report.py` — per-cohort calibration report
 
 ### Audit logs
 
-Every value change during cleaning is recorded to `data/audit/clean_audit.csv` with columns:
-
-```
-record_id | module | field | before | after | reason
-```
-
-The current dataset produces ~24,000 audit rows, of which ~23,000 are NA token harmonisations.
+Every value change during cleaning is recorded to `data/audit/clean_audit.csv` (`record_id | module | field | before | after | reason`). The current dataset produces ~24,000 audit rows, ~23,000 of which are NA-token harmonisations.
 
 ---
 
@@ -196,18 +243,15 @@ The current dataset produces ~24,000 audit rows, of which ~23,000 are NA token h
 
 ### `config/cleaning.yaml`
 
-Controls:
 - `na_tokens` — strings treated as missing (e.g. `"NA"`, `"-"`, `"nil"`)
 - `gender_map`, `yesno_map`, `frequency_map` — case-insensitive normalisation maps
 - `plausibility_ranges` — per-field `{min, max, dnc_above}` for out-of-range flagging
-- `age_bands` — bucket boundaries for `age_band` column
-- `include_starred` — whether `**`-prefixed names are included in analyses (default: `false`)
-- `dedupe_by_name` — whether to collapse duplicate names to most-recent row (default: `false`)
+- `age_bands` — bucket boundaries for `age_band`
 - `pre_post_pairs`, `followup_post_cols`, `column_roles` — structural column lists
 
 ### `config/outcomes.yaml`
 
-Controls MCIDs per test and composite computation:
+MCIDs per test and composite computation:
 
 ```yaml
 tests:
@@ -217,30 +261,9 @@ tests:
     mcid_pct: 0.10     # OR ≥10% relative improvement
 ```
 
-Change any threshold here — no code edit needed.
-
 ### `config/phenotypes.yaml`
 
-The 3-layer taxonomy. Add patterns, reorder priority, or remap cohorts:
-
-```yaml
-groups:
-  joint_disease:
-    label: "Joint disease"
-    patterns:
-      - '\boa\b'        # matches "OA"
-      - '\barthrit'     # matches "arthritis", "arthritic"
-      - 'knee degenerat'
-
-priority:              # first match wins for primary_indication
-  - neurological
-  - post_surgical
-  - joint_disease
-  ...
-
-cohort_rollup:         # maps groups → 6 dashboard cohorts
-  Pain & Musculoskeletal: [joint_disease, spine_back, ...]
-```
+The 3-layer taxonomy (groups / regions / condition flags), the `priority` order for primary indication, and the `cohort_rollup` mapping groups → 6 dashboard cohorts. See [Phenotype Rules](#phenotype-rules).
 
 ### `config/missingness.yaml`
 
@@ -250,21 +273,104 @@ Per-feature imputation strategy. Outcomes are **never imputed**:
 per_feature_policy:
   baseline_sppb: {strategy: iterative, max_missing_pct: 0.40}
   has_oa:        {strategy: fill_zero}
-  gender:        {strategy: category_missing}
 outcomes:
   policy: never_impute
 ```
 
 ### `config/models.yaml`
 
-Feature lists and sensitivity variants. To change what goes into the regression:
+Feature lists, hyperparameter tuning blocks, CV settings, and sensitivity variants per model family.
 
-```yaml
-regression_composite:
-  features: [age, gender, baseline_sppb, ...]
-  model: gradient_boosting
-  cv: {kind: stratified_kfold, k: 5, stratify_on: cohort}
-```
+---
+
+## Clinical API
+
+FastAPI app (`api/`), deployed on Railway. All routes except `/webhooks/*` require `X-Api-Key`; admin routes additionally require `X-Admin-Key`.
+
+| Router | Concern |
+|--------|---------|
+| `patients` | Patient list/detail, per-metric session series |
+| `sessions` | Longitudinal session ingest — triggers the dual-loop (below) |
+| `predict` | On-demand outcome / dosage predictions |
+| `ask` | Clinician Q&A with Voyage semantic retrieval + Claude |
+| `plan` | AI treatment-plan briefs |
+| `anomaly` | Rule-based proactive anomaly flags (+ Claude summaries) |
+| `report` | WeasyPrint PDF patient reports |
+| `calibration` | Per-cohort calibration metrics + drift status |
+| `benchmark` | Cohort benchmark comparisons |
+| `cohorts` | Cohort response curves |
+| `import_data` | CSV/Excel bulk import |
+| `wearable` | Wearable enrollment + feature summaries |
+| `webhooks` | Terra webhook ingest (HMAC-verified) |
+| `admin` | Model hot-reload, retrain trigger, retrain state |
+
+AI stack: **Claude Sonnet 4.6** for narrative insights and Q&A, **Voyage-3-lite** (512-dim) for embeddings. Reasoning is per-patient only — cross-patient generation was ruled clinically inappropriate.
+
+---
+
+## Dual-Loop ML + AI
+
+Every `POST /api/patient/{sn}/session` runs:
+
+1. **PredictionService** — 4 XGBoost models → `session_predictions` (with SHAP top-5 drivers and bias correction)
+2. **InsightService** — Claude prompt includes all model signals; flags model/observation divergence
+3. **RetrainService** — count-based trigger: spawns `scripts/18_scheduled_retrain.py` when sessions since last retrain ≥ `RETRAIN_THRESHOLD`
+4. **CalibrationService** — drift-based trigger: retrain if any cohort's MAE drifted ≥ `CALIBRATION_DRIFT_THRESHOLD` (1 h cooldown)
+
+Retrain state lives in `retrain_state.json` (runtime file); scikit-learn is pinned `>=1.8,<1.9` to match the pickled models.
+
+---
+
+## RAISE Dataset
+
+The RAISE multi-centre eldercare validation cohort (**n=206**) informs the AI layer as **narrative-only** context: its validated findings are cited in the Claude system prompt but do **not** feed any served XGBoost prediction (`deps.py` always serves the baseline `regression_xgb.joblib`).
+
+- 162 RAISE rows are ingested into the DB (tagged `ingested_from ILIKE '%raise%'`) and excluded from calibration and metric-series queries. The 206/162 distinction is intentional — the published validation cohort vs rows loaded here.
+- Validated findings in the prompt: diabetes = high-responder (ANCOVA p=0.015), frailty 5× response differential, dementia regression caution, peak response window age 70–79, SPPB near-ceiling (≈12) = success.
+- Merging RAISE into QTX training is gated by `scripts/17_raise_model_evaluation.py`: covariate-shift AUC < 0.70 **and** `primary_indication` SHAP < 15% required.
+
+---
+
+## Wearable Integration
+
+Terra powers wearable data ingestion:
+
+- `/webhooks/terra` verifies HMAC-SHA256 signatures (300 s replay window) and stores pseudonymous `terra_user_id` + metrics; ingestion is idempotent.
+- `api/services/wearable_features.py` aggregates activity/sleep features per patient.
+- `make reconcile-wearables` links Terra users to patient records.
+
+Terra PDPA / HBRA written confirmation is required before go-live with real patients.
+
+---
+
+## Web Dashboard
+
+Next.js 14 app (`web/`, port 3000) talking to the Clinical API:
+
+- **Overview / Cohorts / Clinical** pages — cohort analytics, response curves, per-patient clinical drawer
+- **Clinical drawer tabs** — Timeline, AI (insights + Q&A), predictions (chips + SHAP drivers), anomaly warnings, dosage recommender, PDF export
+- **Patient View** (`/patient/[sn]`) — patient-facing trajectory simulator: plain-English progress summary, goal picker, session slider with cohort p25–p75 percentile band
+- **Admin** (`/admin`) — model health, retrain state, calibration drift
+
+Tests: Jest + React Testing Library (`web/__tests__`), Playwright E2E at the repo root (`e2e/`, runs against `make dev`).
+
+---
+
+## DLMS — Device Lifecycle Management
+
+Self-contained system under `dlms/` (Next.js 14 App Router + Supabase cloud). Tracks the physical therapy devices through their lifecycle.
+
+**Features:** 21-field bilingual device registry with colour-coded create/edit, batch CSV/Excel import with serial-range expansion (`…-0001 to 0015`) and dedupe reporting, per-device tabs (component timeline, versioned change history, append-only service log), fleet-wide component traceability, device assignment + "My Queue", warranty-expiry and service-overdue banners with daily e-mail alerts (Resend), analytics dashboards with Excel/PDF export, AI invoice extraction to a drafts queue (Claude), keyboard shortcuts, filter presets.
+
+**Architecture notes:**
+
+- **RBAC** — viewer / engineer / admin roles via Supabase Auth; permission matrix in `lib/auth/permissions.ts` enforced in server actions; RLS + grants as a DB backstop (hardened 2026-07: `security_invoker` views, pinned `search_path`, anon revoked).
+- **Audit** — every INSERT/UPDATE/soft-delete captured to `audit_log` with old/new values via trigger.
+- **Edge functions** — `device-api` (API-key-protected machine API), `warranty-alerts` (daily cron), `weekly-digest`.
+- **Domain layer** — pure, unit-tested logic in `lib/domain/` (serial ranges, status transitions, service schedules, component history); services do flat selects + JS reduction (no DB views/RPC).
+- Sign-up restricted to `@quantumtx.com`; new accounts start inactive until an admin activates them.
+
+Tests: 270 Vitest tests (`cd dlms && npm test`); `npm run type-check` is clean.
 
 ---
 
@@ -277,37 +383,16 @@ regression_composite:
 | `data/processed/phenotyped.parquet` | + 48 phenotype columns (groups, regions, flags, cohort) |
 | `data/processed/outcomes.parquet` | + improvement scores, MCID flags, composite, responders |
 | `data/processed/featured.parquet` | Modelling-ready (imputed where configured, schema-validated) |
-| `data/processed/dashboard_data.parquet` | Slim 73-col subset (legacy; used by `scripts/11_seed_database.py` for initial DB seed) |
+| `data/processed/dashboard_data.parquet` | Slim 73-col subset consumed by `scripts/11_seed_database.py` |
 | `data/audit/clean_audit.csv` | Row-level audit trail for every cleaning transformation |
-| `reports/eda.html` | Self-contained interactive EDA (4.8 MB, Plotly, no CDN) |
-| `reports/missingness_profile.html` | Per-feature missingness × dropout vs. followup |
-| `reports/modelling.html` | CV metrics, SHAP importances, sensitivity analysis |
+| `reports/eda.html` | Self-contained interactive EDA (Plotly, no CDN) |
+| `reports/modelling.html` | CV metrics, SHAP importances, calibration, sensitivity analysis |
 | `reports/unmatched_tags.csv` | Free-text tokens not matched by any phenotype rule |
-| `models/regression_gbm.joblib` | GradientBoostingRegressor on `composite_improvement` |
-| `models/regression_xgb.joblib` | XGBRegressor on `composite_improvement` |
-| `models/classifier_gbm.joblib` | GradientBoostingClassifier on `overall_responder` |
-| `models/classifier_xgb.joblib` | XGBClassifier on `overall_responder` |
-| `models/dropout_gbm.joblib` | GBM dropout predictor (baseline features → `is_dropout`) |
-| `models/dropout_xgb.joblib` | XGBoost dropout predictor (baseline features → `is_dropout`) |
+| `models/{regression,classifier,dropout}_xgb.joblib` | XGBoost models (tracked — served by the API) |
+| `models/dosage_frequency.joblib` | Calibrated dosage-frequency classifier (tracked) |
+| `models/*_gbm.joblib` | GBM counterparts (~130 MB each, gitignored) |
 
 All Parquet files are also version-stamped in `data/processed/snapshots/`.
-
----
-
-## Modelling
-
-Three model families, each trained with two estimators (GBM and XGBoost), all with 5-fold stratified CV and iterative MICE imputation:
-
-| Model | Target | Estimator | N | AUC-ROC / R² | F1 |
-|-------|--------|-----------|---|--------------|-----|
-| Regression | `composite_improvement` | XGBoost | ~596 | R² = 0.125 | — |
-| Regression | `composite_improvement` | GBM | ~596 | R² = 0.110 | — |
-| Classifier | `overall_responder` | XGBoost | ~596 | AUC-ROC = 0.739 | ~0.72 |
-| Classifier | `overall_responder` | GBM | ~596 | AUC-ROC = 0.677 | — |
-| Dropout | `is_dropout` | XGBoost | 1,716 | AUC-ROC = 0.998 | ~0.99 |
-| Dropout | `is_dropout` | GBM | 1,716 | AUC-ROC = 0.992 | — |
-
-XGBoost handles NaN natively (no imputer in its pipeline). The sensitivity analysis in `reports/modelling.html` shows metrics across four imputation strategies (complete-case, iterative MICE, kNN-5, median). SHAP feature importances and calibration curves are included for all six model blocks.
 
 ---
 
@@ -325,7 +410,7 @@ nano config/phenotypes.yaml
 make phenotype
 
 # 3. Review unmatched tokens (feedback loop)
-cat reports/unmatched_tags.csv | head -20
+head -20 reports/unmatched_tags.csv
 
 # 4. Sample classified records for clinical review
 PYTHONPATH=src python scripts/03_phenotype.py --sample 30
@@ -334,17 +419,15 @@ PYTHONPATH=src python scripts/03_phenotype.py --sample 30
 ### Adding a new group
 
 ```yaml
-# config/phenotypes.yaml
 groups:
   lymphoedema:
     label: "Lymphoedema"
     patterns:
       - 'lymphoedema'
       - 'lymphedema'
-      - 'lymphatic'
 ```
 
-Then add `lymphoedema` to the `priority` list at the appropriate rank, and to `cohort_rollup` if it belongs to an existing cohort (or create a new cohort label).
+Then add `lymphoedema` to the `priority` list at the appropriate rank, and to `cohort_rollup` if it belongs to an existing cohort.
 
 ### Adding a new condition flag
 
@@ -356,13 +439,12 @@ flags:
       - 'lymphedema'
 ```
 
-Flags are binary (0/1) and independent of the group hierarchy. They feed directly into model features.
+Flags are binary (0/1), independent of the group hierarchy, and feed directly into model features.
 
 ### Why is my patient Unclassified?
 
-Two reasons:
 1. Both `tags` and `pain_location` are empty — structurally unclassifiable (~57% of this dataset).
-2. The tags contain text that no pattern matches — check `reports/unmatched_tags.csv` for the token, then add a pattern.
+2. The tags contain text no pattern matches — check `reports/unmatched_tags.csv`, then add a pattern.
 
 ---
 
@@ -379,23 +461,7 @@ my_model:
   metrics: [auc_roc, auc_pr, brier]
 ```
 
-2. **Create the module** at `src/qtx/models/my_model.py`:
-
-```python
-from sklearn.ensemble import RandomForestClassifier
-from qtx.models.evaluate import cross_validate_classifier, shap_importances
-from qtx.utils.config import get_models_config
-
-def train_my_model(df, imputation_strategy="complete_case"):
-    cfg = get_models_config()["my_model"]
-    # ... prep X, y, encode categoricals ...
-    model = RandomForestClassifier(random_state=42)
-    cv_metrics = cross_validate_classifier(model, X, y, cfg["cv"])
-    shap_df = shap_importances(model, X)
-    import joblib
-    joblib.dump(model, "models/my_model.joblib")
-    return {"model": model, "cv_metrics": cv_metrics, "shap_df": shap_df}
-```
+2. **Create the module** at `src/qtx/models/my_model.py` using `cross_validate_classifier` / `shap_importances` from `qtx.models.evaluate`.
 
 3. **Register** in `scripts/06_train_models.py`:
 
@@ -404,41 +470,33 @@ from qtx.models.my_model import train_my_model
 results["my_model"] = train_my_model(df)
 ```
 
-4. Re-run: `make model`
+4. Re-run `make model`. To serve it, register the artefact in `api/deps.py`.
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
-make test
-
-# With PYTHONPATH (if not installed editable)
-PYTHONPATH=src pytest tests/ -v
+make test                        # backend: pytest tests/ (~620 tests, incl. hypothesis)
+cd web && npm test               # dashboard: 26 Jest/RTL tests
+npx playwright test              # 25 E2E tests (requires `make dev` running)
+cd dlms && npm test              # DLMS: 270 Vitest tests
+cd dlms && npm run type-check    # DLMS strict TS check
 ```
 
-**Coverage: 99 tests across 5 modules**
-
-| Module | What's tested |
-|--------|--------------|
-| `test_clean.py` | Schema, NA harmonisation, case maps, DNC flags, legacy detection, age bands. Property-based tests (Hypothesis) for gender variants. |
-| `test_phenotype.py` | 20 hand-labelled tag→cohort pairs, multi-label co-occurrence, absence=0 invariant, Unclassified for empty input. |
-| `test_outcomes.py` | Direction correction for all 6 tests, MCID thresholds, NaN propagation, breadth counting, overall_responder logic. |
-| `test_missing.py` | fill_zero, category_missing, complete-case drop, outcome exclusion, missing_indicator column generation. |
-| `test_models.py` | Config (46 features per model, tuning blocks), imputer factory, XGB estimator factory, train contract for all 6 model/estimator combinations (best_params, n, Pipeline type), cross_validate_classifier F1 output. |
+The backend suite covers the pipeline modules (clean, phenotype, outcomes, models, dosage), every API router and service (ingest, prediction, insight, retrain, calibration, anomaly, trend, reports, wearables/webhooks, middleware auth), and the RAISE ingest/evaluation scripts. DLMS tests cover the pure domain layer plus mutation-layer service tests via a Supabase chain mock.
 
 ---
 
 ## Data Dictionary
 
-Full field definitions, units, and allowed values are in the reference workbook:
+Full field definitions, units, and allowed values live in the reference workbook:
 
 ```
 data/inputs/QTX_AH_2024_organised.xlsx  →  sheet: Data Dictionary
 ```
 
-The pipeline's canonical column names (snake_case), dtypes, and allowed values are in `config/schema.yaml`.
+The pipeline's canonical column names (snake_case), dtypes, and allowed values are documented in `config/schema.yaml`.
 
 The 6 clinical assessment blocks:
 
@@ -460,9 +518,9 @@ The 6 clinical assessment blocks:
 - `Twice (2x/week, one leg per session)` — alternating legs, two sessions/week
 - `L+R 10 (20-min session, 10 min each leg)` — both legs in a single 20-min session
 
-**Responder definition:** a patient who meets the MCID threshold on ≥2 tests is classified as an `overall_responder`. This threshold is configurable in `config/outcomes.yaml → responder_breadth.threshold_for_overall_responder`.
+**Responder definition:** meets the MCID threshold on ≥2 tests → `overall_responder`. Configurable in `config/outcomes.yaml → responder_breadth.threshold_for_overall_responder`.
 
-**Composite score:** each test's improvement is z-scored within cohort (if n ≥ 30) or globally, then averaged across available tests. Mean ≈ 0 by construction; positive values indicate above-average improvement relative to the cohort.
+**Composite score:** each test's improvement is z-scored within cohort (if n ≥ 30) or globally, then averaged across available tests. Mean ≈ 0 by construction.
 
 **Data completeness:**
 - ~34.7% of patients have any follow-up measurement

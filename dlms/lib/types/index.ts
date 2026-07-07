@@ -4,9 +4,7 @@ export type AppUser = Tables<'app_user'>
 export type DeviceRow = Tables<'device'>
 export type StatusOption = Tables<'status_option'>
 export type PhaseOption = Tables<'phase_option'>
-export type AuditLogRow = Tables<'audit_log'>
 export type ExtractedDeviceDraft = Tables<'extracted_device_draft'>
-export type DeviceAssignment = Tables<'device_assignment'>
 export type ServiceEvent = Tables<'service_event'>
 
 export type Role = 'viewer' | 'engineer' | 'admin' | 'system'

@@ -88,9 +88,6 @@ age_bands:
 strip_name_flag_prefix: "**"
 legacy_sn_prefix: "OLD"
 
-include_starred: false
-dedupe_by_name: false
-
 column_roles:
   gender_cols: [gender]
   yesno_cols: [joined_with_pain, pain_improved]

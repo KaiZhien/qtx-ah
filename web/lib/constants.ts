@@ -54,15 +54,6 @@ export const FLAGS = [
   "has_fall_risk",
 ];
 
-export const TEST_PAIRS: [string, string, string][] = [
-  ["VAS (Pain)", "pre_vas", "post_vas"],
-  ["TUG (s)", "pre_tug_s", "post_tug_s"],
-  ["5xSST (s)", "pre_5xsst_s", "post_5xsst_s"],
-  ["Normal Gait Speed (m/s)", "pre_normal_gs_ms", "post_normal_gs_ms"],
-  ["Fast Gait Speed (m/s)", "pre_fast_gs_ms", "post_fast_gs_ms"],
-  ["SPPB", "baseline_sppb", "post_sppb"],
-];
-
 export const DEFAULT_TWEAKS: import("./types").Tweaks = {
   accent: "#3357c4",
   theme: "light",

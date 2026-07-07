@@ -12,8 +12,6 @@ import type {
   TimelineResponse,
   InsightRow,
   AnomalyWarning,
-  PlanRequest,
-  TreatmentPlanResponse,
   ResponseCurvesResponse,
   MetricSeriesResponse,
 } from "./types";
@@ -300,17 +298,4 @@ export async function fetchMetricSeries(
   )
   if (!res.ok) throw new Error(`fetchMetricSeries: ${res.status}`)
   return res.json()
-}
-
-export async function suggestPlan(
-  sn: string,
-  body: PlanRequest = {}
-): Promise<TreatmentPlanResponse> {
-  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/suggest_plan`, {
-    method: "POST",
-    headers: apiHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`suggestPlan: ${res.status}`);
-  return res.json();
 }

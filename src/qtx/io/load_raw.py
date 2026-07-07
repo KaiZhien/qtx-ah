@@ -16,7 +16,7 @@ from typing import Any
 import openpyxl
 import pandas as pd
 
-from qtx.utils.config import get_path, get_schema_config
+from qtx.utils.config import get_path
 from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)

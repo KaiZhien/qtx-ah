@@ -263,17 +263,6 @@ export interface AnomalyWarning {
   created_at: string;
 }
 
-export interface PlanRequest {
-  session_focus?: string;
-  plan_sessions?: number;
-}
-
-export interface TreatmentPlanResponse {
-  plan: string;
-  generated_at: string;
-}
-
-
 export type BenchmarkMetric = {
   metric: string;
   patient_value: number;

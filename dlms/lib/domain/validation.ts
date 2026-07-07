@@ -64,32 +64,6 @@ export const deviceSchema = z.object({
 })
 
 export type DeviceSchemaInput = z.input<typeof deviceSchema>
-export type DeviceSchemaOutput = z.output<typeof deviceSchema>
-
-// Schema for a single row from CSV import (all values come in as strings)
-export const importRowSchema = z.object({
-  device_sn:     z.string().optional(),
-  product_name:  z.string().optional(),
-  model_no:      z.string().optional(),
-  pcba_a_sn:     z.string().min(1, 'PCBA-A S/N is required'),
-  pcba_a_hw_rev: z.string().min(1, 'HW Rev (PCBA-A) is required'),
-  pcba_a_bom_rev:z.string().min(1, 'BOM Rev (PCBA-A) is required'),
-  pcba_a_fw_ver: z.string().min(1, 'FW Ver (PCBA-A) is required'),
-  pcba_b_sn:     z.string().optional(),
-  pcba_b_hw_rev: z.string().optional(),
-  pcba_b_bom_rev:z.string().optional(),
-  pcba_b_fw_ver: z.string().optional(),
-  screen_model:  z.string().optional(),
-  hmi_ver:       z.string().optional(),
-  build_date:    z.string().optional(),
-  ship_date:     z.string().optional(),
-  qty:           z.string().optional(),
-  destination:   z.string().optional(),
-  customer:      z.string().optional(),
-  status:        z.string().optional(),
-  phase:         z.string().optional(),
-  remarks:       z.string().optional(),
-})
 
 /**
  * Maps CSV column headers (from the spreadsheet) to device field names.

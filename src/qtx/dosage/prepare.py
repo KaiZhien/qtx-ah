@@ -56,40 +56,6 @@ def _add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def derive_features_for_prediction(patient: dict) -> dict:
-    """Compute clinically-engineered features from a base intake feature dict.
-
-    Call this before predict_frequency() when the patient dict was assembled from
-    raw UI inputs (age, gender_M, joined_with_pain_Y, hl_* flags only).
-    Returns a new dict with all base features plus the seven engineered ones.
-    """
-    age = float(patient.get("age", 0))
-    age_above_65 = float(age >= 65)
-    age_above_75 = float(age >= 75)
-
-    knee   = float(patient.get("hl_knee_issue", 0))
-    leg    = float(patient.get("hl_leg_issue", 0))
-    foot   = float(patient.get("hl_foot_ankle_issue", 0))
-    bal    = float(patient.get("hl_balance_issue", 0))
-    back   = float(patient.get("hl_back_spine_issue", 0))
-    gp     = float(patient.get("hl_general_pain_issue", 0))
-    inj    = float(patient.get("hl_injury_surgery_issue", 0))
-    frail  = float(patient.get("hl_frailty_issue", 0))
-    neuro  = float(patient.get("hl_neuro_issue", 0))
-    pain_y = float(patient.get("joined_with_pain_Y", 0))
-
-    return {
-        **patient,
-        "age_above_65": age_above_65,
-        "age_above_75": age_above_75,
-        "bilateral_lower_limb_load": min(knee + leg + foot + bal, 4.0),
-        "inflammatory_burden": knee + back + gp + inj,
-        "elderly_frailty": age_above_65 * frail,
-        "muscle_atrophy_risk": min(age_above_65 * (frail + neuro + leg), 3.0),
-        "pain_with_knee": knee * pain_y,
-    }
-
-
 def build_dosage_matrix(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Transform a raw supplement DataFrame into a modelling-ready feature matrix.
 

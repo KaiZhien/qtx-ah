@@ -1,6 +1,6 @@
 "use client";
 import React from "react";
-import type { InsightRow, AnomalyWarning, BenchmarkResult, TreatmentPlanResponse } from "@/lib/types";
+import type { InsightRow, AnomalyWarning, BenchmarkResult } from "@/lib/types";
 import { fetchInsights, fetchLatestPredictions, fetchBenchmark, fetchLatestAnomaly, type LatestPredictions } from "@/lib/api";
 import { InsightCard } from "./InsightCard";
 import { QAPanel } from "./QAPanel";
@@ -17,9 +17,6 @@ export function AITab({ sn }: AITabProps) {
   const [predictions, setPredictions] = React.useState<LatestPredictions | null>(null);
   const [benchmark, setBenchmark] = React.useState<BenchmarkResult | null>(null);
   const [anomaly, setAnomaly] = React.useState<AnomalyWarning | null>(null);
-  const [plan, setPlan] = React.useState<TreatmentPlanResponse | null>(null);
-  const [planLoading, setPlanLoading] = React.useState(false);
-  const [planError, setPlanError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setLoading(true); setError(null);

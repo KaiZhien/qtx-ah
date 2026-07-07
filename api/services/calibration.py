@@ -116,38 +116,6 @@ class CalibrationService:
             cls._cache = {"computed_at": now, "metrics": metrics}
         return metrics
 
-    _SQL_CLASSIFIER_AUC = text("""
-        SELECT
-            sp.responder_probability,
-            s.overall_responder
-        FROM (
-            SELECT DISTINCT ON (session_id)
-                   session_id, responder_probability
-            FROM   session_predictions
-            WHERE  responder_probability IS NOT NULL
-            ORDER  BY session_id, predicted_at DESC
-        ) sp
-        JOIN sessions s ON s.id = sp.session_id
-        WHERE  s.overall_responder IS NOT NULL
-          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
-    """)
-
-    _SQL_DROPOUT_AUC = text("""
-        SELECT
-            sp.dropout_probability,
-            s.is_dropout
-        FROM (
-            SELECT DISTINCT ON (session_id)
-                   session_id, dropout_probability
-            FROM   session_predictions
-            WHERE  dropout_probability IS NOT NULL
-            ORDER  BY session_id, predicted_at DESC
-        ) sp
-        JOIN sessions s ON s.id = sp.session_id
-        WHERE  s.is_dropout IS NOT NULL
-          AND  (s.ingested_from NOT ILIKE '%raise%' OR s.ingested_from IS NULL)
-    """)
-
     @classmethod
     def _compute_current_classifier_auc(cls, db) -> float | None:
         rows = db.execute(cls._SQL_CLASSIFIER_AUC).fetchall()

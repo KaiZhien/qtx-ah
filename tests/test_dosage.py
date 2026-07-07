@@ -1,5 +1,5 @@
 # tests/test_dosage.py
-"""Tests for src/qtx/dosage/ — prepare, train, evaluate, predict modules."""
+"""Tests for src/qtx/dosage/ — prepare, train, evaluate modules."""
 
 from __future__ import annotations
 
@@ -183,51 +183,3 @@ def test_train_dosage_model_proba_n_classes():
     X_test = df[feature_names].head(3).astype(float)
     proba = model.predict_proba(X_test)
     assert proba.shape[1] == 3
-
-
-from qtx.dosage.predict import predict_frequency
-
-
-def _fitted_model_and_names():
-    """Return a minimal fitted model + feature_names + label_names for predict tests."""
-    df = _make_dosage_df()
-    result = train_dosage_model(df)
-    return result["model"], result["feature_names"], result["label_names"]
-
-
-def test_predict_frequency_output_keys():
-    model, feature_names, label_names = _fitted_model_and_names()
-    patient = {"age": 72, "gender_M": 0, "joined_with_pain_Y": 1, "hl_knee_issue": 1}
-    result = predict_frequency(patient, model, feature_names, label_names)
-    assert "recommendation" in result
-    assert "confidence" in result
-    assert "probabilities" in result
-
-
-def test_predict_frequency_recommendation_in_label_names():
-    model, feature_names, label_names = _fitted_model_and_names()
-    patient = {"age": 72, "gender_M": 0, "joined_with_pain_Y": 1}
-    result = predict_frequency(patient, model, feature_names, label_names)
-    assert result["recommendation"] in label_names
-
-
-def test_predict_frequency_probabilities_sum_to_one():
-    model, feature_names, label_names = _fitted_model_and_names()
-    patient = {"age": 72, "gender_M": 0, "joined_with_pain_Y": 1}
-    result = predict_frequency(patient, model, feature_names, label_names)
-    total = sum(result["probabilities"].values())
-    assert abs(total - 1.0) < 1e-6
-
-
-def test_predict_frequency_missing_features_default_to_zero():
-    model, feature_names, label_names = _fitted_model_and_names()
-    result = predict_frequency({"age": 65}, model, feature_names, label_names)
-    assert result["recommendation"] in label_names
-    assert 0.0 <= result["confidence"] <= 1.0
-
-
-def test_predict_frequency_confidence_matches_max_proba():
-    model, feature_names, label_names = _fitted_model_and_names()
-    patient = {"age": 70, "gender_M": 1, "hl_neuro_issue": 1}
-    result = predict_frequency(patient, model, feature_names, label_names)
-    assert abs(result["confidence"] - max(result["probabilities"].values())) < 1e-9

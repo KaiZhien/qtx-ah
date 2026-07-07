@@ -270,24 +270,6 @@ def test_config_has_tuning_xgb_block():
 
 
 # ---------------------------------------------------------------------------
-# _build_xgb_estimator tests
-# ---------------------------------------------------------------------------
-
-def test_build_xgb_estimator_classifier():
-    from xgboost import XGBClassifier
-    from qtx.models.evaluate import _build_xgb_estimator
-    est = _build_xgb_estimator("classifier", seed=42)
-    assert isinstance(est, XGBClassifier)
-
-
-def test_build_xgb_estimator_regressor():
-    from xgboost import XGBRegressor
-    from qtx.models.evaluate import _build_xgb_estimator
-    est = _build_xgb_estimator("regressor", seed=42)
-    assert isinstance(est, XGBRegressor)
-
-
-# ---------------------------------------------------------------------------
 # train_classifier XGB contract
 # ---------------------------------------------------------------------------
 

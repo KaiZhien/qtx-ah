@@ -48,7 +48,7 @@ step "Script 20 — normalize RAISE usage_frequency (idempotent)"
 PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/20_normalize_raise_usage_frequency.py"
 
 step "Script 20 — backfill session_predictions for existing sessions (idempotent)"
-PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/20_backfill_predictions.py"
+PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/26_backfill_predictions.py"
 
 step "Script 25 — compute and upsert cohort response curves"
 PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/25_compute_cohort_response_curves.py"

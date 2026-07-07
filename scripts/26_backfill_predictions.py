@@ -4,7 +4,7 @@ Runs PredictionService over every session that doesn't yet have a prediction row
 Safe to re-run — skips sessions that already have a row.
 
 Usage:
-    PYTHONPATH=src:api python scripts/20_backfill_predictions.py
+    PYTHONPATH=src:api python scripts/26_backfill_predictions.py
 """
 from __future__ import annotations
 import os

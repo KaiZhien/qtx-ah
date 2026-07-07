@@ -20,7 +20,7 @@ from routers import patients, predict, wearable, webhooks, import_data, sessions
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    deps.load_all()  # init_db() is called inside load_all() once Task 6 (deps.py) is done
+    deps.load_all()
     yield
 
 

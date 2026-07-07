@@ -49,11 +49,6 @@ def _get_feature_cols() -> list[str]:
     return cfg["classifier_responder"]["features"]
 
 
-def _get_tuning_cfg() -> dict:
-    cfg = get_models_config()
-    return cfg.get("tuning", {})
-
-
 def _get_cv_config() -> dict:
     return {"kind": "stratified_kfold", "k": 5}
 

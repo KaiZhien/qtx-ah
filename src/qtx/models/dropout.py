@@ -47,10 +47,6 @@ def _get_feature_cols() -> list[str]:
     return cfg["dropout"]["features"]
 
 
-def _get_tuning_cfg() -> dict:
-    return get_models_config().get("tuning", {})
-
-
 def _encode_categoricals(df: pd.DataFrame, cat_cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
     present = [c for c in cat_cols if c in df.columns]
     df_enc = pd.get_dummies(df, columns=present, drop_first=True, dtype=float)
