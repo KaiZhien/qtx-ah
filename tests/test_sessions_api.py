@@ -249,6 +249,27 @@ def test_create_session_unknown_sn_returns_404(client):
     assert resp.status_code == 404
 
 
+def test_session_timeline_dict_omits_patient_name(client):
+    """The timeline dict handed to InsightService (embedded into Claude prompts)
+    must NOT contain the patient 'name' key — only 'sn' identifies the patient."""
+    from services.insight import InsightService
+
+    captured: dict = {}
+
+    def _capture(self, timeline, patient_id, session_number, predictions=None):
+        captured["timeline"] = timeline
+        return "captured"
+
+    with patch.object(InsightService, "generate_session_insight", _capture):
+        resp = client.post(f"/api/patient/{_PATIENT_SN}/session", json={"post_tug_s": 8.5})
+
+    assert resp.status_code == 201
+    assert "timeline" in captured, "InsightService.generate_session_insight was not called"
+    patient_payload = captured["timeline"]["patient"]
+    assert "name" not in patient_payload, f"Patient name leaked into prompt payload: {patient_payload}"
+    assert patient_payload["sn"] == _PATIENT_SN
+
+
 def test_create_session_503_when_db_not_ready(client):
     import deps
     deps._db_ready = False

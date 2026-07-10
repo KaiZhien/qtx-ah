@@ -46,6 +46,7 @@ import models.wearable  # noqa: F401
 # Constants
 # ---------------------------------------------------------------------------
 _TEST_KEY = "import-test-key"
+_TEST_ADMIN_KEY = "import-admin-key"
 
 _FLAG_COLS = [
     "has_oa", "has_diabetes", "has_stroke", "has_parkinsons", "has_sarcopenia",
@@ -95,13 +96,25 @@ def client():
 
     app.dependency_overrides[get_db] = override
     os.environ["QTX_API_KEY"] = _TEST_KEY
+    _prev_admin = os.environ.get("QTX_ADMIN_KEY")
+    os.environ["QTX_ADMIN_KEY"] = _TEST_ADMIN_KEY
 
-    with TestClient(app, headers={"X-Api-Key": _TEST_KEY}, raise_server_exceptions=False) as c:
+    # The import endpoints are admin-gated: send BOTH X-Api-Key (middleware)
+    # and X-Admin-Key (require_admin_key dependency) by default.
+    with TestClient(
+        app,
+        headers={"X-Api-Key": _TEST_KEY, "X-Admin-Key": _TEST_ADMIN_KEY},
+        raise_server_exceptions=False,
+    ) as c:
         deps._db_ready = True
         yield c
 
     app.dependency_overrides.clear()
     os.environ.pop("QTX_API_KEY", None)
+    if _prev_admin is None:
+        os.environ.pop("QTX_ADMIN_KEY", None)
+    else:
+        os.environ["QTX_ADMIN_KEY"] = _prev_admin
     deps._db_ready = False
 
 
@@ -551,3 +564,97 @@ def test_import_file_temp_file_cleaned_up_after_failure(client):
     assert not created_paths[0].exists(), (
         f"Temp file {created_paths[0]} was not removed after pipeline failure"
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin-gate: import endpoints require X-Admin-Key in addition to X-Api-Key
+# ---------------------------------------------------------------------------
+def _client_without_admin_key():
+    """A TestClient sending only X-Api-Key (no X-Admin-Key), sharing the app's
+    already-configured dependency overrides. Built without a lifespan context
+    so deps._db_ready set by the module fixture is not disturbed."""
+    from main import app
+    return TestClient(
+        app,
+        headers={"X-Api-Key": _TEST_KEY},
+        raise_server_exceptions=False,
+    )
+
+
+def test_seed_without_admin_key_returns_401(client, monkeypatch):
+    """POST /api/import/seed with X-Api-Key but no X-Admin-Key → 401."""
+    import routers.import_data as idata
+    monkeypatch.setattr(idata, "_PARQUET_PATH", Path("/nonexistent/does_not_exist.parquet"))
+    resp = _client_without_admin_key().post("/api/import/seed")
+    assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert "admin key" in resp.json().get("detail", "").lower()
+
+
+def test_import_file_without_admin_key_returns_401(client):
+    """POST /api/import/file with X-Api-Key but no X-Admin-Key → 401 (before pipeline)."""
+    resp = _client_without_admin_key().post(
+        "/api/import/file",
+        files={"file": ("patients.csv", b"sn,name\nT001,Test Patient", "text/csv")},
+    )
+    assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert "admin key" in resp.json().get("detail", "").lower()
+
+
+def test_seed_parquet_without_admin_key_returns_401(client):
+    """POST /api/import/seed_parquet with X-Api-Key but no X-Admin-Key → 401."""
+    import pandas as pd
+
+    df = pd.DataFrame({"sn": ["Q1"], "name": ["Ignored"]})
+    buf = io.BytesIO()
+    df.to_parquet(buf)
+    resp = _client_without_admin_key().post(
+        "/api/import/seed_parquet",
+        files={"file": ("dashboard_data.parquet", buf.getvalue(), "application/octet-stream")},
+    )
+    assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/import/seed_parquet — happy path (in-memory parquet, mocked ingest)
+# ---------------------------------------------------------------------------
+def test_seed_parquet_valid_upload_returns_200_with_inserted(client):
+    """A valid .parquet upload is read and upserted; returns 200 with inserted > 0."""
+    import pandas as pd
+
+    df = pd.DataFrame({"sn": ["Q001"], "name": ["Parquet Patient"]})
+    buf = io.BytesIO()
+    df.to_parquet(buf)
+
+    mock_summary = MagicMock()
+    mock_summary.inserted = 1
+    mock_summary.updated = 0
+    mock_summary.skipped = 0
+    mock_summary.errors = []
+
+    with patch("routers.import_data.IngestPipeline") as MockPipeline:
+        MockPipeline.return_value.upsert.return_value = mock_summary
+        resp = client.post(
+            "/api/import/seed_parquet",
+            files={"file": ("dashboard_data.parquet", buf.getvalue(), "application/octet-stream")},
+        )
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("inserted", 0) > 0, f"Expected inserted > 0, got: {body}"
+    # The upload filename is passed through as the ingest source.
+    _, kwargs = MockPipeline.call_args
+    assert kwargs.get("source_filename") == "dashboard_data.parquet"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/import/seed_parquet — non-parquet suffix → 400
+# ---------------------------------------------------------------------------
+def test_seed_parquet_non_parquet_suffix_returns_400(client):
+    """A .csv upload to seed_parquet must be rejected with 400 (wrong suffix)."""
+    resp = client.post(
+        "/api/import/seed_parquet",
+        files={"file": ("data.csv", b"sn,name\nT001,Test Patient", "text/csv")},
+    )
+    assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+    detail = resp.json().get("detail", "")
+    assert ".csv" in detail or "parquet" in detail.lower(), f"Unexpected detail: {detail!r}"

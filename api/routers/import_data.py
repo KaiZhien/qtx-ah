@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from db import get_db
+from routers.admin import require_admin_key
 from services.ingest import IngestPipeline, IngestSummary
 
 router = APIRouter()
@@ -42,7 +43,7 @@ def _run_upsert(df: pd.DataFrame, db: Session, source: str) -> dict:
     }
 
 
-@router.post("/import/seed")
+@router.post("/import/seed", dependencies=[Depends(require_admin_key)])
 def seed_from_parquet(db: Session = Depends(get_db)) -> dict:
     if not _PARQUET_PATH.exists():
         raise HTTPException(
@@ -53,7 +54,7 @@ def seed_from_parquet(db: Session = Depends(get_db)) -> dict:
     return _run_upsert(df, db, source=_PARQUET_PATH.name)
 
 
-@router.post("/import/file")
+@router.post("/import/file", dependencies=[Depends(require_admin_key)])
 async def import_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -115,3 +116,49 @@ async def import_file(
             tmp_path.unlink()
 
     return _run_upsert(df, db, source=file.filename or "upload")
+
+
+@router.post("/import/seed_parquet", dependencies=[Depends(require_admin_key)])
+async def seed_from_parquet_upload(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Accept a .parquet upload and seed the database (admin-gated).
+
+    Replaces seeding from a git-tracked parquet: a one-shot manual upload of
+    data/processed/dashboard_data.parquet. The file is written to a temp path,
+    read with pandas, and upserted via the same ingest service used by
+    /import/seed. The temp file is always removed, even on error.
+
+    Max file size: 50 MB.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix != ".parquet":
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type {!r}. Expected a .parquet file.".format(suffix),
+        )
+
+    contents = await file.read()
+    if len(contents) > _MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit.")
+
+    tmp_path = None
+    df = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(contents)
+            tmp_path = Path(tmp.name)
+
+        try:
+            df = pd.read_parquet(tmp_path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Failed to read parquet file: {}".format(exc),
+            ) from exc
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+
+    return _run_upsert(df, db, source=file.filename or "upload.parquet")

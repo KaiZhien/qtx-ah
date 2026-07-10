@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 from __future__ import annotations
 
+import hmac
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,7 +47,7 @@ async def api_key_middleware(request: Request, call_next):
         if not expected:
             return JSONResponse({"detail": "QTX_API_KEY is not configured on the server"}, status_code=500)
         provided = request.headers.get("X-Api-Key", "") or request.query_params.get("key", "")
-        if provided != expected:
+        if not hmac.compare_digest(provided, expected):
             return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
     return await call_next(request)
 

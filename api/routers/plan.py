@@ -81,7 +81,6 @@ def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
     return {
         "patient": {
             "sn":                 patient.sn,
-            "name":               patient.name,
             "age":                patient.age,
             "age_band":           patient.age_band,
             "gender":             patient.gender,

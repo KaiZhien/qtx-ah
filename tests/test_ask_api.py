@@ -146,6 +146,29 @@ def test_ask_unknown_sn_returns_404(client):
     assert resp.status_code == 404
 
 
+def test_ask_timeline_dict_omits_patient_name(client):
+    """The timeline dict handed to InsightService.answer_question (embedded into
+    Claude prompts) must NOT contain the patient 'name' key."""
+    from unittest.mock import patch
+    from services.insight import InsightService
+
+    captured: dict = {}
+
+    def _capture(self, timeline, patient_id, question):
+        captured["timeline"] = timeline
+        return "captured answer"
+
+    with patch.object(InsightService, "answer_question", _capture):
+        resp = client.post(f"/api/patient/{_PATIENT_SN}/ask",
+                           json={"question": "How is progress?"})
+
+    assert resp.status_code == 200
+    assert "timeline" in captured, "InsightService.answer_question was not called"
+    patient_payload = captured["timeline"]["patient"]
+    assert "name" not in patient_payload, f"Patient name leaked into prompt payload: {patient_payload}"
+    assert patient_payload["sn"] == _PATIENT_SN
+
+
 def test_ask_503_when_db_not_ready(client):
     import deps
     deps._db_ready = False

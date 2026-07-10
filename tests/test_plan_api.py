@@ -115,6 +115,34 @@ def test_suggest_plan_returns_200_with_stub(client, db):
     assert "generated_at" in data
 
 
+def test_suggest_plan_timeline_dict_omits_patient_name(client, db):
+    """The timeline dict handed to InsightService.generate_treatment_plan
+    (embedded into Claude prompts) must NOT contain the patient 'name' key."""
+    from services.insight import InsightService
+
+    _make_patient(db, "P010")
+    db.commit()
+
+    captured: dict = {}
+
+    def _capture(self, timeline, patient_id, predictions=None, clinician_focus=None, plan_sessions=4):
+        captured["timeline"] = timeline
+        return "captured plan"
+
+    with patch.object(InsightService, "generate_treatment_plan", _capture):
+        resp = client.post(
+            "/api/patient/P010/suggest_plan",
+            json={},
+            headers={"X-Api-Key": _TEST_API_KEY},
+        )
+
+    assert resp.status_code == 200
+    assert "timeline" in captured, "InsightService.generate_treatment_plan was not called"
+    patient_payload = captured["timeline"]["patient"]
+    assert "name" not in patient_payload, f"Patient name leaked into prompt payload: {patient_payload}"
+    assert patient_payload["sn"] == "P010"
+
+
 def test_suggest_plan_404_for_unknown_sn(client, db):
     """Unknown patient SN is 404."""
     resp = client.post(
