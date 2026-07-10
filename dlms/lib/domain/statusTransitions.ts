@@ -1,41 +1,42 @@
 /**
  * Status transition domain module (§5.1.1).
  *
- * Status codes from seed.sql status_option table:
+ * Status codes from seed.sql status_option table (the ONLY valid vocabulary):
  *   'Stock'   → label "In Stock"
  *   'In Use'  → label "In Use"
  *   'Repair'  → label "Under Repair"
- *   'Retired' → label "Retired"
- *   'Lost'    → label "Lost"
+ *   'Retired' → label "Retired"   (terminal)
+ *   'Lost'    → label "Lost"      (terminal)
  *
- * Additional transition targets (not in seed but referenced in domain):
- *   'Shipped', 'In Production'
+ * This module uses the DB codes (not labels) as keys and values. Both the keys
+ * and the transition targets are constrained to the codes above — there are no
+ * 'Shipped' or 'In Production' codes in the vocabulary, so they are not valid
+ * transition endpoints.
  *
- * This module uses the DB codes (not labels) as keys and values.
+ * Transition graph:
+ *   Stock   → In Use, Repair, Lost, Retired
+ *   In Use  → Repair, Retired, Lost
+ *   Repair  → In Use, Retired, Lost
+ *   Retired → (none — terminal)
+ *   Lost    → (none — terminal)
  */
 
 /**
  * Allowed next status codes FROM each status code.
  * Terminal statuses map to an empty array.
- * Keys use the exact DB codes from seed.sql.
+ * Keys and values use the exact DB codes from seed.sql (status_option).
  */
 export const TRANSITIONS: Record<string, string[]> = {
-  // Seed code 'Stock' = "In Stock"
-  'Stock':         ['In Use', 'Repair', 'Lost', 'Retired', 'Shipped'],
-  // Seed code 'In Use' = "In Use"
-  'In Use':        ['Repair', 'Retired', 'Lost', 'Shipped'],
-  // Seed code 'Repair' = "Under Repair"
-  'Repair':        ['In Use', 'Retired', 'Lost'],
-  // Terminal statuses
-  'Retired':       [],
-  'Lost':          [],
-  // Extended statuses
-  'Shipped':       ['In Use', 'Retired'],
-  'In Production': ['Stock', 'Shipped', 'Retired'],
+  // 'Stock' = "In Stock"
+  'Stock':   ['In Use', 'Repair', 'Lost', 'Retired'],
+  // 'In Use' = "In Use"
+  'In Use':  ['Repair', 'Retired', 'Lost'],
+  // 'Repair' = "Under Repair"
+  'Repair':  ['In Use', 'Retired', 'Lost'],
+  // Terminal statuses — no onward transitions
+  'Retired': [],
+  'Lost':    [],
 }
-
-/** All known status codes in this domain */
-const ALL_KNOWN_STATUSES = Object.keys(TRANSITIONS)
 
 /**
  * Returns true if the transition from → to is permitted.
@@ -52,11 +53,15 @@ export function isValidTransition(from: string, to: string): boolean {
 
 /**
  * Returns the list of allowed next status codes from the given status.
- * If `from` is unknown, returns all known statuses (permissive fallback).
+ * Fails closed: an unknown source status (e.g. a newly admin-added vocabulary
+ * code not yet wired into TRANSITIONS) returns [] rather than offering every
+ * option. This keeps the UI in lock-step with isValidTransition's server-side
+ * enforcement — a status the server will reject is never presented as choosable.
+ * Terminal statuses (Retired, Lost) return [] for the same reason.
  */
 export function allowedNextStatuses(from: string): string[] {
   if (!(from in TRANSITIONS)) {
-    return [...ALL_KNOWN_STATUSES]
+    return []
   }
   return [...TRANSITIONS[from]]
 }

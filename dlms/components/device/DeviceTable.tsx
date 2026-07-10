@@ -19,15 +19,7 @@ import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/ty
 import type { FilterPreset } from '@/lib/services/filterPresetService'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
-// allowedNextStatuses is being created by the parallel agent — import it for status filtering
-// If the module isn't ready yet, the fallback logic below handles missing gracefully
-let allowedNextStatuses: ((status: string) => string[]) | undefined
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  allowedNextStatuses = require('@/lib/domain/statusTransitions').allowedNextStatuses
-} catch {
-  allowedNextStatuses = undefined
-}
+import { allowedNextStatuses } from '@/lib/domain/statusTransitions'
 
 interface DeviceTableProps {
   devices: DeviceRow[]
@@ -173,9 +165,9 @@ function FieldControl({
   const strVal = raw == null ? '' : String(raw)
 
   if (fieldKey === 'status') {
-    // Filter statuses to only allowed transitions if we know the current status and the module is available
-    const filteredStatuses = (allowedNextStatuses && currentStatus)
-      ? statuses.filter(s => allowedNextStatuses!(currentStatus).includes(s.code))
+    // Filter statuses to only allowed transitions when we know the current status.
+    const filteredStatuses = currentStatus
+      ? statuses.filter(s => allowedNextStatuses(currentStatus).includes(s.code))
       : statuses
 
     return (
@@ -542,10 +534,10 @@ export function DeviceTable({
   // For the bulk status dialog, compute an intersection of allowed next statuses
   // across all selected devices. Fall back to showing all statuses if complex/empty.
   const bulkAllowedStatuses: StatusOption[] = (() => {
-    if (!allowedNextStatuses || selectedIds.size === 0) return statuses
+    if (selectedIds.size === 0) return statuses
     const selectedDevices = devices.filter(d => selectedIds.has(d.id))
     if (selectedDevices.length === 0) return statuses
-    const sets = selectedDevices.map(d => new Set(allowedNextStatuses!(d.status)))
+    const sets = selectedDevices.map(d => new Set(allowedNextStatuses(d.status)))
     const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
     return intersection.length > 0 ? intersection : statuses
   })()

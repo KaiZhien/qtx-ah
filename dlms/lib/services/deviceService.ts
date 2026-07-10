@@ -181,10 +181,13 @@ export async function updateDevice(
 
   const supabase = createAdminClient()
 
-  // Optimistic concurrency check
+  // Optimistic concurrency check. Also pull `status` so we can enforce the
+  // status-transition rules here — this closes the bypass where the full edit
+  // form and inline (double-click) editing called updateDevice directly and
+  // could perform illegal moves (e.g. Retired → In Use) that changeStatus blocks.
   const { data: current, error: fetchErr } = await supabase
     .from('device')
-    .select('version, deleted_at')
+    .select('version, deleted_at, status')
     .eq('id', id)
     .single()
 
@@ -195,6 +198,19 @@ export async function updateDevice(
       type: 'conflict',
       message: 'Record has been modified by another user. Please reload and try again.',
     })
+  }
+
+  // Enforce status-transition rules only when the status is actually changing.
+  // Same-status writes and writes that don't touch status are unaffected.
+  // (changeStatus validates first and then calls this — the re-check here is
+  // idempotent: the same transition passes both times.)
+  if (input.status != null && input.status !== current.status) {
+    if (!isValidTransition(current.status ?? '', input.status)) {
+      throw new AppError({
+        type: 'conflict',
+        message: `Status transition from "${current.status}" to "${input.status}" is not allowed`,
+      })
+    }
   }
 
   const parsed = deviceSchema.partial().safeParse(input)

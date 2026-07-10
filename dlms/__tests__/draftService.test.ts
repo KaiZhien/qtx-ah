@@ -8,11 +8,33 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { promoteDraft } from '@/lib/services/draftService'
+import { promoteDraft, fieldsToDeviceInput } from '@/lib/services/draftService'
 
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
 }
+
+describe('fieldsToDeviceInput', () => {
+  it('defaults missing status/phase to valid vocabulary codes', () => {
+    // No status/phase in the extracted payload → must fall back to seeded codes,
+    // not the out-of-vocabulary 'In Production'/'MP' that would fail the DB FK.
+    const input = fieldsToDeviceInput({
+      pcba_a_sn: { value: 'PA-XYZ-001' },
+    })
+    expect(input.status).toBe('Stock')
+    expect(input.phase).toBe('Production')
+  })
+
+  it('passes through explicit status/phase values from the payload', () => {
+    const input = fieldsToDeviceInput({
+      pcba_a_sn: { value: 'PA-XYZ-002' },
+      status: { value: 'In Use' },
+      phase: { value: 'Validation' },
+    })
+    expect(input.status).toBe('In Use')
+    expect(input.phase).toBe('Validation')
+  })
+})
 
 beforeEach(() => {
   fromImpl = () => buildChain({ data: null, error: null })

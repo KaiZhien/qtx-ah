@@ -81,6 +81,44 @@ describe('updateDevice', () => {
     expect(err).toBeInstanceOf(AppError)
     expect(err.serviceError.type).toBe('validation')
   })
+
+  it('rejects an illegal status transition (Retired → In Use) with a conflict error', async () => {
+    // Pre-UPDATE select now also returns status so the transition can be validated.
+    fromImpl = makeFrom({ device: [{ data: { version: 1, deleted_at: null, status: 'Retired' }, error: null }] })
+    const err = await catchErr(updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('conflict')
+    expect(err.serviceError.message).toMatch(/transition/i)
+  })
+
+  it('allows a valid status transition (Stock → In Use) through to the update', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [
+      { data: { version: 1, deleted_at: null, status: 'Stock' }, error: null },  // pre-UPDATE select
+      { data: { id: 'dev-1', status: 'In Use' }, error: null },                  // UPDATE ... select().single()
+    ] }, captures)
+    const result = await updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', status: 'In Use' })
+  })
+
+  it('does not block a same-status write, even on a terminal status', async () => {
+    // status unchanged (Retired → Retired) must not trigger the transition check.
+    fromImpl = makeFrom({ device: [
+      { data: { version: 1, deleted_at: null, status: 'Retired' }, error: null },
+      { data: { id: 'dev-1', status: 'Retired', customer: 'X' }, error: null },
+    ] })
+    const result = await updateDevice('dev-1', { status: 'Retired', customer: 'X' }, 1, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', status: 'Retired', customer: 'X' })
+  })
+
+  it('does not block a write that does not touch status (terminal device)', async () => {
+    fromImpl = makeFrom({ device: [
+      { data: { version: 2, deleted_at: null, status: 'Lost' }, error: null },
+      { data: { id: 'dev-1', customer: 'Acme' }, error: null },
+    ] })
+    const result = await updateDevice('dev-1', { customer: 'Acme' }, 2, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', customer: 'Acme' })
+  })
 })
 
 describe('changeStatus', () => {

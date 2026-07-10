@@ -31,8 +31,10 @@ export function fieldsToDeviceInput(
     qty:            fields.qty?.value != null ? Number(fields.qty.value) : null,
     destination:    (fields.destination?.value as string) || null,
     customer:       (fields.customer?.value as string) || null,
-    status:         (fields.status?.value as string) ?? 'In Production',
-    phase:          (fields.phase?.value as string) ?? 'MP',
+    // Defaults must be valid seeded vocabulary codes (status_option / phase_option);
+    // otherwise promoting a draft with a missing status/phase fails the DB FK check.
+    status:         (fields.status?.value as string) ?? 'Stock',
+    phase:          (fields.phase?.value as string) ?? 'Production',
     remarks:        (fields.remarks?.value as string) || null,
   }
 }
