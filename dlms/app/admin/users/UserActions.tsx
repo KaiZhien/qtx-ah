@@ -17,10 +17,14 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
   async function handleRoleChange(newRole: string) {
     setSaving(true)
     try {
-      await updateRoleAction(userId, newRole as Role)
-      setRole(newRole)
-      router.refresh()
-      toast.success('Role updated')
+      const res = await updateRoleAction(userId, newRole as Role)
+      if (res?.error) {
+        toast.error(res.error)   // keep the Select showing the previous role
+      } else {
+        setRole(newRole)
+        router.refresh()
+        toast.success('Role updated')
+      }
     } catch {
       toast.error('Failed to update role')
     } finally {
@@ -31,9 +35,13 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
   async function handleDeactivate() {
     setSaving(true)
     try {
-      await deactivateUserAction(userId)
-      router.refresh()
-      toast.success('User deactivated')
+      const res = await deactivateUserAction(userId)
+      if (res?.error) {
+        toast.error(res.error)
+      } else {
+        router.refresh()
+        toast.success('User deactivated')
+      }
     } catch {
       toast.error('Failed to deactivate user')
     } finally {
@@ -44,9 +52,13 @@ export function UserActions({ userId, currentRole, active }: { userId: string; c
   async function handleReactivate() {
     setSaving(true)
     try {
-      await reactivateUserAction(userId)
-      router.refresh()
-      toast.success('User reactivated')
+      const res = await reactivateUserAction(userId)
+      if (res?.error) {
+        toast.error(res.error)
+      } else {
+        router.refresh()
+        toast.success('User reactivated')
+      }
     } catch {
       toast.error('Failed to reactivate user')
     } finally {

@@ -135,7 +135,8 @@ export type AuditEntry = {
   actor_email?: string | null
   action: string
   table_name: string
-  row_id: string
+  // NULL for text-keyed tables (status_option / phase_option) that have no uuid id.
+  row_id: string | null
   old_values: Record<string, unknown> | null
   new_values: Record<string, unknown>
   changed_columns: string[]

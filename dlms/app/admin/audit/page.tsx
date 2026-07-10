@@ -45,7 +45,7 @@ export default async function AuditLogPage({ searchParams }: PageProps) {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-xs font-mono">{entry.table_name}</TableCell>
-                <TableCell className="text-xs font-mono">{entry.row_id.slice(0, 8)}…</TableCell>
+                <TableCell className="text-xs font-mono">{entry.row_id ? `${entry.row_id.slice(0, 8)}…` : '—'}</TableCell>
                 <TableCell className="text-xs">{entry.changed_columns.join(', ') || '—'}</TableCell>
               </TableRow>
             ))}

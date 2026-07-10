@@ -5,8 +5,20 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const DEVICE_API_KEY = Deno.env.get('DEVICE_API_KEY') ?? ''
 
+// System actor for audit attribution. Every write is attributed to this app_user
+// (role 'system', seeded by migration 20260710120200_device_api_system_actor).
+// Overridable per-deployment via the DEVICE_API_ACTOR_ID secret.
+const DEVICE_API_ACTOR_ID =
+  Deno.env.get('DEVICE_API_ACTOR_ID') ?? '11111111-1111-1111-1111-111111111111'
+
+// CORS: default remains '*' because the API's callers are unknown (external
+// integrations authenticate with a static X-API-Key, not cookies, so '*' does not
+// enable credentialed cross-origin abuse). Set the DEVICE_API_ALLOWED_ORIGIN
+// secret to lock the API down to a single origin once the callers are identified.
+const ALLOWED_ORIGIN = Deno.env.get('DEVICE_API_ALLOWED_ORIGIN') ?? '*'
+
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
 }
@@ -22,13 +34,82 @@ function normalizeSerial(s: string): string {
   return s.toUpperCase().replace(/[^A-Z0-9]/g, '')
 }
 
+// ---------------------------------------------------------------------------
+// Request-body validation — mirrors lib/domain/validation.ts deviceSchema:
+// pcba_a_sn / pcba_a_hw_rev / pcba_a_bom_rev / pcba_a_fw_ver / status / phase are
+// required non-empty strings; the remaining fields are optional strings; qty is a
+// non-negative integer; dates must be ISO YYYY-MM-DD.
+// ---------------------------------------------------------------------------
+const REQUIRED_FIELDS = [
+  'pcba_a_sn', 'pcba_a_hw_rev', 'pcba_a_bom_rev', 'pcba_a_fw_ver', 'status', 'phase',
+] as const
+
+const OPTIONAL_STRING_FIELDS = [
+  'device_sn', 'product_name', 'model_no',
+  'pcba_b_sn', 'pcba_b_hw_rev', 'pcba_b_bom_rev', 'pcba_b_fw_ver',
+  'screen_model', 'hmi_ver', 'destination', 'customer', 'remarks',
+] as const
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+type Validated = { input: Record<string, unknown>; errors: Record<string, string> }
+
+function validateDeviceBody(body: Record<string, unknown>): Validated {
+  const errors: Record<string, string> = {}
+  const input: Record<string, unknown> = {}
+
+  for (const f of REQUIRED_FIELDS) {
+    const v = body[f]
+    if (typeof v !== 'string' || v.trim() === '') {
+      errors[f] = `${f} is required`
+    } else {
+      input[f] = v.trim()
+    }
+  }
+
+  for (const f of OPTIONAL_STRING_FIELDS) {
+    const v = body[f]
+    if (v == null) {
+      input[f] = null
+    } else if (typeof v !== 'string') {
+      errors[f] = `${f} must be a string`
+    } else {
+      // remarks preserved verbatim (multiline/Chinese); other fields trimmed
+      const s = f === 'remarks' ? v : v.trim()
+      input[f] = s === '' ? null : s
+    }
+  }
+
+  for (const f of ['build_date', 'ship_date'] as const) {
+    const v = body[f]
+    if (v == null || v === '') {
+      input[f] = null
+    } else if (typeof v !== 'string' || !ISO_DATE.test(v) || isNaN(Date.parse(v))) {
+      errors[f] = `${f} must be an ISO date (YYYY-MM-DD)`
+    } else {
+      input[f] = v
+    }
+  }
+
+  const qty = body.qty
+  if (qty == null || qty === '') {
+    input.qty = null
+  } else if (typeof qty !== 'number' || !Number.isInteger(qty) || qty < 0) {
+    errors.qty = 'qty must be a non-negative integer'
+  } else {
+    input.qty = qty
+  }
+
+  return { input, errors }
+}
+
 serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
 
-  // API key auth
+  // API key auth (static X-API-Key — auth model unchanged pending product decision)
   const apiKey = req.headers.get('X-API-Key') ?? ''
   if (!DEVICE_API_KEY || apiKey !== DEVICE_API_KEY) {
     return json({ error: 'Unauthorized — provide a valid X-API-Key header' }, 401)
@@ -87,16 +168,49 @@ serve(async (req) => {
         return json({ error: 'Invalid JSON body' }, 400)
       }
 
-      const pcbaASn = typeof body.pcba_a_sn === 'string' ? body.pcba_a_sn.trim() : ''
-      if (!pcbaASn) {
-        return json({ error: 'pcba_a_sn is required' }, 400)
-      }
-      if (!body.status || !body.phase) {
-        return json({ error: 'status and phase are required' }, 400)
+      // 1. Field validation mirroring deviceSchema
+      const { input, errors } = validateDeviceBody(body)
+      if (Object.keys(errors).length > 0) {
+        return json({ error: 'Validation failed', errors }, 400)
       }
 
-      // Duplicate check
-      const normalized = normalizeSerial(pcbaASn)
+      // 2. Vocabulary validation against the LIVE status/phase tables (clear 400
+      //    instead of an opaque foreign-key violation; admin-added codes pass).
+      const [{ data: statusOpts, error: sErr }, { data: phaseOpts, error: pErr }] =
+        await Promise.all([
+          supabase.from('status_option').select('code, active'),
+          supabase.from('phase_option').select('code, active'),
+        ])
+      if (sErr || pErr) throw (sErr ?? pErr)
+
+      const vocabErrors: Record<string, string> = {}
+      if (statusOpts?.length && !statusOpts.some((s) => s.code === input.status)) {
+        const active = statusOpts.filter((s) => s.active).map((s) => s.code)
+        vocabErrors.status = `"${input.status}" is not a valid status. Valid options: ${active.join(', ')}`
+      }
+      if (phaseOpts?.length && !phaseOpts.some((p) => p.code === input.phase)) {
+        const active = phaseOpts.filter((p) => p.active).map((p) => p.code)
+        vocabErrors.phase = `"${input.phase}" is not a valid phase. Valid options: ${active.join(', ')}`
+      }
+      if (Object.keys(vocabErrors).length > 0) {
+        return json({ error: 'Validation failed', errors: vocabErrors }, 400)
+      }
+
+      // 3. System actor must exist (device.created_by is NOT NULL → the previous
+      //    created_by: null insert could never succeed; fn_audit reads the actor
+      //    from created_by/updated_by, so this also fixes actor-less audit rows).
+      const { data: actor } = await supabase
+        .from('app_user')
+        .select('id')
+        .eq('id', DEVICE_API_ACTOR_ID)
+        .maybeSingle()
+      if (!actor) {
+        console.error(`device-api: system actor ${DEVICE_API_ACTOR_ID} not found in app_user`)
+        return json({ error: 'API misconfigured: system actor missing. Contact an administrator.' }, 500)
+      }
+
+      // 4. Duplicate check
+      const normalized = normalizeSerial(input.pcba_a_sn as string)
       const { data: existing } = await supabase
         .from('device')
         .select('id')
@@ -108,27 +222,14 @@ serve(async (req) => {
         return json({ error: 'Device with this PCBA-A S/N already exists', existingId: existing.id }, 409)
       }
 
-      // Insert
+      // 5. Insert, attributed to the system actor. Normalized columns and version
+      //    are maintained by the fn_device_touch trigger — not set here.
       const { data: created, error: insertError } = await supabase
         .from('device')
         .insert({
-          pcba_a_sn: pcbaASn,
-          pcba_a_sn_normalized: normalized,
-          status: body.status,
-          phase: body.phase,
-          device_sn: body.device_sn ?? null,
-          device_sn_normalized: typeof body.device_sn === 'string'
-            ? normalizeSerial(body.device_sn)
-            : null,
-          model_no: body.model_no ?? null,
-          product_name: body.product_name ?? null,
-          customer: body.customer ?? null,
-          destination: body.destination ?? null,
-          qty: typeof body.qty === 'number' ? body.qty : null,
-          remarks: body.remarks ?? null,
-          version: 1,
-          created_by: null,
-          updated_by: null,
+          ...input,
+          created_by: DEVICE_API_ACTOR_ID,
+          updated_by: DEVICE_API_ACTOR_ID,
         })
         .select('id, pcba_a_sn, status, phase')
         .single()
@@ -145,6 +246,10 @@ serve(async (req) => {
   }
 })
 
-// To set the API key secret:
-// npx supabase secrets set DEVICE_API_KEY=<generate a strong random key>
-// Or via Supabase dashboard → Project Settings → Edge Functions → Secrets
+// Secrets (Supabase dashboard → Project Settings → Edge Functions → Secrets):
+//   DEVICE_API_KEY            — static API key (required)
+//                               npx supabase secrets set DEVICE_API_KEY=<strong random key>
+//   DEVICE_API_ACTOR_ID       — app_user uuid for audit attribution
+//                               (default: 11111111-1111-1111-1111-111111111111,
+//                                seeded by migration 20260710120200)
+//   DEVICE_API_ALLOWED_ORIGIN — CORS origin lock-down (default: '*')

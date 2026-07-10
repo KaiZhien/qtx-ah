@@ -12,7 +12,10 @@ export default async function DashboardPage() {
   const user = await requireAuth()
   const [stats, { rows: recentActivity }] = await Promise.all([
     getDeviceStats(),
-    getAuditLog({ pageSize: 10 }),
+    // Scope the dashboard feed to device changes — the entries link to /devices/:id.
+    // (Audit now also covers app_user / vocab / assignment tables, whose rows have
+    // no device row_id and would not resolve as device links.)
+    getAuditLog({ tableFilter: 'device', pageSize: 10 }),
   ])
 
   return (
@@ -107,9 +110,13 @@ export default async function DashboardPage() {
                       {entry.action}
                     </Badge>
                   </span>
-                  <Link href={`/devices/${entry.row_id}`} className="font-mono text-xs hover:underline truncate">
-                    {entry.row_id.slice(0, 8)}…
-                  </Link>
+                  {entry.row_id ? (
+                    <Link href={`/devices/${entry.row_id}`} className="font-mono text-xs hover:underline truncate">
+                      {entry.row_id.slice(0, 8)}…
+                    </Link>
+                  ) : (
+                    <span className="font-mono text-xs text-muted-foreground">—</span>
+                  )}
                   {entry.changed_columns.length > 0 && (
                     <span className="text-xs text-muted-foreground truncate">
                       ({entry.changed_columns.join(', ')})

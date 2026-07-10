@@ -121,6 +121,92 @@ describe('updateDevice', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Centralized vocabulary validation (status/phase checked against the live
+// vocabulary tables at the service layer — clear AppError instead of a DB FK).
+// ---------------------------------------------------------------------------
+const VOCAB_STATUSES: QueryResult = {
+  data: [
+    { code: 'Stock', active: true },
+    { code: 'In Use', active: true },
+    { code: 'Legacy', active: false },   // inactive but still FK-valid
+  ],
+  error: null,
+}
+const VOCAB_PHASES: QueryResult = {
+  data: [
+    { code: 'Production', active: true },
+    { code: 'Validation', active: true },
+  ],
+  error: null,
+}
+
+describe('vocabulary validation (createDevice / updateDevice)', () => {
+  it('rejects an unknown status with a validation error listing valid options', async () => {
+    fromImpl = makeFrom({ status_option: [VOCAB_STATUSES] })
+    const err = await catchErr(
+      createDevice({ ...VALID_INPUT, status: 'Bogus' }, 'actor-1', 'engineer')
+    )
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('"Bogus"')
+    expect(err.serviceError.message).toContain('Stock')   // lists the valid options
+  })
+
+  it('rejects an unknown phase with a validation error listing valid options', async () => {
+    fromImpl = makeFrom({ status_option: [VOCAB_STATUSES], phase_option: [VOCAB_PHASES] })
+    const err = await catchErr(
+      createDevice({ ...VALID_INPUT, phase: 'Nope' }, 'actor-1', 'engineer')
+    )
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('"Nope"')
+    expect(err.serviceError.message).toContain('Production')
+  })
+
+  it('accepts an admin-added code present in the live table (no hardcoded list)', async () => {
+    const grown: QueryResult = {
+      data: [...(VOCAB_STATUSES.data as unknown[]), { code: 'Quarantine', active: true }],
+      error: null,
+    }
+    fromImpl = makeFrom({
+      status_option: [grown],
+      phase_option: [VOCAB_PHASES],
+      device: [{ data: { id: 'dev-1' }, error: null }],
+    })
+    const result = await createDevice({ ...VALID_INPUT, status: 'Quarantine' }, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1' })
+  })
+
+  it('accepts an inactive-but-existing code (mirrors the DB FK exactly)', async () => {
+    fromImpl = makeFrom({
+      status_option: [VOCAB_STATUSES],
+      phase_option: [VOCAB_PHASES],
+      device: [{ data: { id: 'dev-1' }, error: null }],
+    })
+    const result = await createDevice({ ...VALID_INPUT, status: 'Legacy' }, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1' })
+  })
+
+  it('fails open (defers to the DB FK) when the vocabulary cannot be read', async () => {
+    // status_option/phase_option resolve to empty → the write proceeds to insert.
+    fromImpl = makeFrom({ device: [{ data: { id: 'dev-1' }, error: null }] })
+    const result = await createDevice(VALID_INPUT, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1' })
+  })
+
+  it('updateDevice rejects an unknown status before touching the row', async () => {
+    fromImpl = makeFrom({
+      device: [{ data: { version: 1, deleted_at: null, status: 'Stock' }, error: null }],
+      status_option: [VOCAB_STATUSES],
+    })
+    const err = await catchErr(updateDevice('dev-1', { status: 'Bogus' }, 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('"Bogus"')
+  })
+})
+
 describe('changeStatus', () => {
   it('rejects an invalid transition with a conflict error', async () => {
     // Current status 'Retired' is terminal → no transition is valid

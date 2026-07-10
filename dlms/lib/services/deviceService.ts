@@ -14,6 +14,44 @@ import { isTraceableField, groupDevicesByDimension } from '@/lib/domain/componen
 import type { TraceabilityGroup } from '@/lib/domain/componentTraceability'
 import { getAssignedDeviceIds } from './assignmentService'
 import { getOverdueServiceDeviceIds } from './serviceScheduleService'
+import { getAllStatuses, getAllPhases } from './vocabularyService'
+
+/**
+ * Validate status/phase against the LIVE vocabulary tables before a write, so the
+ * device form, inline edit, draft promotion, and invoice confirm all get the same
+ * clear error the CSV/Excel import gives (importService validateMappedRow) instead
+ * of the DB's opaque foreign-key violation.
+ *
+ * Reads the vocabulary at call time, so admin-added codes pass automatically.
+ * Validates existence against ALL codes (active + inactive) — this mirrors the FK
+ * exactly and never falsely rejects a same-status write on a code that was later
+ * deactivated. If the vocabulary can't be read (empty), it defers to the DB FK
+ * (fail-open) rather than blocking a write on a check it couldn't perform.
+ */
+async function assertVocabValid(status?: string | null, phase?: string | null): Promise<void> {
+  if (status != null) {
+    const all = await getAllStatuses()
+    if (all.length > 0 && !all.some((s) => s.code === status)) {
+      const active = all.filter((s) => s.active).map((s) => s.code)
+      throw new AppError({
+        type: 'validation',
+        message: `Status "${status}" is not a valid status. Valid options: ${active.join(', ')}`,
+        errors: { status: [`Unknown status "${status}"`] },
+      })
+    }
+  }
+  if (phase != null) {
+    const all = await getAllPhases()
+    if (all.length > 0 && !all.some((p) => p.code === phase)) {
+      const active = all.filter((p) => p.active).map((p) => p.code)
+      throw new AppError({
+        type: 'validation',
+        message: `Phase "${phase}" is not a valid phase. Valid options: ${active.join(', ')}`,
+        errors: { phase: [`Unknown phase "${phase}"`] },
+      })
+    }
+  }
+}
 
 // NOTE: setSessionContext() was removed — it was a dead no-op stub that never
 // actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
@@ -153,6 +191,9 @@ export async function createDevice(
     })
   }
 
+  // Reject unknown status/phase with a clear message (vs. an opaque DB FK error).
+  await assertVocabValid(parsed.data.status, parsed.data.phase)
+
   const supabase = createAdminClient()
   const { data, error } = await supabase
     .from('device')
@@ -199,6 +240,12 @@ export async function updateDevice(
       message: 'Record has been modified by another user. Please reload and try again.',
     })
   }
+
+  // Reject unknown status/phase with a clear message BEFORE the transition check
+  // — isValidTransition fails closed on unknown codes, so checking vocabulary
+  // first turns "transition not allowed" confusion into "not a valid status,
+  // valid options are …". Empty strings fall through to the Zod "required" error.
+  await assertVocabValid(input.status || null, input.phase || null)
 
   // Enforce status-transition rules only when the status is actually changing.
   // Same-status writes and writes that don't touch status are unaffected.

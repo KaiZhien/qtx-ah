@@ -57,4 +57,35 @@ describe('promoteDraft', () => {
     expect(err).toBeInstanceOf(AppError)
     expect(err.serviceError.type).toBe('validation')
   })
+
+  it('rejects promoting a draft whose status is not in the live vocabulary (clear error, not a DB FK)', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [
+        {
+          data: {
+            id: 'draft-1',
+            status: 'pending_review',
+            extracted_payload: {
+              fields: {
+                pcba_a_sn:      { value: 'PA-XYZ-003' },
+                pcba_a_hw_rev:  { value: 'V1' },
+                pcba_a_bom_rev: { value: 'B1' },
+                pcba_a_fw_ver:  { value: '1.0.0' },
+                status:         { value: 'In Production' },  // not a vocabulary code
+              },
+            },
+          },
+          error: null,
+        },
+      ],
+      status_option: [
+        { data: [{ code: 'Stock', active: true }, { code: 'In Use', active: true }], error: null },
+      ],
+    })
+    const err = await catchErr(promoteDraft('draft-1', 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('"In Production"')
+    expect(err.serviceError.message).toContain('Stock')
+  })
 })

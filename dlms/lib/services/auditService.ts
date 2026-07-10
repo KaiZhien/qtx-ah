@@ -36,9 +36,12 @@ export async function getAuditLog(params: AuditLogParams = {}): Promise<{ rows: 
     actor_email: (r.app_user as { email?: string } | null)?.email ?? null,
     action: r.action as string,
     table_name: r.table_name as string,
-    row_id: r.row_id as string,
+    row_id: r.row_id as string | null,
     old_values: r.old_values as Record<string, unknown> | null,
-    new_values: r.new_values as Record<string, unknown>,
+    // Hard-delete audit rows (device_assignment unassign, report_subscriber removal)
+    // have new_values = NULL in the DB; coalesce so AuditEntry consumers keep a
+    // non-null bag (the deleted row's data lives in old_values).
+    new_values: (r.new_values ?? {}) as Record<string, unknown>,
     changed_columns: r.changed_columns as string[],
     request_id: r.request_id as string | null,
     occurred_at: r.occurred_at as string,

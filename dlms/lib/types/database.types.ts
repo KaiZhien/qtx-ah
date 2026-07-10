@@ -46,11 +46,11 @@ export type Database = {
           actor_id: string | null
           changed_columns: string[]
           id: string
-          new_values: Json
+          new_values: Json | null
           occurred_at: string
           old_values: Json | null
           request_id: string | null
-          row_id: string
+          row_id: string | null
           table_name: string
         }
         Insert: {
@@ -58,11 +58,11 @@ export type Database = {
           actor_id?: string | null
           changed_columns?: string[]
           id?: string
-          new_values: Json
+          new_values?: Json | null
           occurred_at?: string
           old_values?: Json | null
           request_id?: string | null
-          row_id: string
+          row_id?: string | null
           table_name: string
         }
         Update: {
@@ -70,11 +70,11 @@ export type Database = {
           actor_id?: string | null
           changed_columns?: string[]
           id?: string
-          new_values?: Json
+          new_values?: Json | null
           occurred_at?: string
           old_values?: Json | null
           request_id?: string | null
-          row_id?: string
+          row_id?: string | null
           table_name?: string
         }
         Relationships: [

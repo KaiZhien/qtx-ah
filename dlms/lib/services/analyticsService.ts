@@ -287,9 +287,10 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   const seen = new Set<string>()
   const candidateIds: string[] = []
   for (const row of auditData) {
-    if (!seen.has(row.row_id)) {
-      seen.add(row.row_id)
-      candidateIds.push(row.row_id)
+    const rid = row.row_id
+    if (rid && !seen.has(rid)) {
+      seen.add(rid)
+      candidateIds.push(rid)
     }
   }
 
@@ -308,8 +309,9 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   // Keep only devices where the most recent audit entry is by this user
   const lastActorMap = new Map<string, string>()
   for (const row of verifyData ?? []) {
-    if (!lastActorMap.has(row.row_id) && row.actor_id != null) {
-      lastActorMap.set(row.row_id, row.actor_id)
+    const rid = row.row_id
+    if (rid && !lastActorMap.has(rid) && row.actor_id != null) {
+      lastActorMap.set(rid, row.actor_id)
     }
   }
   const confirmedIds = candidateIds.filter(id => lastActorMap.get(id) === userId)
