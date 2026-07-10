@@ -1,9 +1,7 @@
 /** @type {import('next').NextConfig} */
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// /api/* is handled by the filesystem BFF proxy route
+// (web/app/api/[...path]/route.ts), which gates on the clinician session and
+// injects the server-only API key. No rewrite to the backend is needed.
+const nextConfig = {};
 
-const nextConfig = {
-  async rewrites() {
-    return [{ source: "/api/:path*", destination: `${API_URL}/api/:path*` }];
-  },
-};
 export default nextConfig;

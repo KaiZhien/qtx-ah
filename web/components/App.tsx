@@ -11,6 +11,7 @@ import {
   DEFAULT_FILTERS,
 } from "@/lib/constants";
 import { fetchPatients } from "@/lib/api";
+import { createBrowserClient } from "@/lib/supabase/client";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer } from "@/components/ui/Drawer";
 import { PatientDrawerBody } from "@/components/PatientDrawerBody";
@@ -148,6 +149,14 @@ export function App() {
   }, []);
   const [tweaksOpen, setTweaksOpen] = useState(false);
 
+  // Sign out: clear the Supabase session, then full-reload to /login so the
+  // middleware re-evaluates against the cleared cookies.
+  const handleSignOut = useCallback(async () => {
+    const supabase = createBrowserClient();
+    await supabase.auth.signOut();
+    window.location.assign("/login");
+  }, []);
+
   // Apply theme + density + accent via root attributes & CSS vars
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", tweaks.theme);
@@ -213,6 +222,13 @@ export function App() {
                 <path d="M10 1.5v3h3M5 8h6M5 11h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
               </svg>
               {" "}Export report
+            </button>
+            <button className="btn subtle" onClick={handleSignOut} title="Sign out">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6 14H3.5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1H6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M10.5 11l3-3-3-3M13.5 8H6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {" "}Sign out
             </button>
           </div>
         </header>

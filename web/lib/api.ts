@@ -16,10 +16,11 @@ import type {
   MetricSeriesResponse,
 } from "./types";
 
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
-
+// Requests go through the same-origin BFF proxy (web/app/api/[...path]/route.ts),
+// which validates the clinician session server-side and injects the API key.
+// The browser never holds a key.
 function apiHeaders(extra?: Record<string, string>): Record<string, string> {
-  return { "X-Api-Key": API_KEY, ...extra };
+  return { ...extra };
 }
 
 export async function fetchPatients(filters: Filters): Promise<Patient[]> {
@@ -221,8 +222,9 @@ export async function fetchLatestAnomaly(sn: string): Promise<AnomalyWarning | n
 }
 
 export function downloadPatientPdf(sn: string): void {
-  const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
-  window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf?key=${key}`, "_blank");
+  // Same-origin navigation carries the session cookie; the BFF proxy authorizes
+  // and injects the API key, then streams the PDF back.
+  window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf`, "_blank");
 }
 
 export interface ModelFileInfo {
