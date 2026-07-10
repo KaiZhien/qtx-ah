@@ -33,7 +33,7 @@ export interface OverviewPageProps {
 function Funnel({ data }: { data: Patient[] }) {
   const n = data.length;
   const fu = data.filter((p) => !p.is_dropout).length;
-  const resp = data.filter((p) => p.overall_responder === 1).length;
+  const resp = data.filter((p) => p.overall_responder).length;
   const drop = n - fu;
   const stages = [
     { label: "Intake records", value: n, color: "var(--ink-2)" },
@@ -90,14 +90,14 @@ function Funnel({ data }: { data: Patient[] }) {
 
 export function OverviewPage({ data, dataAll, onPatientClick: _onPatientClick, showFunnel }: OverviewPageProps) {
   const n = data.length;
-  const followUp = useMemo(() => data.filter((p) => p.is_dropout === 0), [data]);
+  const followUp = useMemo(() => data.filter((p) => !p.is_dropout), [data]);
   const pctFu = n ? (followUp.length / n) * 100 : 0;
   const meanImp = useMemo(
     () => mean(followUp.map((p) => p.composite_improvement).filter((v): v is number => v != null && !isNaN(v))),
     [followUp]
   );
   const respRate = followUp.length
-    ? (followUp.filter((p) => p.overall_responder === 1).length / followUp.length) * 100
+    ? (followUp.filter((p) => p.overall_responder).length / followUp.length) * 100
     : 0;
 
   // Sparklines — monthly intakes through 2024
@@ -108,7 +108,7 @@ export function OverviewPage({ data, dataAll, onPatientClick: _onPatientClick, s
     data.forEach((p) => {
       const m = new Date(p.intake_date).getMonth();
       monthly[m]++;
-      if (p.overall_responder === 1) monthlyResp[m]++;
+      if (p.overall_responder) monthlyResp[m]++;
       if (!p.is_dropout) monthlyFu[m]++;
     });
     return { monthly, monthlyResp, monthlyFu };
@@ -130,7 +130,7 @@ export function OverviewPage({ data, dataAll, onPatientClick: _onPatientClick, s
     () =>
       FLAGS.map((f) => {
         const sub = followUp
-          .filter((p) => (p as Record<string, unknown>)[f] === 1)
+          .filter((p) => (p as Record<string, unknown>)[f] === true)
           .map((p) => p.composite_improvement)
           .filter((v): v is number => v != null && !isNaN(v));
         return { label: FLAG_LABELS[f] || f, value: mean(sub) ?? 0, n: sub.length };

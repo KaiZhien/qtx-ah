@@ -280,6 +280,63 @@ def test_create_session_503_when_db_not_ready(client):
         deps._db_ready = True
 
 
+# ── Claude failure resilience — AI generation must never fail the POST ───────
+
+def test_create_session_201_when_claude_fails(client, monkeypatch):
+    """A Claude outage never fails session creation; an api_error insight row
+    is persisted by the (deferred) generation task instead."""
+    from services.insight import InsightService
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+
+    def raise_exc(self, msg):
+        raise Exception("Claude down")
+
+    monkeypatch.setattr(InsightService, "_call_claude", raise_exc)
+
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/session", json={"post_tug_s": 9.9})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["insight"] is None
+    assert data["insight_status"] == "scheduled"
+
+    # TestClient runs background tasks before returning — the row is committed.
+    resp2 = client.get(f"/api/patient/{_PATIENT_SN}/insights")
+    rows = [r for r in resp2.json() if r["insight_type"] == "session_summary"]
+    assert any(r["model"] == "api_error" for r in rows)
+    assert any(r["content"] == InsightService.API_ERROR_RESPONSE for r in rows)
+
+
+def test_session_persisted_even_if_ai_task_explodes(client, monkeypatch):
+    """Even an unexpected error inside the whole AI generation stage leaves the
+    session + trends committed and the response at 201."""
+    from services.insight import InsightService
+
+    def boom(self, timeline, patient_id, session_number, predictions=None):
+        raise RuntimeError("total AI failure")
+
+    monkeypatch.setattr(InsightService, "generate_session_insight", boom)
+
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/session", json={"post_tug_s": 9.8})
+    assert resp.status_code == 201
+    sn_num = resp.json()["session_number"]
+
+    tl = client.get(f"/api/patient/{_PATIENT_SN}/timeline").json()
+    assert any(s["session_number"] == sn_num for s in tl["sessions"])
+
+
+def test_create_session_response_marks_insight_scheduled(client, monkeypatch):
+    """POST /session returns immediately with insight=None + insight_status
+    (generation is deferred; the UI re-fetches GET /insights)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    resp = client.post(f"/api/patient/{_PATIENT_SN}/session", json={"post_tug_s": 9.7})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "insight" in data
+    assert data["insight"] is None
+    assert data["insight_status"] == "scheduled"
+
+
 # ── GET /api/patient/{sn}/timeline ────────────────────────────────────────────
 
 def test_timeline_returns_200(client):

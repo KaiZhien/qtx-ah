@@ -23,7 +23,7 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
     : [];
 
   const recentlyFlagged = data
-    .filter((p) => p.is_dropout === 1 && p.age > 70)
+    .filter((p) => p.is_dropout && p.age > 70)
     .slice(0, 6);
 
   return (
@@ -74,7 +74,7 @@ export function PatientLookup({ data, onPatientClick }: PatientLookupProps) {
                       <td>
                         {p.is_dropout
                           ? <Pill kind="warning">No FU</Pill>
-                          : p.overall_responder === 1
+                          : p.overall_responder
                             ? <Pill kind="success">Responder</Pill>
                             : <Pill>Non-resp.</Pill>}
                       </td>

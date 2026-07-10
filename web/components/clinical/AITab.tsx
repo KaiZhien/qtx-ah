@@ -1,7 +1,8 @@
 "use client";
 import React from "react";
 import type { InsightRow, AnomalyWarning, BenchmarkResult } from "@/lib/types";
-import { fetchInsights, fetchLatestPredictions, fetchBenchmark, fetchLatestAnomaly, type LatestPredictions } from "@/lib/api";
+import { fetchInsights, fetchLatestPredictions, fetchBenchmark, fetchLatestAnomaly } from "@/lib/api";
+import type { LatestPredictions } from "@/lib/types";
 import { InsightCard } from "./InsightCard";
 import { QAPanel } from "./QAPanel";
 import { PredictionChips } from "./PredictionChips";

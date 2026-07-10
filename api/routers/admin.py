@@ -15,6 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 import deps
 from services.prediction import _shap_explainer_cache
+from services.rate_limit import rate_limit
 
 router = APIRouter()
 
@@ -89,7 +90,10 @@ def _run_retrain() -> None:
     )
 
 
-@router.post("/admin/trigger_retrain", dependencies=[Depends(require_admin_key)])
+@router.post(
+    "/admin/trigger_retrain",
+    dependencies=[Depends(require_admin_key), Depends(rate_limit("trigger_retrain", default_limit=5))],
+)
 def trigger_retrain(background_tasks: BackgroundTasks) -> dict:
     """Schedule a background retrain job."""
     background_tasks.add_task(_run_retrain)

@@ -61,11 +61,16 @@ def _client():
 # ---------------------------------------------------------------------------
 
 def _db_for_list(rows):
-    """Mock db that chains .query(...).join(...).filter(...).all() → rows."""
+    """Mock db that chains .query(...).join(...).filter(...).offset(...).limit(...).all() → rows,
+    and .count() → len(rows). The pagination is not actually applied to the mock rows; the
+    real slicing behaviour is DB-driven and covered by the offset/limit forwarding test."""
     db = MagicMock()
     q = MagicMock()
     q.join.return_value = q
     q.filter.return_value = q
+    q.offset.return_value = q
+    q.limit.return_value = q
+    q.count.return_value = len(rows)
     q.all.return_value = rows
     db.query.return_value = q
     return db
@@ -194,8 +199,13 @@ def test_list_patients_200_empty_result():
             finally:
                 app.dependency_overrides.pop(get_db, None)
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
-    assert r.json() == []
+    data = r.json()
+    # Paginated envelope, not a bare list
+    assert isinstance(data, dict)
+    assert data["items"] == []
+    assert data["total"] == 0
+    assert data["limit"] == 500
+    assert data["offset"] == 0
 
 
 def test_list_patients_200_with_results():
@@ -210,9 +220,70 @@ def test_list_patients_200_with_results():
                 app.dependency_overrides.pop(get_db, None)
     assert r.status_code == 200
     data = r.json()
-    assert isinstance(data, list)
-    assert len(data) == 1
-    assert data[0]["sn"] == "P001"
+    assert isinstance(data, dict)
+    assert set(data.keys()) == {"items", "total", "limit", "offset"}
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sn"] == "P001"
+    assert data["total"] == 1
+
+
+def test_list_patients_default_pagination_envelope():
+    """The default page uses limit=500, offset=0 and always exposes the four envelope keys."""
+    with _client() as c:
+        with patch.object(deps, "_db_ready", True):
+            app.dependency_overrides[get_db] = lambda: _db_for_list([])
+            try:
+                r = c.get("/api/patients", headers=_HEADERS)
+            finally:
+                app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["limit"] == 500
+    assert data["offset"] == 0
+
+
+def test_list_patients_pagination_params_forwarded_to_query():
+    """limit/offset query params are echoed in the envelope and applied to the DB query."""
+    patient = _make_patient()
+    session = _make_session()
+    db = _db_for_list([(patient, session)])
+    with _client() as c:
+        with patch.object(deps, "_db_ready", True):
+            app.dependency_overrides[get_db] = lambda: db
+            try:
+                r = c.get("/api/patients?limit=10&offset=20", headers=_HEADERS)
+            finally:
+                app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["limit"] == 10
+    assert data["offset"] == 20
+    q = db.query.return_value
+    q.offset.assert_called_with(20)
+    q.limit.assert_called_with(10)
+
+
+def test_list_patients_limit_above_max_rejected():
+    """limit > 1000 is a 422 (query-param validation)."""
+    with _client() as c:
+        with patch.object(deps, "_db_ready", True):
+            app.dependency_overrides[get_db] = lambda: _db_for_list([])
+            try:
+                r = c.get("/api/patients?limit=5000", headers=_HEADERS)
+            finally:
+                app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 422
+
+
+def test_list_patients_negative_offset_rejected():
+    with _client() as c:
+        with patch.object(deps, "_db_ready", True):
+            app.dependency_overrides[get_db] = lambda: _db_for_list([])
+            try:
+                r = c.get("/api/patients?offset=-1", headers=_HEADERS)
+            finally:
+                app.dependency_overrides.pop(get_db, None)
+    assert r.status_code == 422
 
 
 def test_list_patients_cohort_filter_returns_200():
@@ -240,8 +311,8 @@ def test_list_patients_nan_normalised_to_null():
                 app.dependency_overrides.pop(get_db, None)
     assert r.status_code == 200
     data = r.json()
-    assert len(data) == 1
-    assert data[0]["pre_vas"] is None
+    assert len(data["items"]) == 1
+    assert data["items"][0]["pre_vas"] is None
 
 
 # ===========================================================================

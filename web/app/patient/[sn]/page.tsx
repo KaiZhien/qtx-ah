@@ -13,7 +13,7 @@ export default function PatientPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchPatient(Number(sn))
+    fetchPatient(sn)
       .then(setPatient)
       .catch(() => setError("Patient not found"));
   }, [sn]);

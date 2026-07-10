@@ -2,11 +2,22 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 
 import joblib
 from fastapi import HTTPException, Request
 from pathlib import Path
+
+# Configure root logging only if nothing else (e.g. uvicorn) already has —
+# avoids double handlers / fighting uvicorn's log config.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent  # quantumtx-ah/
 MODELS_DIR = ROOT / "models"
@@ -59,17 +70,17 @@ def load_all() -> None:
             db.close()
 
         if count == 0:
-            print(
-                "[deps] WARNING: patients table is empty — "
+            logger.warning(
+                "patients table is empty — "
                 "run: DATABASE_URL=... PYTHONPATH=src .venv/bin/python scripts/11_seed_database.py"
             )
             _db_ready = False
         else:
-            print(f"[deps] DB ready — {count:,} patients loaded")
+            logger.info("DB ready — %s patients loaded", f"{count:,}")
             _db_ready = True
 
     except Exception as exc:
-        print(f"[deps] WARNING: DB unavailable at startup: {exc}")
+        logger.warning("DB unavailable at startup: %s", exc)
         _db_ready = False
 
     # --- ML models (fatal if missing) ---
@@ -79,7 +90,7 @@ def load_all() -> None:
             models[name] = joblib.load(path)
         except FileNotFoundError:
             missing.append(str(path))
-            print(f"[deps] MISSING model file: {path} — run the training script first")
+            logger.error("MISSING model file: %s — run the training script first", path)
 
     if missing:
         raise RuntimeError(

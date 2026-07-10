@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import date
-from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,13 +12,15 @@ from sqlalchemy.orm import Session as DBSession
 
 import deps
 from db import get_db
-from models.clinical import Patient, Session as ClinicalSession, PatientTrend, PatientInsight
+from models.clinical import Patient, Session as ClinicalSession, PatientTrend
 from services.anomaly import AnomalyDetector
 from services.trend import TrendEngine
 from services.insight import InsightService
 from services.prediction import PredictionService
+from services.rate_limit import rate_limit
 from services.retrain import RetrainService
 from services.calibration import CalibrationService
+from services.timeline import build_timeline_dict, session_to_dict, trend_to_dict
 from services.wearable_features import get_patient_features as _get_wearable_features
 
 logger = logging.getLogger(__name__)
@@ -77,93 +78,95 @@ class NewSessionRequest(BaseModel):
     breadth_of_response:  float | None = None
 
 
-def _trend_to_dict(t: Any) -> dict:
-    """Serialise a TrendResult or PatientTrend ORM row to a plain dict."""
-    return {
-        "metric":        t.metric,
-        "direction":     t.direction,
-        "sessions_used": t.sessions_used,
-        "magnitude":     float(t.magnitude) if t.magnitude is not None else None,
-        "first_value":   float(t.first_value) if t.first_value is not None else None,
-        "last_value":    float(t.last_value) if t.last_value is not None else None,
-    }
+# Serialisation helpers are shared with routers/ask.py and routers/plan.py —
+# see services/timeline.py. The local names are kept for test/back-compat.
+_trend_to_dict = trend_to_dict
 
 
 def _session_to_dict(s: ClinicalSession) -> dict:
-    """Serialise a Session ORM row to a plain dict for the timeline response."""
-    def _v(val):
-        if val is None:
-            return None
-        if hasattr(val, "__float__"):
-            return float(val)
-        return val
-
-    return {
-        "session_number":       s.session_number,
-        "session_date":         s.session_date.isoformat() if s.session_date else None,
-        "notes":                s.notes,
-        "has_followup":         s.has_followup,
-        "is_dropout":           s.is_dropout,
-        "usage_frequency":      s.usage_frequency,
-        "joined_with_pain":     s.joined_with_pain,
-        "pain_improved":        s.pain_improved,
-        "pain_location":        s.pain_location,
-        "pre_vas":              _v(s.pre_vas),
-        "post_vas":             _v(s.post_vas),
-        "vas_change":           _v(s.vas_change),
-        "pre_tug_s":            _v(s.pre_tug_s),
-        "post_tug_s":           _v(s.post_tug_s),
-        "tug_change_pct":       _v(s.tug_change_pct),
-        "pre_5xsst_s":          _v(s.pre_5xsst_s),
-        "post_5xsst_s":         _v(s.post_5xsst_s),
-        "sst_change_pct":       _v(s.sst_change_pct),
-        "pre_normal_gs_ms":     _v(s.pre_normal_gs_ms),
-        "post_normal_gs_ms":    _v(s.post_normal_gs_ms),
-        "normal_gs_change_pct": _v(s.normal_gs_change_pct),
-        "pre_fast_gs_ms":       _v(s.pre_fast_gs_ms),
-        "post_fast_gs_ms":      _v(s.post_fast_gs_ms),
-        "fast_gs_change_pct":   _v(s.fast_gs_change_pct),
-        "baseline_sppb":        s.baseline_sppb,
-        "post_sppb":            s.post_sppb,
-        "sppb_change":          s.sppb_change,
-        "post_tandem_s":        _v(s.post_tandem_s),
-        "composite_improvement": _v(s.composite_improvement),
-        "overall_responder":    s.overall_responder,
-    }
+    return session_to_dict(s, variant="session")
 
 
 def _build_timeline_dict(patient: Patient, db: DBSession) -> dict:
     """Build the timeline payload that InsightService passes to Claude."""
-    sessions = (
-        db.query(ClinicalSession)
-        .filter_by(patient_id=patient.id)
-        .order_by(ClinicalSession.session_number.asc())
-        .all()
-    )
-    trends = db.query(PatientTrend).filter_by(patient_id=patient.id).all()
-    return {
-        "patient": {
-            "sn":                patient.sn,
-            "age":               patient.age,
-            "age_band":          patient.age_band,
-            "gender":            patient.gender,
-            "cohort":            patient.cohort,
-            "primary_indication": patient.primary_indication,
-            "baseline_sppb":     patient.baseline_sppb,
-            "pre_tandem_s":      float(patient.pre_tandem_s) if patient.pre_tandem_s is not None else None,
-            # Key phenotype flags for RAISE-validated response patterns
-            "has_frailty":       patient.has_frailty,
-            "has_diabetes":      patient.has_diabetes,
-            "has_neurological":  patient.has_neurological,
-            "has_stroke":        patient.has_stroke,
-            "has_parkinsons":    patient.has_parkinsons,
-        },
-        "sessions": [_session_to_dict(s) for s in sessions],
-        "trends":   [_trend_to_dict(t) for t in trends],
-    }
+    return build_timeline_dict(patient, db, variant="session")
 
 
-@router.post("/patient/{sn}/session", status_code=201)
+def _generate_session_ai(
+    db: DBSession,
+    patient_id: uuid.UUID,
+    session_id: uuid.UUID,
+    session_number: int,
+    predictions: dict | None,
+    trends: list,
+) -> None:
+    """Background task: generate the session insight and anomaly warning.
+
+    Runs after the HTTP response is sent (FastAPI BackgroundTasks), so a slow
+    or failing Claude/Voyage/Terra call can never fail or delay session
+    creation. Each stage commits independently and swallows its own errors:
+    the session + prediction rows are already committed by the request
+    handler, the insight row commits on its own, and the anomaly row commits
+    on its own.
+
+    The request-scoped Session object is reused here; FastAPI closes it during
+    dependency teardown before background tasks run, but a closed SQLAlchemy
+    Session is reusable and transparently re-connects (rows are re-fetched by
+    primary key below).
+    """
+    try:
+        patient = db.get(Patient, patient_id)
+        session = db.get(ClinicalSession, session_id)
+        if patient is None or session is None:
+            logger.warning(
+                "Post-session AI skipped — rows not found (patient=%s session=%s)",
+                patient_id, session_id,
+            )
+            return
+
+        wearable_feats: dict = {}
+        try:
+            wearable_feats = _get_wearable_features(patient.id, db) or {}
+        except Exception as exc:
+            logger.warning("Wearable feature fetch failed: %s", exc)
+
+        # Insight generation — commits independently. InsightService itself
+        # persists a model="api_error" row when Claude is unreachable.
+        try:
+            timeline = _build_timeline_dict(patient, db)
+            timeline["wearable"] = {
+                "cadence_avg_30d": wearable_feats.get("wearable_cadence_avg_30d"),
+                "steps_avg_7d": wearable_feats.get("wearable_steps_30d_avg"),
+            }
+            InsightService(db).generate_session_insight(
+                timeline, patient.id, session_number, predictions=predictions
+            )
+            db.commit()
+        except Exception as exc:
+            logger.warning("Insight generation failed: %s", exc)
+            db.rollback()
+
+        # Anomaly detection — commits independently.
+        try:
+            AnomalyDetector(db).check_and_warn(
+                patient, session, trends, predictions, session_number,
+                wearable_feats=wearable_feats,
+            )
+            db.commit()
+        except Exception as exc:
+            logger.warning("Anomaly detection failed: %s", exc)
+            db.rollback()
+    except Exception as exc:
+        logger.warning("Post-session AI task failed: %s", exc)
+    finally:
+        db.close()
+
+
+@router.post(
+    "/patient/{sn}/session",
+    status_code=201,
+    dependencies=[Depends(rate_limit("session"))],
+)
 def create_session(
     sn: str,
     payload: NewSessionRequest,
@@ -173,8 +176,11 @@ def create_session(
     """Create a new session for an existing patient.
 
     Automatically assigns the next session_number (max existing + 1).
-    Computes and persists trend signals within the same transaction.
-    Returns the new session_number and updated trends.
+    Session, trends and ML prediction are persisted in a single transaction;
+    AI insight + anomaly generation run as a background task after the
+    response is sent (the web UI re-fetches insights via GET
+    /patient/{sn}/insights, so nothing blocks on Claude). The response's
+    "insight" field is therefore null with insight_status="scheduled".
     """
     _check_db_ready()
 
@@ -199,38 +205,26 @@ def create_session(
     db.flush()
 
     trends = TrendEngine(db).compute_and_save(patient.id)
-    db.commit()  # commit session + trends before calling external API
 
+    # ML prediction joins the same transaction; a model failure is rolled
+    # back to the savepoint and never blocks session creation.
     predictions = None
     if deps.models:
-        predictions = PredictionService(db, deps.models).run(patient, session)
-        db.commit()  # commit SessionPrediction row
+        try:
+            with db.begin_nested():
+                predictions = PredictionService(db, deps.models).run(patient, session)
+        except Exception as exc:
+            logger.warning("Prediction failed for sn=%s session=%d: %s", sn, new_sn, exc)
+            predictions = None
 
-    wearable_feats: dict = {}
-    try:
-        wearable_feats = _get_wearable_features(str(patient.id), db)
-    except Exception as exc:
-        logger.warning("Wearable feature fetch failed: %s", exc)
+    patient_id, session_id = patient.id, session.id
+    db.commit()  # single atomic commit: session + trends + prediction
 
-    timeline = _build_timeline_dict(patient, db)
-    timeline["wearable"] = {
-        "cadence_avg_30d": wearable_feats.get("wearable_cadence_avg_30d"),
-        "steps_avg_7d": wearable_feats.get("wearable_steps_30d_avg"),
-    }
-    insight_text = InsightService(db).generate_session_insight(
-        timeline, patient.id, new_sn, predictions=predictions
+    # AI generation (Claude insight + anomaly warning) is deferred until after
+    # the response is sent — a Claude outage can never fail this request.
+    background_tasks.add_task(
+        _generate_session_ai, db, patient_id, session_id, new_sn, predictions, trends,
     )
-    db.commit()  # commit PatientInsight row
-
-    # Step 3 — anomaly detection (non-blocking)
-    try:
-        AnomalyDetector(db).check_and_warn(
-            patient, session, trends, predictions, new_sn,
-            wearable_feats=wearable_feats,
-        )
-        db.commit()
-    except Exception as exc:
-        logger.warning("Anomaly detection failed: %s", exc)
 
     # Non-blocking retrain trigger — queues background task when threshold met
     try:
@@ -244,7 +238,8 @@ def create_session(
         "sn":             sn,
         "session_number": new_sn,
         "trends":         [_trend_to_dict(t) for t in trends],
-        "insight":        insight_text,
+        "insight":        None,
+        "insight_status": "scheduled",
     }
 
 

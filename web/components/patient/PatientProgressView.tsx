@@ -18,7 +18,7 @@ const GRP_PRIORITY = [
 
 function primaryGrpFlag(patient: Patient): string {
   const p = patient as unknown as Record<string, unknown>
-  return GRP_PRIORITY.find(f => p[f] === 1 || p[f] === true) ?? "grp_wellness"
+  return GRP_PRIORITY.find(f => p[f] === true) ?? "grp_wellness"
 }
 
 const GOAL_META: Record<Goal, { metric: "vas_change" | "tug_change_pct"; label: string }> = {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import type { Patient, Filters, Tweaks } from "@/lib/types";
 import {
@@ -10,7 +10,20 @@ import {
   DEFAULT_TWEAKS,
   DEFAULT_FILTERS,
 } from "@/lib/constants";
-import { fetchPatients } from "@/lib/api";
+import { fetchAllPatients } from "@/lib/api";
+
+// Filters map 1:1 onto fields present in every patient record, so they can be
+// applied client-side over the fully-loaded cohort — no per-change refetch.
+function applyFilters(all: Patient[], f: Filters): Patient[] {
+  return all.filter(
+    (p) =>
+      f.cohorts.includes(p.cohort) &&
+      f.usage.includes(p.usage_frequency) &&
+      f.ageBands.includes(p.age_band) &&
+      f.gender.includes(p.gender) &&
+      (!f.fuOnly || !p.is_dropout)
+  );
+}
 import { createBrowserClient } from "@/lib/supabase/client";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer } from "@/components/ui/Drawer";
@@ -90,10 +103,10 @@ export function App() {
   // Routing
   const [page, setPage] = useState<string>("overview");
 
-  // Patient data
+  // Patient data — the full cohort is fetched once; the filtered view is derived.
   const [allData, setAllData] = useState<Patient[]>([]);
-  const [filteredData, setFilteredData] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Sidebar filters
   const [filters, setFilters] = useState<Filters>({
@@ -105,32 +118,36 @@ export function App() {
     fuOnly: false,
   });
 
-  // Fetch all patients once on mount
+  // Fetch the full cohort once on mount (paging through the API envelope).
   useEffect(() => {
-    fetchPatients({
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchAllPatients({
       cohorts: COHORTS,
       usage: USAGE,
       ageBands: AGE_BANDS,
       gender: ["F", "M"],
       fuOnly: false,
     })
-      .then(setAllData)
-      .catch(console.error);
-  }, []);
-
-  // Fetch filtered patients whenever filters change
-  useEffect(() => {
-    setLoading(true);
-    fetchPatients(filters)
       .then((data) => {
-        setFilteredData(data);
+        if (cancelled) return;
+        setAllData(data);
         setLoading(false);
       })
       .catch((e) => {
+        if (cancelled) return;
         console.error(e);
+        setError("Could not load patient data. Please retry.");
         setLoading(false);
       });
-  }, [filters]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Derive the filtered view client-side — no refetch on filter change.
+  const filteredData = useMemo(() => applyFilters(allData, filters), [allData, filters]);
 
   // Drawer
   const [drawerPatient, setDrawerPatient] = useState<Patient | null>(null);
@@ -233,18 +250,29 @@ export function App() {
           </div>
         </header>
 
-        {page === "overview" && (
-          loading
-            ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
-            : <OverviewPage data={filteredData} dataAll={allData} onPatientClick={openDrawer} showFunnel={tweaks.showFunnel} />
-        )}
-        {page === "cohorts" && (
-          loading
-            ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
-            : <CohortsPage data={filteredData} onPatientClick={openDrawer} />
-        )}
-        {page === "clinical" && (
-          <ClinicalPage data={allData} onPatientClick={openDrawer} />
+        {error ? (
+          <div
+            role="alert"
+            style={{ padding: 28, color: "var(--danger, #c0392b)" }}
+          >
+            {error}
+          </div>
+        ) : (
+          <>
+            {page === "overview" && (
+              loading
+                ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
+                : <OverviewPage data={filteredData} dataAll={allData} onPatientClick={openDrawer} showFunnel={tweaks.showFunnel} />
+            )}
+            {page === "cohorts" && (
+              loading
+                ? <div style={{ padding: 28, color: "var(--ink-3)" }}>Loading patients…</div>
+                : <CohortsPage data={filteredData} onPatientClick={openDrawer} />
+            )}
+            {page === "clinical" && (
+              <ClinicalPage data={allData} onPatientClick={openDrawer} />
+            )}
+          </>
         )}
       </main>
 

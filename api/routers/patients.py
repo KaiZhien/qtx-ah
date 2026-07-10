@@ -107,9 +107,15 @@ def list_patients(
     age_band: List[str] = Query(default=[]),
     gender: List[str] = Query(default=[]),
     fu_only: bool = Query(default=False),
+    limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    """Return filtered patient records as flat dicts matching the original parquet shape."""
+) -> dict[str, Any]:
+    """Return a paginated envelope of filtered patient records.
+
+    Response shape: ``{"items": [...flat patient dicts...], "total": int, "limit": int, "offset": int}``.
+    ``total`` is the full filtered count (ignoring limit/offset) so clients can page through it.
+    """
     _check_db_ready()
 
     query = (
@@ -129,8 +135,14 @@ def list_patients(
     if fu_only:
         query = query.filter(ClinicalSession.is_dropout == False)  # noqa: E712
 
-    rows = query.all()
-    return [_row_to_dict(p, s) for p, s in rows]
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+    return {
+        "items": [_row_to_dict(p, s) for p, s in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 VALID_METRICS = {"vas_change", "tug_change_pct"}

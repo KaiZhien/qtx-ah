@@ -1,8 +1,12 @@
 """SQLAlchemy ORM models for wearable data storage."""
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
-from sqlalchemy import String, Float, Integer, Boolean, DateTime, Date, JSON, UniqueConstraint
+from sqlalchemy import (
+    String, Float, Integer, Boolean, DateTime, Date, ForeignKey, JSON, UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from db import Base
 
@@ -11,7 +15,12 @@ class WearableEnrollment(Base):
     __tablename__ = "wearable_enrollments"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String, index=True)
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     terra_user_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     device_brand: Mapped[str] = mapped_column(String)
     enrolled_at: Mapped[datetime] = mapped_column(DateTime)

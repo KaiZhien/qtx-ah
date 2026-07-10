@@ -143,21 +143,46 @@ def client(test_engine):
 
 
 def test_list_all_patients(client):
-    """GET /api/patients returns all 3 patients."""
+    """GET /api/patients returns a paginated envelope wrapping all 3 patients."""
     resp = client.get("/api/patients")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 3
+    assert set(data.keys()) == {"items", "total", "limit", "offset"}
+    assert len(data["items"]) == 3
+    assert data["total"] == 3
+    assert data["limit"] == 500
+    assert data["offset"] == 0
 
 
 def test_list_patients_required_keys(client):
-    """Every patient dict contains the expected top-level keys."""
+    """Every patient dict inside items contains the expected top-level keys."""
     resp = client.get("/api/patients")
     assert resp.status_code == 200
-    p = resp.json()[0]
+    p = resp.json()["items"][0]
     for key in ["sn", "name", "gender", "age", "cohort", "record_type",
                 "is_dropout", "has_followup", "usage_frequency"] + _FLAG_COLS:
         assert key in p, f"Missing key: {key}"
+
+
+def test_list_patients_pagination_slices_and_reports_total(client):
+    """limit/offset actually slice the result set while total stays the full count."""
+    first = client.get("/api/patients", params={"limit": 2, "offset": 0})
+    assert first.status_code == 200
+    fd = first.json()
+    assert fd["total"] == 3
+    assert fd["limit"] == 2 and fd["offset"] == 0
+    assert len(fd["items"]) == 2
+
+    second = client.get("/api/patients", params={"limit": 2, "offset": 2})
+    assert second.status_code == 200
+    sd = second.json()
+    assert sd["total"] == 3
+    assert sd["offset"] == 2
+    assert len(sd["items"]) == 1
+
+    # No overlap between the two pages — every patient seen exactly once.
+    sns = {p["sn"] for p in fd["items"]} | {p["sn"] for p in sd["items"]}
+    assert sns == {"101", "102", "103"}
 
 
 def test_filter_by_cohort(client):
@@ -165,8 +190,9 @@ def test_filter_by_cohort(client):
     resp = client.get("/api/patients", params={"cohort": "Neurological"})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["sn"] == "101"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sn"] == "101"
 
 
 def test_filter_by_gender(client):
@@ -174,8 +200,8 @@ def test_filter_by_gender(client):
     resp = client.get("/api/patients", params={"gender": "M"})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["sn"] == "102"
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sn"] == "102"
 
 
 def test_filter_fu_only(client):
@@ -183,9 +209,10 @@ def test_filter_fu_only(client):
     resp = client.get("/api/patients", params={"fu_only": "true"})
     assert resp.status_code == 200
     data = resp.json()
-    sns = {p["sn"] for p in data}
+    sns = {p["sn"] for p in data["items"]}
     assert "103" not in sns
-    assert len(data) == 2
+    assert len(data["items"]) == 2
+    assert data["total"] == 2
 
 
 def test_filter_by_age_band(client):
@@ -193,8 +220,8 @@ def test_filter_by_age_band(client):
     resp = client.get("/api/patients", params={"age_band": "<50"})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["sn"] == "103"
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sn"] == "103"
 
 
 def test_get_patient_by_sn(client):

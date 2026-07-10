@@ -41,8 +41,14 @@ app.add_middleware(
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    """Require X-Api-Key header on all routes except /webhooks/ (which uses Terra HMAC)."""
-    if not request.url.path.startswith("/webhooks") and not request.url.path.startswith("/api/admin/"):
+    """Require X-Api-Key header on all routes except /webhooks/ (Terra HMAC),
+    /api/admin/ (QTX_ADMIN_KEY) and /health (unauthenticated liveness probe)."""
+    _path = request.url.path
+    if (
+        not _path.startswith("/webhooks")
+        and not _path.startswith("/api/admin/")
+        and _path != "/health"
+    ):
         expected = os.environ.get("QTX_API_KEY", "")
         if not expected:
             return JSONResponse({"detail": "QTX_API_KEY is not configured on the server"}, status_code=500)
@@ -50,6 +56,37 @@ async def api_key_middleware(request: Request, call_next):
         if not hmac.compare_digest(provided, expected):
             return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
     return await call_next(request)
+
+
+@app.get("/health")
+def health() -> JSONResponse:
+    """Unauthenticated health probe for Railway / uptime monitoring.
+
+    Returns 200 with {status: "ok"} when the DB answers SELECT 1 and the ML
+    model registry is populated; 503 with {status: "degraded"} otherwise.
+    """
+    db_ok = False
+    try:
+        from sqlalchemy import text
+        import db as db_module
+
+        with db_module._get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    models_loaded = bool(deps.models)
+    healthy = db_ok and models_loaded
+    return JSONResponse(
+        {
+            "status": "ok" if healthy else "degraded",
+            "db": db_ok,
+            "models_loaded": models_loaded,
+            "version": app.version,
+        },
+        status_code=200 if healthy else 503,
+    )
 
 
 app.include_router(patients.router, prefix="/api")

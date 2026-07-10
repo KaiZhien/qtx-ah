@@ -36,6 +36,15 @@ PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/23_migrate_add_bias_co
 step "Migration 24 — create cohort_response_curves table"
 PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/24_migrate_cohort_response_curves.py"
 
+step "Migration 27 — HNSW ANN index on patient_insights.embedding"
+PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/27_migrate_add_insights_hnsw_index.py"
+
+step "Migration 28 — drop dead fall_risk columns from session_predictions"
+PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/28_migrate_drop_fall_risk_columns.py"
+
+step "Migration 29 — wearable_enrollments.patient_id VARCHAR -> UUID + FK"
+PYTHONPATH="$ROOT/src:$ROOT/api" "$PYTHON" "$ROOT/scripts/29_migrate_wearable_patient_id_uuid.py"
+
 # ── Phase 2: Data seeding and ingestion ──────────────────────────────────────
 
 step "Script 11 — seed QTX patients (1,715 rows; idempotent upsert)"

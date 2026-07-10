@@ -186,3 +186,75 @@ def test_cascade_delete_removes_conditions(db_session):
 
     remaining = db_session.query(PatientCondition).filter_by(patient_id=patient_id).all()
     assert remaining == []
+
+
+def test_session_prediction_has_no_dead_fall_risk_columns():
+    """fall_risk_score / fall_risk_label were never written — dropped from the ORM."""
+    from models.clinical import SessionPrediction
+    cols = {c.name for c in SessionPrediction.__table__.columns}
+    assert "fall_risk_score" not in cols
+    assert "fall_risk_label" not in cols
+
+
+def test_wearable_enrollment_patient_id_is_uuid_fk():
+    """wearable_enrollments.patient_id is a UUID FK to patients.id."""
+    import uuid as _uuid
+    from models.wearable import WearableEnrollment
+    col = WearableEnrollment.__table__.columns["patient_id"]
+    assert col.type.python_type is _uuid.UUID
+    fks = list(col.foreign_keys)
+    assert len(fks) == 1
+    assert fks[0].column.table.name == "patients"
+    assert fks[0].ondelete == "CASCADE"
+    assert col.nullable is False
+
+
+def test_wearable_enrollment_requires_valid_patient_fk(db_session):
+    """Inserting a WearableEnrollment with a non-existent patient_id raises IntegrityError."""
+    from datetime import datetime, timezone
+    from models.wearable import WearableEnrollment
+    now = datetime.now(timezone.utc)
+    e = WearableEnrollment(
+        id=str(uuid.uuid4()),
+        patient_id=uuid.uuid4(),  # does not exist
+        terra_user_id=f"terra_{uuid.uuid4().hex[:8]}",
+        device_brand="garmin",
+        enrolled_at=now,
+        enrolled_by="cli",
+        consent_given_at=now,
+        active=True,
+    )
+    db_session.add(e)
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_cascade_delete_removes_wearable_enrollment(db_session):
+    """Deleting a Patient cascades to delete its WearableEnrollment."""
+    from datetime import datetime, timezone
+    from models.clinical import Patient
+    from models.wearable import WearableEnrollment
+    patient_id = uuid.uuid4()
+    p = Patient(**_make_patient(id=patient_id, sn="CASC003"))
+    db_session.add(p)
+    db_session.flush()
+
+    now = datetime.now(timezone.utc)
+    e = WearableEnrollment(
+        id=str(uuid.uuid4()),
+        patient_id=patient_id,
+        terra_user_id=f"terra_{uuid.uuid4().hex[:8]}",
+        device_brand="garmin",
+        enrolled_at=now,
+        enrolled_by="cli",
+        consent_given_at=now,
+        active=True,
+    )
+    db_session.add(e)
+    db_session.flush()
+
+    db_session.delete(p)
+    db_session.flush()
+
+    remaining = db_session.query(WearableEnrollment).filter_by(patient_id=patient_id).all()
+    assert remaining == []

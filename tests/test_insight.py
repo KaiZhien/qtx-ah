@@ -322,11 +322,13 @@ def test_answer_question_prompt_omits_retrieved_section_when_no_results(db_sessi
     assert "Relevant past insights" not in captured["msg"]
 
 
-def test_generate_session_insight_raises_502_when_claude_fails(db_session, monkeypatch):
-    """When _call_claude raises, generate_session_insight propagates as HTTP 502."""
+def test_generate_session_insight_never_raises_when_claude_fails(db_session, monkeypatch):
+    """When _call_claude raises, generate_session_insight does NOT raise — it
+    persists a row with model='api_error' (same pattern as AnomalyDetector)
+    so session creation can never fail on a Claude outage."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
     from services.insight import InsightService
-    from fastapi import HTTPException
+    from models.clinical import PatientInsight
 
     def raise_exc(self, msg):
         raise Exception("API down")
@@ -334,9 +336,15 @@ def test_generate_session_insight_raises_502_when_claude_fails(db_session, monke
     monkeypatch.setattr(InsightService, "_call_claude", raise_exc)
 
     p = _make_patient(db_session, "I014")
-    with pytest.raises(HTTPException) as exc_info:
-        InsightService(db_session).generate_session_insight(_FAKE_TIMELINE, p.id, 1)
-    assert exc_info.value.status_code == 502
+    result = InsightService(db_session).generate_session_insight(_FAKE_TIMELINE, p.id, 1)
+    db_session.flush()
+
+    assert result == InsightService.API_ERROR_RESPONSE
+    row = db_session.query(PatientInsight).filter_by(patient_id=p.id).one()
+    assert row.model == "api_error"
+    assert row.content == InsightService.API_ERROR_RESPONSE
+    assert row.insight_type == "session_summary"
+    assert row.embedding is None
 
 
 def test_answer_question_raises_502_when_claude_fails(db_session, monkeypatch):

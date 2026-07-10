@@ -1,4 +1,9 @@
-"""Tests for wearable features endpoint."""
+"""Tests for wearable features endpoint.
+
+wearable_enrollments.patient_id is a UUID (FK to patients.id); the features
+service accepts UUIDs or UUID strings and treats unparseable ids as
+"not enrolled" (clinic_only).
+"""
 from __future__ import annotations
 
 import sys
@@ -13,6 +18,8 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
 
+_PATIENT_UUID = uuid.uuid4()
+
 
 @pytest.fixture
 def populated_db(tmp_path):
@@ -20,6 +27,7 @@ def populated_db(tmp_path):
     from models.wearable import (
         WearableActivity, WearableBody, WearableEnrollment, WearableEvent,
     )
+    import models.clinical  # noqa: F401 — patients table (FK target)
     import models.wearable  # noqa: F401
 
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
@@ -29,7 +37,7 @@ def populated_db(tmp_path):
 
     db.add(WearableEnrollment(
         id=str(uuid.uuid4()),
-        patient_id="P_FEAT",
+        patient_id=_PATIENT_UUID,
         terra_user_id="terra_feat",
         device_brand="apple_health",
         enrolled_at=datetime.now(timezone.utc),
@@ -102,7 +110,7 @@ def client_with_data(populated_db):
 
 
 def test_features_enrolled_patient(client_with_data):
-    resp = client_with_data.get("/api/wearable/P_FEAT/features")
+    resp = client_with_data.get(f"/api/wearable/{_PATIENT_UUID}/features")
     assert resp.status_code == 200
     data = resp.json()
     assert data["enrolled"] is True
@@ -114,6 +122,15 @@ def test_features_enrolled_patient(client_with_data):
 
 
 def test_features_unenrolled_patient(client_with_data):
+    resp = client_with_data.get(f"/api/wearable/{uuid.uuid4()}/features")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enrolled"] is False
+    assert data["source"] == "clinic_only"
+
+
+def test_features_non_uuid_patient_id_is_clinic_only(client_with_data):
+    """A junk (non-UUID) id can never match an enrollment — clinic_only, not 500."""
     resp = client_with_data.get("/api/wearable/UNKNOWN_PATIENT/features")
     assert resp.status_code == 200
     data = resp.json()
@@ -121,18 +138,26 @@ def test_features_unenrolled_patient(client_with_data):
     assert data["source"] == "clinic_only"
 
 
+def test_features_service_accepts_uuid_object_and_string(populated_db):
+    """get_patient_features accepts both uuid.UUID and its string form."""
+    from services.wearable_features import get_patient_features
+    gen = populated_db()
+    db = next(gen)
+    try:
+        by_uuid = get_patient_features(_PATIENT_UUID, db)
+        by_str = get_patient_features(str(_PATIENT_UUID), db)
+    finally:
+        db.close()
+    assert by_uuid["enrolled"] is True
+    assert by_str["enrolled"] is True
+    assert by_uuid == by_str
+
+
 def test_sedentary_pct_with_sparse_data(tmp_path):
     """sedentary_pct must pair active and sedentary from the same row, not by position."""
-    import uuid
-    from datetime import date, datetime, timedelta, timezone
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
-
     from db import Base
     from models.wearable import WearableActivity, WearableEnrollment
+    import models.clinical  # noqa: F401
     import models.wearable  # noqa: F401
     from services.wearable_features import get_patient_features
 
@@ -141,9 +166,10 @@ def test_sedentary_pct_with_sparse_data(tmp_path):
     Session = sessionmaker(bind=engine)
     db = Session()
 
+    sparse_pid = uuid.uuid4()
     db.add(WearableEnrollment(
         id=str(uuid.uuid4()),
-        patient_id="P_SPARSE",
+        patient_id=sparse_pid,
         terra_user_id="terra_sparse",
         device_brand="garmin",
         enrolled_at=datetime.now(timezone.utc),
@@ -175,7 +201,7 @@ def test_sedentary_pct_with_sparse_data(tmp_path):
         ))
     db.commit()
 
-    features = get_patient_features("P_SPARSE", db)
+    features = get_patient_features(sparse_pid, db)
     db.close()
 
     # Only the 3 rows where BOTH fields are present should count

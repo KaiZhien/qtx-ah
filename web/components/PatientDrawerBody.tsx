@@ -235,7 +235,7 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
   if (!patient) return null;
 
   const activeFlags = Object.keys(FLAG_LABELS).filter(
-    (f) => (patient as Record<string, unknown>)[f] === 1
+    (f) => (patient as Record<string, unknown>)[f] === true
   );
   const cohortColor = COHORT_COLORS[patient.cohort] || "#888";
 
@@ -272,7 +272,7 @@ export function PatientDrawerBody({ patient }: PatientDrawerBodyProps) {
         <div style={{ marginLeft: "auto" }}>
           {patient.is_dropout ? (
             <Pill kind="warning">No follow-up</Pill>
-          ) : patient.overall_responder === 1 ? (
+          ) : patient.overall_responder ? (
             <Pill kind="success">Responder</Pill>
           ) : (
             <Pill>Non-responder</Pill>

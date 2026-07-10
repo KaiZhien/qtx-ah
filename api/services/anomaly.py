@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.orm import Session as DBSession
 
 from models.clinical import PatientInsight
-from services.claude_client import call_claude as _call_claude_fn
+from services.claude_client import CLAUDE_MODEL, call_claude as _call_claude_fn
 from services.insight import _SYSTEM_PROMPT
 from services.trend import TrendResult
 
@@ -51,7 +51,7 @@ Be specific to the flags listed above."""
 
 class AnomalyDetector:
     STUB_RESPONSE = "[Anomaly detection unavailable — ANTHROPIC_API_KEY not configured]"
-    MODEL = "claude-sonnet-4-6"
+    MODEL = CLAUDE_MODEL
 
     def __init__(self, db: DBSession) -> None:
         self._db = db

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import type { LatestPredictions, ShapContribution } from "@/lib/api";
+import type { LatestPredictions, ShapContribution } from "@/lib/types";
 
 interface PredictionChipsProps {
   predictions: LatestPredictions;

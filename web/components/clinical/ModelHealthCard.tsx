@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { fetchCalibration, CalibrationReport, CohortCalibration, ModelAucDrift } from "@/lib/api";
+import { fetchCalibration } from "@/lib/api";
+import type { CalibrationReport, CohortCalibration, ModelAucDrift } from "@/lib/types";
 import { formatRelative } from "@/components/clinical/PredictionChips";
 import { Card } from "@/components/ui/Card";
 

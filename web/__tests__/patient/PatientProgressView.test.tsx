@@ -13,7 +13,7 @@ const mockFetchMetricSeries = fetchMetricSeries as jest.Mock
 const mockGetResponseCurves = getResponseCurves as jest.Mock
 
 const mockPatient: Patient = {
-  sn: 1,
+  sn: "1",
   id: "P001",
   name: "Test Patient",
   initials: "TP",
@@ -37,18 +37,18 @@ const mockPatient: Patient = {
   post_fast_gs_ms: 1.4,
   post_sppb: 10,
   composite_improvement: 0.6,
-  overall_responder: 1,
+  overall_responder: true,
   mcid_count: 3,
-  is_dropout: 0,
-  has_followup: "Y",
-  has_oa: 1,
-  has_diabetes: 0,
-  has_stroke: 0,
-  has_parkinsons: 0,
-  has_frailty: 0,
-  has_cancer: 0,
-  has_hypertension: 0,
-  has_osteoporosis: 0,
+  is_dropout: false,
+  has_followup: true,
+  has_oa: true,
+  has_diabetes: false,
+  has_stroke: false,
+  has_parkinsons: false,
+  has_frailty: false,
+  has_cancer: false,
+  has_hypertension: false,
+  has_osteoporosis: false,
 }
 
 const mockSessions: TimelineSession[] = [

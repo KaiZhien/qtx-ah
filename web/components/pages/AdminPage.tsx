@@ -6,10 +6,12 @@ import {
   triggerRetrain,
   reloadModels,
   fetchCalibration,
+} from "@/lib/api";
+import type {
   ModelStatusResponse,
   CalibrationReport,
   CohortCalibration,
-} from "@/lib/api";
+} from "@/lib/types";
 import { Card } from "@/components/ui/Card";
 
 function fmt(iso: string): string {

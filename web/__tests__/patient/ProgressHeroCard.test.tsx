@@ -5,7 +5,7 @@ import type { Patient, TimelineSession } from "../../lib/types"
 
 // Minimal Patient stub — only fields the component reads
 const basePatient: Patient = {
-  sn: 1,
+  sn: "1",
   id: "p-001",
   initials: "AB",
   age: 70,
@@ -30,15 +30,15 @@ const basePatient: Patient = {
   composite_improvement: null,
   overall_responder: null,
   mcid_count: 0,
-  is_dropout: 0,
-  has_oa: 0,
-  has_diabetes: 0,
-  has_stroke: 0,
-  has_parkinsons: 0,
-  has_frailty: 0,
-  has_cancer: 0,
-  has_hypertension: 0,
-  has_osteoporosis: 0,
+  is_dropout: false,
+  has_oa: false,
+  has_diabetes: false,
+  has_stroke: false,
+  has_parkinsons: false,
+  has_frailty: false,
+  has_cancer: false,
+  has_hypertension: false,
+  has_osteoporosis: false,
 }
 
 function makeSession(overrides: Partial<TimelineSession> = {}): TimelineSession {

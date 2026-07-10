@@ -108,7 +108,7 @@ function PatientSampleTable({
             <td className="num">{p.composite_improvement != null ? (p.composite_improvement >= 0 ? "+" : "") + p.composite_improvement.toFixed(2) : "—"}</td>
             <td>
               {p.is_dropout ? <Pill kind="warning">No follow-up</Pill>
-                : p.overall_responder === 1 ? <Pill kind="success">Responder</Pill>
+                : p.overall_responder ? <Pill kind="success">Responder</Pill>
                 : <Pill>Non-responder</Pill>}
             </td>
           </tr>
@@ -184,8 +184,8 @@ export function CohortsPage({ data, onPatientClick }: CohortsPageProps) {
       cohort: c,
       n: sub.length,
       fuPct: sub.length ? (fu.length / sub.length) * 100 : 0,
-      respPct: fu.length ? (fu.filter((p) => p.overall_responder === 1).length / fu.length) * 100 : 0,
-      dropPct: sub.length ? (sub.filter((p) => p.is_dropout === 1).length / sub.length) * 100 : 0,
+      respPct: fu.length ? (fu.filter((p) => p.overall_responder).length / fu.length) * 100 : 0,
+      dropPct: sub.length ? (sub.filter((p) => p.is_dropout).length / sub.length) * 100 : 0,
       meanImp: mean(fu.map((p) => p.composite_improvement)),
       values: fu.map((p) => p.composite_improvement).filter((x): x is number => x != null),
       color: COHORT_COLORS[c],

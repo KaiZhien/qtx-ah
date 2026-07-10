@@ -1,6 +1,7 @@
 """Wearable feature aggregation — callable by both the API endpoint and the fall risk predictor."""
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -13,13 +14,22 @@ from models.wearable import (
 )
 
 
-def get_patient_features(patient_id: str, db: Session) -> dict:
+def get_patient_features(patient_id: uuid.UUID | str, db: Session) -> dict:
     """
     Return rolling-window wearable features for a patient.
+
+    ``patient_id`` may be a uuid.UUID or its string form (wearable_enrollments
+    joins patients.id via a UUID FK). Unparseable ids can never match an
+    enrollment, so they return the same "clinic_only" shape.
     Returns {"enrolled": False, "source": "clinic_only"} if no active enrollment exists.
     """
+    try:
+        pid = patient_id if isinstance(patient_id, uuid.UUID) else uuid.UUID(str(patient_id))
+    except (ValueError, TypeError, AttributeError):
+        return {"enrolled": False, "source": "clinic_only"}
+
     enrollment = db.query(WearableEnrollment).filter_by(
-        patient_id=patient_id, active=True
+        patient_id=pid, active=True
     ).first()
     if not enrollment:
         return {"enrolled": False, "source": "clinic_only"}

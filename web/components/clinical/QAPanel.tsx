@@ -3,7 +3,7 @@
 import React from "react";
 import type { InsightRow } from "@/lib/types";
 import { askQuestion, downloadPatientPdf, prepareSession } from "@/lib/api";
-import type { PreSessionBrief } from "@/lib/api";
+import type { PreSessionBrief } from "@/lib/types";
 
 interface QAPanelProps {
   sn: string;

@@ -2,18 +2,21 @@ import type {
   BenchmarkResult,
   Filters,
   Patient,
+  PaginatedPatients,
   PatientProfile,
   PredictionResult,
   DosageIntake,
   DosageResult,
-  FallRiskInput,
-  FallRiskResult,
   WearableFeatures,
   TimelineResponse,
   InsightRow,
   AnomalyWarning,
   ResponseCurvesResponse,
   MetricSeriesResponse,
+  LatestPredictions,
+  CalibrationReport,
+  PreSessionBrief,
+  ModelStatusResponse,
 } from "./types";
 
 // Requests go through the same-origin BFF proxy (web/app/api/[...path]/route.ts),
@@ -23,13 +26,22 @@ function apiHeaders(extra?: Record<string, string>): Record<string, string> {
   return { ...extra };
 }
 
-export async function fetchPatients(filters: Filters): Promise<Patient[]> {
+/**
+ * Fetch one page of patients. GET /api/patients returns a paginated envelope
+ * `{ items, total, limit, offset }`. `limit` is capped at 1000 server-side.
+ */
+export async function fetchPatients(
+  filters: Filters,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<PaginatedPatients> {
   const params = new URLSearchParams();
   filters.cohorts.forEach((c) => params.append("cohort", c));
   filters.usage.forEach((u) => params.append("usage", u));
   filters.ageBands.forEach((a) => params.append("age_band", a));
   filters.gender.forEach((g) => params.append("gender", g));
   if (filters.fuOnly) params.set("fu_only", "true");
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.offset != null) params.set("offset", String(opts.offset));
   const res = await fetch(`/api/patients?${params.toString()}`, {
     headers: apiHeaders(),
   });
@@ -37,8 +49,25 @@ export async function fetchPatients(filters: Filters): Promise<Patient[]> {
   return res.json();
 }
 
-export async function fetchPatient(sn: number): Promise<Patient> {
-  const res = await fetch(`/api/patient/${sn}`, {
+/**
+ * Fetch the full filtered cohort by paging through the envelope until every
+ * record is collected. The dashboard aggregates over the whole set, so it needs
+ * all pages (the cohort is ~1.7k rows > the 1000-row page cap).
+ */
+export async function fetchAllPatients(filters: Filters): Promise<Patient[]> {
+  const pageSize = 1000;
+  const first = await fetchPatients(filters, { limit: pageSize, offset: 0 });
+  const items = [...first.items];
+  while (items.length < first.total && first.items.length > 0) {
+    const page = await fetchPatients(filters, { limit: pageSize, offset: items.length });
+    if (page.items.length === 0) break;
+    items.push(...page.items);
+  }
+  return items;
+}
+
+export async function fetchPatient(sn: string): Promise<Patient> {
+  const res = await fetch(`/api/patient/${encodeURIComponent(sn)}`, {
     headers: apiHeaders(),
   });
   if (!res.ok) throw new Error(`fetchPatient: ${res.status}`);
@@ -65,21 +94,6 @@ export async function predictDosage(intake: DosageIntake): Promise<DosageResult>
   return res.json();
 }
 
-export interface ShapContribution {
-  feature: string;
-  contribution: number;
-}
-
-export interface LatestPredictions {
-  predicted_composite_improvement: number | null;
-  responder_probability: number | null;
-  dropout_probability: number | null;
-  dosage_recommendation: string | null;
-  predicted_at: string | null;
-  shap_top5: ShapContribution[] | null;
-  bias_correction: number | null;
-}
-
 export async function fetchLatestPredictions(sn: string): Promise<LatestPredictions | null> {
   const res = await fetch(`/api/patient/${encodeURIComponent(sn)}/predictions/latest`, {
     headers: apiHeaders(),
@@ -88,33 +102,6 @@ export async function fetchLatestPredictions(sn: string): Promise<LatestPredicti
   const data = await res.json();
   if (!data || Object.keys(data).length === 0) return null;
   return data as LatestPredictions;
-}
-
-export interface CohortCalibration {
-  cohort: string;
-  n: number;
-  current_mae: number;
-  baseline_mae: number | null;
-  drift_pct: number | null;
-  status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
-}
-
-export interface ModelAucDrift {
-  model: "classifier" | "dropout";
-  baseline_auc: number | null;
-  current_auc: number | null;
-  drift_pct: number | null;
-  status: "OK" | "WARNING" | "ALERT" | "NO_BASELINE";
-  n: number;
-}
-
-export interface CalibrationReport {
-  generated_at: string;
-  drift_threshold: number;
-  min_cohort_n: number;
-  total_matchable: number;
-  cohorts: CohortCalibration[];
-  model_auc_drift?: ModelAucDrift[];
 }
 
 export async function fetchCalibration(): Promise<CalibrationReport | null> {
@@ -185,12 +172,6 @@ export async function askQuestion(
   return res.json();
 }
 
-export interface PreSessionBrief {
-  brief: string;
-  cached: boolean;
-  created_at: string;
-}
-
 export async function prepareSession(sn: string, force?: boolean): Promise<PreSessionBrief> {
   const url = `/api/patient/${encodeURIComponent(sn)}/prepare_session${force ? "?force=true" : ""}`;
   const res = await fetch(url, {
@@ -225,32 +206,6 @@ export function downloadPatientPdf(sn: string): void {
   // Same-origin navigation carries the session cookie; the BFF proxy authorizes
   // and injects the API key, then streams the PDF back.
   window.open(`/api/patient/${encodeURIComponent(sn)}/report.pdf`, "_blank");
-}
-
-export interface ModelFileInfo {
-  size_mb: number;
-  modified_at: string;
-}
-
-export interface RetrainMetrics {
-  rmse_mean?: number;
-  mae_mean?: number;
-  r2_mean?: number;
-  auc_roc_mean?: number;
-  n?: number;
-}
-
-export interface RetrainState {
-  last_retrain_at?: string;
-  last_retrain_session_count?: number;
-  last_metrics?: RetrainMetrics;
-  error?: string;
-}
-
-export interface ModelStatusResponse {
-  models: Record<string, ModelFileInfo>;
-  retrain_state: RetrainState;
-  db_ready: boolean;
 }
 
 export async function getModelStatus(adminKey: string): Promise<ModelStatusResponse> {

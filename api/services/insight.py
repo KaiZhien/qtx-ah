@@ -1,7 +1,8 @@
 """AI insight generation service using Anthropic Claude.
 
-InsightService builds prompts from patient timeline data, calls
-claude-sonnet-4-6, and persists the generated text in patient_insights.
+InsightService builds prompts from patient timeline data, calls the
+configured Claude model (services.claude_client.CLAUDE_MODEL, env
+QTX_CLAUDE_MODEL), and persists the generated text in patient_insights.
 
 Stub mode: if ANTHROPIC_API_KEY is not set, returns a placeholder string
 and saves a row with model="stub". No exception is raised.
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session as DBSession
 logger = logging.getLogger(__name__)
 
 from models.clinical import PatientInsight
-from services.claude_client import call_claude as _call_claude_fn
+from services.claude_client import CLAUDE_MODEL, call_claude as _call_claude_fn
 from services.voyage import VoyageEmbedder
 
 _SYSTEM_PROMPT = (
@@ -129,7 +130,8 @@ def _format_predictions(predictions: dict) -> dict:
 
 class InsightService:
     STUB_RESPONSE = "[AI insights unavailable — ANTHROPIC_API_KEY not configured]"
-    MODEL = "claude-sonnet-4-6"
+    API_ERROR_RESPONSE = "[AI insight unavailable — the AI service could not be reached. Session data was saved.]"
+    MODEL = CLAUDE_MODEL
 
     def __init__(self, db: DBSession) -> None:
         self._db = db
@@ -215,17 +217,25 @@ class InsightService:
             timeline_json=json.dumps(tl, indent=2),
             session_number=session_number,
         )
+        # A Claude/API failure must never fail session creation — mirror the
+        # AnomalyDetector pattern: persist a placeholder row (model="api_error")
+        # and return it so the caller can mark the insight as unavailable.
         try:
             content = self._call_claude(user_message)
+            model = self.MODEL
         except Exception as exc:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=502, detail="AI service unavailable") from exc
+            logger.warning("InsightService Claude call failed: %s", exc)
+            content = self.API_ERROR_RESPONSE
+            model = "api_error"
 
-        embedding = VoyageEmbedder().embed(content, input_type="document")
+        embedding = (
+            VoyageEmbedder().embed(content, input_type="document")
+            if model == self.MODEL else None
+        )
         self._save_insight(
             patient_id=patient_id,
             content=content,
-            model=self.MODEL,
+            model=model,
             insight_type="session_summary",
             session_number=session_number,
             embedding=embedding,

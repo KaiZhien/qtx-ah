@@ -263,8 +263,6 @@ class SessionPrediction(Base):
         nullable=False,
         index=True,
     )
-    fall_risk_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
-    fall_risk_label: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     predicted_composite_improvement: Mapped[float | None] = mapped_column(Numeric(7, 4), nullable=True)
     responder_probability: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     dropout_probability: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
