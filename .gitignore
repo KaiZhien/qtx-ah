@@ -1,8 +1,7 @@
-data/inputs/
-data/processed/*
-!data/processed/dashboard_data.parquet
-data/audit/
-data/wearable.db
+# All patient data stays local-only — never tracked (PHI).
+# Prod seeding uses the admin-gated POST /api/import/seed_parquet upload
+# (see README § Clinical API) instead of a git-tracked parquet.
+data/
 # Keep XGBoost + dosage models (required at startup, small enough to commit)
 # Ignore large GBM models (~130MB each)
 models/classifier_gbm.joblib

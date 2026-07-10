@@ -299,10 +299,27 @@ FastAPI app (`api/`), deployed on Railway. All routes except `/webhooks/*` requi
 | `calibration` | Per-cohort calibration metrics + drift status |
 | `benchmark` | Cohort benchmark comparisons |
 | `cohorts` | Cohort response curves |
-| `import_data` | CSV/Excel bulk import |
+| `import_data` | CSV/Excel bulk import + parquet seeding (admin-gated) |
 | `wearable` | Wearable enrollment + feature summaries |
 | `webhooks` | Terra webhook ingest (HMAC-verified) |
 | `admin` | Model hot-reload, retrain trigger, retrain state |
+
+### Production seeding
+
+Patient data files are **never tracked in git** (PHI). To seed or refresh a deployed
+environment, upload the locally-built parquet through the admin-gated endpoint
+(idempotent upsert — safe to re-run):
+
+```bash
+curl -X POST \
+  -H "X-Api-Key: $QTX_API_KEY" -H "X-Admin-Key: $QTX_ADMIN_KEY" \
+  -F "file=@data/processed/dashboard_data.parquet" \
+  https://<railway-host>/api/import/seed_parquet
+```
+
+Alternative: run the full seed pipeline from a workstation against the remote DB —
+`DATABASE_URL=<railway-postgres-url> bash setup.sh`. Both `POST /import/seed` and
+`POST /import/file` also require `X-Admin-Key`.
 
 AI stack: **Claude Sonnet 4.6** for narrative insights and Q&A, **Voyage-3-lite** (512-dim) for embeddings. Reasoning is per-patient only — cross-patient generation was ruled clinically inappropriate.
 
