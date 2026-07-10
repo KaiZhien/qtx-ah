@@ -44,3 +44,4 @@ models/eval_manifest.json
 logs/
 .vercel
 .env*
+.env.example
