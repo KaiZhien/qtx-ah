@@ -254,16 +254,13 @@ def test_correct_header_key_passes(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_correct_query_param_key_passes(monkeypatch):
-    """No header but correct ?key= query param returns 200, proving ?key= works for all routes."""
+def test_query_param_key_rejected(monkeypatch):
+    """?key= auth was removed (leaked into logs/history) — correct key as a query param is a 401."""
     monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
-    deps._db_ready = True
-    try:
-        with _make_client() as c:
-            resp = c.get("/api/patients", params={"key": _TEST_KEY})
-    finally:
-        deps._db_ready = False
-    assert resp.status_code == 200
+    with _make_client() as c:
+        resp = c.get("/api/patients", params={"key": _TEST_KEY})
+    assert resp.status_code == 401
+    assert "Invalid or missing API key" in resp.json()["detail"]
 
 
 def test_wrong_query_param_returns_401(monkeypatch):
@@ -285,7 +282,7 @@ def test_qtx_api_key_not_configured_returns_500(monkeypatch):
 
 
 def test_header_takes_priority_when_both_present(monkeypatch):
-    """Correct X-Api-Key header + wrong ?key= returns 200 (header wins via `or` short-circuit)."""
+    """Correct X-Api-Key header + a stray ?key= returns 200 (query param is ignored entirely)."""
     monkeypatch.setenv("QTX_API_KEY", _TEST_KEY)
     deps._db_ready = True
     try:

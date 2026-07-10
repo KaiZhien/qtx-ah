@@ -20,7 +20,7 @@ def verify_api_key(request: Request) -> None:
     expected = os.environ.get("QTX_API_KEY", "")
     if not expected:
         raise HTTPException(status_code=500, detail="QTX_API_KEY is not configured on the server")
-    provided = request.headers.get("X-Api-Key", "") or request.query_params.get("key", "")
+    provided = request.headers.get("X-Api-Key", "")
     if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 

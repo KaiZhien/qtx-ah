@@ -187,7 +187,7 @@ def test_pdf_503_when_db_not_ready(client):
 
 
 def test_pdf_key_query_param_auth(test_engine, monkeypatch):
-    """?key= query param is accepted instead of X-Api-Key header."""
+    """?key= query param auth was removed — PDF requests without the header are 401."""
     import services.report as svc
     monkeypatch.setattr("weasyprint.HTML", _FakeHTML)
 
@@ -212,7 +212,7 @@ def test_pdf_key_query_param_auth(test_engine, monkeypatch):
         import deps
         deps._db_ready = True
         resp = c.get(f"/api/patient/301/report.pdf?key={_TEST_API_KEY}")
-        assert resp.status_code == 200, f"Expected 200 with ?key= param, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, f"Expected 401 with only ?key= param, got {resp.status_code}: {resp.text}"
 
     app.dependency_overrides.clear()
     os.environ.pop("QTX_API_KEY", None)
