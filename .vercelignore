@@ -1,0 +1,6 @@
+# The qtx-ah Vercel project has Root Directory = web; only upload that.
+# (Deploys run from the repo root because of the root-directory setting.)
+/*
+!/web
+web/node_modules
+web/.next
