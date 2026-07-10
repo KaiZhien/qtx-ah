@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import io
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import joblib
@@ -170,7 +171,9 @@ def build_report(
     sections = []
     sections.append(f"<html><head><title>QTX Model Report</title>{_HTML_STYLE}</head><body>")
     sections.append("<h1>QuantumTX — Model Training Report</h1>")
-    sections.append("<p>Generated on <strong>2026-05-20</strong></p>")
+    sections.append(
+        f"<p>Generated on <strong>{datetime.now().strftime('%Y-%m-%d')}</strong></p>"
+    )
     sections.append(
         "<p>Reported metrics are from nested, patient-grouped cross-validation "
         "(hyperparameters selected inside each outer fold; regression target "

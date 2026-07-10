@@ -181,7 +181,17 @@ The DLMS keeps its own env (`dlms/.env.local` / Vercel): `NEXT_PUBLIC_SUPABASE_U
 
 ## Model Results
 
-Latest full `make model` run on the 2024 AH dataset (Approach B — 46-feature matrix, iterative MICE imputation; both GBM and XGBoost trained, XGBoost recommended). Update this section after retraining on new data.
+Latest full `make model` run on the 2024 AH dataset (2026-07-10 re-baseline; XGBoost only — GBM artifact training was dropped as never-served). Update this section after retraining on new data.
+
+> **Methodology note (2026-07-10):** all metrics below come from **nested,
+> patient-grouped 5-fold CV** — hyperparameters are selected inside each outer
+> training fold, folds are grouped by patient (`sn`), and the regression target's
+> cohort z-score normalisation is refit per fold. Earlier published numbers
+> (regression R² 0.125 / RMSE ~0.58, classifier AUC 0.739, and all GBM rows) came
+> from a leaky protocol (hyperparameter search over the full dataset, ungrouped
+> shuffled folds, globally z-scored targets) and are **not comparable**; the
+> classifier's honest AUC is lower, the regression RMSE is on a different target
+> scale by construction (R² is the comparable number).
 
 | Metric | Value | Notes |
 |--------|-------|-------|
@@ -189,21 +199,25 @@ Latest full `make model` run on the 2024 AH dataset (Approach B — 46-feature m
 | Follow-up rate | 34.7% (596 / 1,716) | Dropout is the primary data-quality challenge |
 | Overall responders | 69.5% of follow-up (414 / 596) | ≥ MCID on 2+ tests |
 | Classified by phenotype | 39.9% (684 / 1,716) | 60.1% Unclassified — most have no comorbidity tags |
-| **Regression XGB** R² (composite improvement) | **0.125** | RMSE ~0.58, n ≈ 596 |
-| Regression GBM R² | 0.110 | RMSE ~0.59 |
-| **Classifier XGB** AUC-ROC (overall responder) | **0.739** | AUC-PR ~0.88, F1 ~0.72 |
-| Classifier GBM AUC-ROC | 0.677 | |
-| **Dropout XGB** AUC-ROC (predicts non-completion) | **0.998** | F1 ~0.99, n = 1,716 |
-| Dropout GBM AUC-ROC | 0.992 | |
+| **Regression XGB** R² (composite improvement) | **0.176** | RMSE 0.752 ± 0.188 (per-fold-normalised target), MAE 0.491, n = 596 |
+| **Classifier XGB** AUC-ROC (overall responder) | **0.691 ± 0.073** | AUC-PR 0.839, Brier 0.200, F1 0.683 |
+| **Dropout XGB** AUC-ROC (predicts non-completion) | **0.998** | n = 1,716 — see caveat below |
+| Dosage macro F1 (3-class) | 0.541 ± 0.041 | Macro AUC-ROC (OVR) 0.762, n = 544 labelled |
 
 A fourth model family — **dosage frequency** (`make dosage`, `models/dosage_frequency.joblib`) — recommends a usage-frequency label with calibrated confidence.
 
 **Top phenotype groups** (of classified patients): Joint disease 25%, Frailty/Sarcopenia 11%, Spine/Back 8%, Soft-tissue injury 6%, Neurological 4%.
 
 **Interpretation notes:**
-- XGBoost handles NaN natively (no imputer step in its pipeline) and outperforms GBM on all three tasks.
-- The dropout model's near-perfect AUC-ROC reflects that missing baseline data is itself the strongest predictor of non-completion — a real clinical signal, not leakage.
-- All metrics are 5-fold stratified CV. `reports/modelling.html` has SHAP importances, calibration curves, and the sensitivity analysis across four imputation strategies.
+- XGBoost handles NaN natively (no imputer step in its pipeline).
+- **Dropout-model caveat:** an ablation (2026-07-10) shows the **missingness mask
+  alone** — the NaN pattern of the feature columns, with no values — achieves
+  AUC-ROC **0.986** under the same grouped CV (logistic regression). The dropout
+  model is therefore best understood as an administrative missing-data detector,
+  not a clinical predictor; patients who drop out are largely those whose
+  assessment blocks were never completed. Treat its score as a data-completeness
+  flag, and do not present it as a clinical risk model.
+- All metrics are nested, patient-grouped 5-fold CV. `reports/modelling.html` has SHAP importances, calibration curves, and the sensitivity analysis across four imputation strategies.
 
 ---
 
