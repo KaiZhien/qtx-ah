@@ -22,11 +22,45 @@ from sklearn.metrics import (
 )
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
+from qtx.utils.config import get_settings
 from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _resolve_seed(seed: int | None) -> int:
+    """Return *seed* if given, else config/settings.yaml random_seed (fallback 42)."""
+    if seed is not None:
+        return int(seed)
+    return int(get_settings().get("random_seed", 42))
+
+
+def make_group_kfold(n_splits: int, seed: int | None = None) -> GroupKFold:
+    """Patient-grouped K-fold splitter (regression / any continuous target)."""
+    return GroupKFold(n_splits=n_splits, shuffle=True, random_state=_resolve_seed(seed))
+
+
+def make_stratified_group_kfold(
+    n_splits: int, seed: int | None = None
+) -> StratifiedGroupKFold:
+    """Patient-grouped, label-stratified K-fold splitter (classification)."""
+    return StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=_resolve_seed(seed)
+    )
+
+
+def _resolve_groups(groups, n: int):
+    """Return a 1-D group array of length *n*.
+
+    If *groups* is None every row becomes its own group, so a grouped splitter
+    degrades gracefully to a (deterministic) row-level split. This keeps the
+    grouped code path exercised even on one-row-per-patient data.
+    """
+    if groups is None:
+        return np.arange(n)
+    return np.asarray(groups)
 
 
 def _build_sklearn_imputer(strategy: str, seed: int):
@@ -54,28 +88,66 @@ def _build_sklearn_imputer(strategy: str, seed: int):
 # ---------------------------------------------------------------------------
 
 
-def cross_validate_regression(model, X: pd.DataFrame, y: pd.Series, cv_config: dict) -> dict:
-    """Run k-fold CV for regression.
+def cross_validate_regression(
+    make_search,
+    X: pd.DataFrame,
+    groups=None,
+    cv_config: dict | None = None,
+    *,
+    seed: int | None = None,
+    y: pd.Series | None = None,
+    target_builder=None,
+) -> dict:
+    """Nested, patient-grouped CV for regression — honest generalisation metrics.
 
-    Returns dict with rmse_mean, rmse_std, mae_mean, mae_std, r2_mean, r2_std.
+    An OUTER GroupKFold loop holds out whole patients. Inside each outer-train
+    split ``make_search()`` returns a *fresh* search object whose ``.fit`` runs
+    an inner (grouped) hyperparameter search; metrics are computed on the
+    held-out outer fold only. No hyperparameter, imputation statistic, or
+    target-normalisation constant is ever fit on validation-fold rows.
+
+    Parameters
+    ----------
+    make_search:
+        Zero-arg callable returning an unfitted estimator/search. Called once
+        per outer fold so hyperparameters are re-selected on outer-train only.
+    X:
+        Feature matrix (row order aligned with *groups*, *y* and *target_builder*).
+    groups:
+        Patient identifiers; None means one group per row.
+    y:
+        Fixed target. Mutually exclusive with *target_builder*.
+    target_builder:
+        Callable ``(train_idx, val_idx) -> (y_train, y_val)`` that recomputes the
+        target per fold with normalisation fit on outer-train rows only
+        (leak-free target normalisation). Mutually exclusive with *y*.
+
+    Returns dict with rmse/mae/r2 mean+std and n_folds.
     """
+    cv_config = cv_config or {}
+    if (y is None) == (target_builder is None):
+        raise ValueError("Provide exactly one of y or target_builder")
+
     k = cv_config.get("k", 5)
-    seed = 42
-    kf = KFold(n_splits=k, shuffle=True, random_state=seed)
+    seed = _resolve_seed(seed)
+    X_arr = np.asarray(X)
+    groups_arr = _resolve_groups(groups, len(X_arr))
+    splitter = make_group_kfold(k, seed)
 
     rmse_scores, mae_scores, r2_scores = [], [], []
+    # Splitter only uses the shape of y here; the real target comes per-fold.
+    y_split = np.asarray(y) if y is not None else np.zeros(len(X_arr))
 
-    X_arr = np.array(X)
-    y_arr = np.array(y)
+    for train_idx, val_idx in splitter.split(X_arr, y_split, groups=groups_arr):
+        if target_builder is not None:
+            y_train, y_val = target_builder(train_idx, val_idx)
+        else:
+            y_arr = np.asarray(y)
+            y_train, y_val = y_arr[train_idx], y_arr[val_idx]
 
-    for train_idx, val_idx in kf.split(X_arr):
-        X_train, X_val = X_arr[train_idx], X_arr[val_idx]
-        y_train, y_val = y_arr[train_idx], y_arr[val_idx]
-
-        from sklearn.base import clone
-        m = clone(model)
-        m.fit(X_train, y_train)
-        preds = m.predict(X_val)
+        search = make_search()
+        search.fit(X_arr[train_idx], np.asarray(y_train), groups=groups_arr[train_idx])
+        preds = search.predict(X_arr[val_idx])
 
         rmse_scores.append(np.sqrt(mean_squared_error(y_val, preds)))
         mae_scores.append(mean_absolute_error(y_val, preds))
@@ -92,29 +164,39 @@ def cross_validate_regression(model, X: pd.DataFrame, y: pd.Series, cv_config: d
     }
 
 
-def cross_validate_classifier(model, X: pd.DataFrame, y: pd.Series, cv_config: dict) -> dict:
-    """Run stratified k-fold CV for classification.
+def cross_validate_classifier(
+    make_search,
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups=None,
+    cv_config: dict | None = None,
+    *,
+    seed: int | None = None,
+) -> dict:
+    """Nested, patient-grouped, label-stratified CV for classification.
 
-    Returns dict with auc_roc_mean, auc_roc_std, auc_pr_mean, auc_pr_std,
-    brier_mean, brier_std.
+    OUTER StratifiedGroupKFold holds out whole patients while keeping class
+    balance; ``make_search()`` runs an inner grouped hyperparameter search on
+    each outer-train split; metrics are computed on the held-out fold only.
+
+    Returns dict with auc_roc/auc_pr/brier/f1 mean+std and n_folds.
     """
+    cv_config = cv_config or {}
     k = cv_config.get("k", 5)
-    seed = 42
-    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=seed)
+    seed = _resolve_seed(seed)
+    X_arr = np.asarray(X)
+    y_arr = np.asarray(y)
+    groups_arr = _resolve_groups(groups, len(X_arr))
+    splitter = make_stratified_group_kfold(k, seed)
 
     auc_roc_scores, auc_pr_scores, brier_scores, f1_scores = [], [], [], []
 
-    X_arr = np.array(X)
-    y_arr = np.array(y)
-
-    for train_idx, val_idx in skf.split(X_arr, y_arr):
-        X_train, X_val = X_arr[train_idx], X_arr[val_idx]
+    for train_idx, val_idx in splitter.split(X_arr, y_arr, groups=groups_arr):
         y_train, y_val = y_arr[train_idx], y_arr[val_idx]
 
-        from sklearn.base import clone
-        m = clone(model)
-        m.fit(X_train, y_train)
-        proba = m.predict_proba(X_val)[:, 1]
+        search = make_search()
+        search.fit(X_arr[train_idx], y_train, groups=groups_arr[train_idx])
+        proba = search.predict_proba(X_arr[val_idx])[:, 1]
 
         auc_roc_scores.append(roc_auc_score(y_val, proba))
         precision, recall, _ = precision_recall_curve(y_val, proba)

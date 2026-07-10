@@ -60,9 +60,14 @@ regression_composite:
   target: composite_improvement
   model: gradient_boosting
   cv:
-    kind: stratified_kfold
+    # Patient-grouped outer CV. Stratification on cohort was dropped: sklearn's
+    # RandomizedSearchCV feeds the continuous regression target to the inner CV
+    # splitter, so StratifiedGroupKFold on cohort is not supported there, and
+    # per-fold target normalisation already falls back to global stats for
+    # small cohorts. group_col keys grouped splits on the patient identifier.
+    kind: grouped_kfold
     k: 5
-    stratify_on: cohort
+    group_col: sn
   metrics: [rmse, mae, r2]
 
 classifier_responder:
@@ -126,6 +131,10 @@ classifier_responder:
     # categorical
     - primary_indication
   model: gradient_boosting
+  cv:
+    kind: stratified_grouped_kfold
+    k: 5
+    group_col: sn
   metrics: [auc_roc, auc_pr, brier, f1, calibration_curve]
 
 dropout:
@@ -189,6 +198,10 @@ dropout:
     # categorical
     - primary_indication
   model: gradient_boosting
+  cv:
+    kind: stratified_grouped_kfold
+    k: 5
+    group_col: sn
   metrics: [auc_roc, auc_pr, f1]
 
 sensitivity:

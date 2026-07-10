@@ -78,10 +78,12 @@ def test_add_task_receives_spawn_method(tmp_path):
     bg.add_task.assert_called_once_with(svc._spawn_retrain_subprocess)
 
 
-def test_spawn_retrain_subprocess_logs_error_on_nonzero_exit(tmp_path, caplog):
-    """_spawn_retrain_subprocess logs an error when the script exits non-zero."""
+def test_spawn_retrain_subprocess_logs_error_on_nonzero_exit(tmp_path, caplog, monkeypatch):
+    """_spawn_retrain_subprocess logs an error (with the log path) on non-zero exit."""
     import logging
+    import services.retrain as retrain_mod
     from services.retrain import RetrainService
+    monkeypatch.setattr(retrain_mod, "_LOG_DIR", tmp_path / "logs")
     svc = RetrainService(state_path=tmp_path / "state.json", threshold=50)
 
     mock_result = MagicMock()
@@ -94,10 +96,12 @@ def test_spawn_retrain_subprocess_logs_error_on_nonzero_exit(tmp_path, caplog):
     assert any("non-zero code" in r.message for r in caplog.records)
 
 
-def test_spawn_retrain_subprocess_no_error_on_zero_exit(tmp_path, caplog):
+def test_spawn_retrain_subprocess_no_error_on_zero_exit(tmp_path, caplog, monkeypatch):
     """_spawn_retrain_subprocess does not log an error when the script succeeds."""
     import logging
+    import services.retrain as retrain_mod
     from services.retrain import RetrainService
+    monkeypatch.setattr(retrain_mod, "_LOG_DIR", tmp_path / "logs")
     svc = RetrainService(state_path=tmp_path / "state.json", threshold=50)
 
     mock_result = MagicMock()
@@ -108,3 +112,33 @@ def test_spawn_retrain_subprocess_no_error_on_zero_exit(tmp_path, caplog):
         svc._spawn_retrain_subprocess()
 
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+def test_spawn_retrain_subprocess_writes_log_file(tmp_path, caplog, monkeypatch):
+    """stdout/stderr are captured to a log file under the log dir, and its path logged."""
+    import logging
+    import services.retrain as retrain_mod
+    from services.retrain import RetrainService
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(retrain_mod, "_LOG_DIR", log_dir)
+    svc = RetrainService(state_path=tmp_path / "state.json", threshold=50)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        # subprocess must be told to write to a real file handle under log_dir
+        captured["stdout"] = kwargs.get("stdout")
+        return mock_result
+
+    with patch("subprocess.run", side_effect=_fake_run), \
+         caplog.at_level(logging.INFO, logger="services.retrain"):
+        svc._spawn_retrain_subprocess()
+
+    assert log_dir.exists()
+    log_files = list(log_dir.glob("retrain_*.log"))
+    assert log_files, "expected a retrain log file to be created"
+    assert captured["stdout"] is not None  # not DEVNULL / None
+    assert any(str(log_files[0]) in r.getMessage() for r in caplog.records)

@@ -14,6 +14,11 @@ import pandas as pd
 import pytest
 
 from qtx.outcomes.change_scores import compute_change_scores
+from qtx.outcomes.composite import (
+    apply_composite_normalizer,
+    compute_composite,
+    fit_composite_normalizer,
+)
 from qtx.outcomes.responders import compute_responders
 
 
@@ -188,3 +193,52 @@ def test_dropout_no_followup():
     assert result.at[0, "is_dropout"] == 1, (
         f"Expected is_dropout=1 for has_followup='N', got {result.at[0, 'is_dropout']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. Composite normalizer: fit/apply == deployed compute_composite
+# ---------------------------------------------------------------------------
+
+def _make_composite_df(n: int = 120, seed: int = 1) -> pd.DataFrame:
+    """Synthetic frame with the 6 improvement columns + cohort for composite."""
+    rng = np.random.default_rng(seed)
+    cohorts = rng.choice(["Pain & MSK", "Neurological", "Frailty"], n)
+    df = pd.DataFrame({"cohort": cohorts})
+    for col in [
+        "vas_improvement", "tug_improvement", "sst_improvement",
+        "normal_gs_improvement", "fast_gs_improvement", "sppb_improvement",
+    ]:
+        vals = rng.normal(0, 1, n)
+        # sprinkle NaNs so min_tests logic is exercised
+        vals[rng.random(n) < 0.2] = np.nan
+        df[col] = vals
+    return df
+
+
+def test_fit_apply_matches_compute_composite_on_same_frame():
+    """The deployed compute_composite must equal fit-then-apply on the same frame.
+
+    Guards the refactor that split _z_score_column into fit/apply primitives.
+    """
+    df = _make_composite_df()
+    deployed = compute_composite(df.copy())["composite_improvement"].to_numpy()
+    norm = fit_composite_normalizer(df, min_cohort_n=30)
+    refit = apply_composite_normalizer(df, norm, min_tests_required=1).to_numpy()
+    np.testing.assert_allclose(refit, deployed, equal_nan=True)
+
+
+def test_apply_composite_respects_min_tests_required():
+    """Rows with fewer available tests than min_tests_required → NaN composite."""
+    df = pd.DataFrame(
+        {
+            "cohort": ["A", "A", "A"],
+            "vas_improvement": [1.0, np.nan, 2.0],
+            "tug_improvement": [np.nan, np.nan, 3.0],
+        }
+    )
+    norm = fit_composite_normalizer(df, min_cohort_n=30)
+    # row 1 has 0 tests → NaN under any min_tests >= 1
+    comp2 = apply_composite_normalizer(df, norm, min_tests_required=2)
+    assert pd.isna(comp2.iloc[1])  # 0 tests
+    assert pd.isna(comp2.iloc[0])  # only 1 test, needs 2
+    assert not pd.isna(comp2.iloc[2])  # 2 tests

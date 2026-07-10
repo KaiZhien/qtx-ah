@@ -1,11 +1,14 @@
 """Fit gradient-boosting regression model to predict composite_improvement.
 
-Uses config/models.yaml regression_composite block. Returns cross-validated
-RMSE/MAE/R² metrics, SHAP importances, and best hyperparameters.
+Uses config/models.yaml regression_composite block. Reported metrics come from
+a nested, patient-grouped cross-validation with per-fold target normalisation
+(the composite z-score statistics are refit on each training fold only). The
+deployed artifact is fit with a hyperparameter search on the full data.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
@@ -14,32 +17,20 @@ from sklearn.model_selection import RandomizedSearchCV
 from qtx.models.evaluate import (
     _build_sklearn_imputer,
     cross_validate_regression,
+    make_group_kfold,
     sensitivity_card,
     shap_importances,
 )
-from qtx.utils.config import get_models_config, get_settings
+from qtx.models.preprocessing import CAT_COLS, encode_categoricals
+from qtx.outcomes.composite import (
+    IMPROVEMENT_COLS,
+    apply_composite_normalizer,
+    fit_composite_normalizer,
+)
+from qtx.utils.config import get_models_config, get_outcomes_config, get_settings
 from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)
-
-_CAT_COLS = ["cohort", "usage_frequency", "gender", "primary_indication"]
-
-_DEFAULT_PARAM_GRID = {
-    "n_estimators": [100, 200, 300, 500],
-    "learning_rate": [0.01, 0.05, 0.1, 0.2],
-    "max_depth": [2, 3, 4, 5],
-    "subsample": [0.7, 0.8, 1.0],
-    "min_samples_leaf": [1, 5, 10, 20],
-}
-
-_DEFAULT_XGB_PARAM_GRID = {
-    "n_estimators": [100, 200, 300, 500],
-    "learning_rate": [0.01, 0.05, 0.1, 0.2],
-    "max_depth": [2, 3, 4, 6],
-    "subsample": [0.7, 0.8, 1.0],
-    "min_child_weight": [1, 3, 5, 10],
-    "colsample_bytree": [0.6, 0.8, 1.0],
-}
 
 
 def _get_feature_cols() -> list[str]:
@@ -49,14 +40,7 @@ def _get_feature_cols() -> list[str]:
 
 def _get_cv_config() -> dict:
     cfg = get_models_config()
-    return cfg["regression_composite"].get("cv", {"kind": "kfold", "k": 5})
-
-
-def _encode_categoricals(df: pd.DataFrame, cat_cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
-    present = [c for c in cat_cols if c in df.columns]
-    df_enc = pd.get_dummies(df, columns=present, drop_first=True, dtype=float)
-    dummy_cols = [c for c in df_enc.columns if any(c.startswith(base + "_") for base in present)]
-    return df_enc, dummy_cols
+    return cfg["regression_composite"].get("cv", {"kind": "grouped_kfold", "k": 5})
 
 
 def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", estimator_type: str = "gbm") -> dict:
@@ -68,9 +52,9 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", e
     seed = int(get_settings().get("random_seed", 42))
     feature_cols = _get_feature_cols()
     cv_config = _get_cv_config()
+    group_col = cv_config.get("group_col", "sn")
     tuning_key = "tuning_xgb" if estimator_type == "xgb" else "tuning"
-    tuning_cfg = get_models_config().get(tuning_key, {})
-    default_grid = _DEFAULT_XGB_PARAM_GRID if estimator_type == "xgb" else _DEFAULT_PARAM_GRID
+    tuning_cfg = get_models_config()[tuning_key]
 
     log.info(
         "train_regression: strategy=%s, estimator=%s, features=%d",
@@ -82,9 +66,9 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", e
 
     cols_to_use = [c for c in feature_cols if c in df_out.columns]
     df_model = df_out[cols_to_use + ["composite_improvement"]].copy()
-    df_model, dummy_cols = _encode_categoricals(df_model, _CAT_COLS)
+    df_model, dummy_cols = encode_categoricals(df_model, CAT_COLS)
 
-    non_cat_cols = [c for c in cols_to_use if c not in _CAT_COLS]
+    non_cat_cols = [c for c in cols_to_use if c not in CAT_COLS]
     final_feature_cols = non_cat_cols + dummy_cols
 
     df_model = df_model.dropna(subset=["composite_improvement"])
@@ -109,6 +93,41 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", e
             log.error("train_regression: complete_case yielded too few samples (%d); skipping", n_samples)
             return {}
 
+    # ------------------------------------------------------------------
+    # Auxiliary data (aligned to the surviving X_raw rows, in row order):
+    #   - df_components: raw per-test change scores + cohort, for per-fold
+    #     target normalisation (composite refit on training-fold rows only)
+    #   - groups: patient identifier for grouped CV splits
+    # ------------------------------------------------------------------
+    idx = X_raw.index
+    comp_cols = [c for c in IMPROVEMENT_COLS if c in df_out.columns]
+    if group_col in df_out.columns:
+        groups = df_out.loc[idx, group_col].to_numpy()
+    else:
+        log.warning("train_regression: group_col %r absent; using one group per row", group_col)
+        groups = None
+
+    min_tests = get_outcomes_config().get("composite", {}).get("min_tests_required", 1)
+
+    target_builder = None
+    if comp_cols:
+        df_components = df_out.loc[idx, comp_cols + ["cohort"]].reset_index(drop=True)
+
+        def target_builder(train_idx, val_idx):  # noqa: F811
+            """Recompute the composite target with normalisation fit on train rows only."""
+            norm = fit_composite_normalizer(df_components.iloc[train_idx])
+            y_tr = apply_composite_normalizer(df_components.iloc[train_idx], norm, min_tests).to_numpy()
+            y_val = apply_composite_normalizer(df_components.iloc[val_idx], norm, min_tests).to_numpy()
+            return y_tr, y_val
+    else:
+        # No raw per-test component columns available (e.g. a matrix that only
+        # carries the precomputed composite). Fall back to the deployed composite
+        # target; per-fold renormalisation is not possible without the components.
+        log.warning(
+            "train_regression: per-test component columns absent; CV uses the "
+            "precomputed composite target without per-fold renormalisation"
+        )
+
     if estimator_type == "xgb":
         from xgboost import XGBRegressor
         base_model = XGBRegressor(random_state=seed, n_jobs=-1, verbosity=0, tree_method="hist")
@@ -119,28 +138,42 @@ def train_regression(df: pd.DataFrame, imputation_strategy: str = "iterative", e
         pipeline = Pipeline([("imputer", sklearn_imputer), ("model", base_model)])
 
     param_distributions = {
-        "model__" + k: v
-        for k, v in tuning_cfg.get("param_distributions", default_grid).items()
+        "model__" + k: v for k, v in tuning_cfg["param_distributions"].items()
     }
+    inner_cv_k = tuning_cfg.get("cv", 5)
+    n_iter = tuning_cfg.get("n_iter", 30)
 
-    search = RandomizedSearchCV(
-        pipeline,
-        param_distributions,
-        n_iter=tuning_cfg.get("n_iter", 30),
-        cv=tuning_cfg.get("cv", 5),
-        scoring="neg_root_mean_squared_error",
-        random_state=seed,
-        n_jobs=-1,
-        refit=True,
-    )
-    search.fit(X_raw, y)
+    def make_search() -> RandomizedSearchCV:
+        return RandomizedSearchCV(
+            pipeline,
+            param_distributions,
+            n_iter=n_iter,
+            cv=make_group_kfold(inner_cv_k, seed),
+            scoring="neg_root_mean_squared_error",
+            random_state=seed,
+            n_jobs=-1,
+            refit=True,
+        )
 
-    best_pipeline = search.best_estimator_
-    best_params = {k.replace("model__", ""): v for k, v in search.best_params_.items()}
-    log.info("train_regression: best_params=%s", best_params)
-
-    cv_metrics = cross_validate_regression(best_pipeline, X_raw, y, cv_config)
+    # Reported metrics: nested grouped CV with leak-free per-fold target
+    # (or the deployed composite when component columns are unavailable).
+    if target_builder is not None:
+        cv_metrics = cross_validate_regression(
+            make_search, X_raw, groups, cv_config, seed=seed, target_builder=target_builder
+        )
+    else:
+        cv_metrics = cross_validate_regression(
+            make_search, X_raw, groups, cv_config, seed=seed, y=y
+        )
     cv_metrics["n"] = n_samples
+
+    # Deployed artifact: search on the full data (deployed composite target).
+    groups_arr = groups if groups is not None else np.arange(len(X_raw))
+    final_search = make_search()
+    final_search.fit(X_raw, y, groups=groups_arr)
+    best_pipeline = final_search.best_estimator_
+    best_params = {k.replace("model__", ""): v for k, v in final_search.best_params_.items()}
+    log.info("train_regression: best_params=%s", best_params)
 
     if estimator_type == "xgb":
         X_for_shap = X_raw

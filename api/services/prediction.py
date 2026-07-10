@@ -67,7 +67,13 @@ def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
         ClinicalSession.composite_improvement.isnot(None),
     ).scalar()
 
-    # trend_tug_magnitude — order by computed_at DESC for determinism (matches training query)
+    # trend_tug_magnitude — latest trend row (computed_at DESC).
+    # At inference the latest trend summarizes the patient's past and is the
+    # correct as-of value for the session being predicted, so serving keeps
+    # latest-trend semantics. (Retraining, in scripts/18, cannot reconstruct
+    # historical as-of trend state — patient_trends stores only the latest
+    # snapshot per patient/metric — so it uses the trend only for each patient's
+    # most-recent session and NaN elsewhere; see scripts/18 F4 note.)
     tug_trend = (
         db.query(PatientTrend)
         .filter(PatientTrend.patient_id == patient.id, PatientTrend.metric.ilike('%tug%'))
@@ -84,8 +90,16 @@ def _get_longitudinal_features(patient, session, db) -> dict[str, float]:
 
 
 
-def _compute_patient_bias(patient_id, db) -> float:
-    """Returns AVG(predicted - actual) from this patient's session history. 0.0 if <2 sessions."""
+def _compute_patient_bias(patient_id, session_number, db) -> float:
+    """Returns AVG(predicted - actual) over this patient's PRIOR sessions. 0.0 if <2.
+
+    Only sessions with ``session_number`` strictly less than the session being
+    predicted are used, so the current (and any future) session's own outcome can
+    never leak into its own bias correction. This matters on the backfill path
+    (scripts/26), where prediction rows for higher-numbered sessions may already
+    exist in the DB when an earlier session is (re)predicted — without the
+    session filter those future residuals would leak into the correction.
+    """
     from models.clinical import SessionPrediction, Session as ClinicalSession
     rows = (
         db.query(SessionPrediction.predicted_composite_improvement, ClinicalSession.composite_improvement)
@@ -94,6 +108,7 @@ def _compute_patient_bias(patient_id, db) -> float:
             SessionPrediction.patient_id == patient_id,
             SessionPrediction.predicted_composite_improvement.isnot(None),
             ClinicalSession.composite_improvement.isnot(None),
+            ClinicalSession.session_number < session_number,
         ).all()
     )
     if len(rows) < 2:
@@ -218,7 +233,7 @@ class PredictionService:
             predictions["predicted_composite_improvement"] = float(reg.predict(X_reg)[0])
             predictions["shap_top5"] = _compute_shap_top5(reg, X_reg)
             model_versions["regression"] = "regression_xgb.joblib"
-            bias = _compute_patient_bias(patient.id, self._db)
+            bias = _compute_patient_bias(patient.id, session.session_number, self._db)
             if bias != 0.0:
                 predictions["predicted_composite_improvement"] = predictions["predicted_composite_improvement"] - bias
                 predictions["bias_correction_applied"] = round(bias, 4)

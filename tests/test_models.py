@@ -81,6 +81,14 @@ def _make_featured_df(n: int = 80, seed: int = 0) -> pd.DataFrame:
         "rgn_shoulder": rng.integers(0, 2, n).astype(float),
         "rgn_upper_limb": rng.integers(0, 2, n).astype(float),
         "rgn_trunk": rng.integers(0, 2, n).astype(float),
+        # raw per-test change scores (drive per-fold composite renormalisation);
+        # populated for all rows so every modelling row has >= 1 available test
+        "vas_improvement": rng.uniform(-3, 3, n),
+        "tug_improvement": rng.uniform(-5, 5, n),
+        "sst_improvement": rng.uniform(-8, 8, n),
+        "normal_gs_improvement": rng.uniform(-0.3, 0.3, n),
+        "fast_gs_improvement": rng.uniform(-0.4, 0.4, n),
+        "sppb_improvement": rng.uniform(-3, 3, n),
         # outcome columns (first 60 rows have outcomes, rest are dropout)
         "overall_responder": [float(i % 2) for i in range(60)] + [np.nan] * (n - 60),
         "composite_improvement": np.where(np.arange(n) < 60, rng.uniform(-1, 1, n), np.nan),
@@ -242,20 +250,246 @@ def test_train_dropout_uses_all_rows(featured_df):
 
 
 # ---------------------------------------------------------------------------
-# F1 score in cross_validate_classifier
+# Nested / grouped CV helpers (used by the CV methodology tests below)
+# ---------------------------------------------------------------------------
+
+
+class _SpySearch:
+    """Minimal search-like object recording every (X, y, groups) it was fit on.
+
+    Lets tests assert that a fresh search is fit once per OUTER fold and only
+    ever on an outer-train subset (never on the full dataset).
+    """
+
+    def __init__(self, estimator, log: list):
+        self.estimator = estimator
+        self._log = log
+
+    def fit(self, X, y, groups=None):
+        import numpy as _np
+
+        self._log.append(
+            {
+                "n_rows": len(X),
+                "groups": None if groups is None else _np.asarray(groups).copy(),
+            }
+        )
+        self.estimator.fit(X, y)
+        self.best_estimator_ = self.estimator
+        self.best_params_ = {"model__n_estimators": 5}
+        return self
+
+    def predict(self, X):
+        return self.estimator.predict(X)
+
+    def predict_proba(self, X):
+        return self.estimator.predict_proba(X)
+
+
+def _spy_classifier_factory(log: list):
+    from sklearn.ensemble import GradientBoostingClassifier
+
+    def make_search():
+        return _SpySearch(GradientBoostingClassifier(n_estimators=5, random_state=0), log)
+
+    return make_search
+
+
+def _spy_regressor_factory(log: list):
+    from sklearn.linear_model import LinearRegression
+
+    def make_search():
+        return _SpySearch(LinearRegression(), log)
+
+    return make_search
+
+
+# ---------------------------------------------------------------------------
+# F1 score in cross_validate_classifier (nested-CV signature)
 # ---------------------------------------------------------------------------
 
 def test_cross_validate_classifier_returns_f1():
-    from sklearn.pipeline import Pipeline
-    from sklearn.ensemble import GradientBoostingClassifier
     from qtx.models.evaluate import cross_validate_classifier
-    X = pd.DataFrame({"a": [1.0] * 40 + [0.0] * 40})
+
+    X = pd.DataFrame({"a": [1.0] * 40 + [0.0] * 40, "b": np.arange(80.0)})
     y = pd.Series([1] * 40 + [0] * 40)
-    model = Pipeline([("model", GradientBoostingClassifier(n_estimators=5, random_state=0))])
-    result = cross_validate_classifier(model, X, y, {"kind": "stratified_kfold", "k": 2})
+    log: list = []
+    result = cross_validate_classifier(
+        _spy_classifier_factory(log), X, y, None, {"k": 2}, seed=0
+    )
     assert "f1_mean" in result
     assert "f1_std" in result
     assert 0.0 <= result["f1_mean"] <= 1.0
+    assert result["n_folds"] == 2
+
+
+# ---------------------------------------------------------------------------
+# P2 — patient-grouped splits: no patient in both train and validation
+# ---------------------------------------------------------------------------
+
+def test_grouped_splits_keep_patients_out_of_both_sides():
+    from qtx.models.evaluate import make_group_kfold, make_stratified_group_kfold
+
+    n_patients = 30
+    groups = np.repeat(np.arange(n_patients), 2)  # 2 sessions per patient
+    X = np.random.default_rng(0).normal(size=(len(groups), 3))
+    # class is constant within a patient (realistic longitudinal label)
+    y = np.repeat(np.arange(n_patients) % 2, 2)
+
+    for splitter in (make_group_kfold(5, 0), make_stratified_group_kfold(5, 0)):
+        for train_idx, val_idx in splitter.split(X, y, groups=groups):
+            train_patients = set(groups[train_idx])
+            val_patients = set(groups[val_idx])
+            assert train_patients.isdisjoint(val_patients), (
+                f"patient leaked across the split for {type(splitter).__name__}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# P3 — nested CV: the search is fit once per outer fold, on outer-train only
+# ---------------------------------------------------------------------------
+
+def test_nested_cv_search_fits_only_outer_train_subsets():
+    from qtx.models.evaluate import cross_validate_classifier
+
+    n = 80
+    X = pd.DataFrame({"a": np.linspace(0, 1, n), "b": np.arange(float(n))})
+    y = pd.Series(([0, 1] * (n // 2)))
+    groups = np.arange(n)  # one patient per row
+    log: list = []
+    k = 5
+    cross_validate_classifier(_spy_classifier_factory(log), X, y, groups, {"k": k}, seed=0)
+
+    # exactly one fresh search per outer fold ...
+    assert len(log) == k
+    # ... and each search saw strictly fewer than all rows (outer-train subset),
+    # so hyperparameters are never selected on the full dataset.
+    assert all(call["n_rows"] < n for call in log)
+    assert all(call["n_rows"] >= n - (n // k) - 1 for call in log)
+
+
+def test_nested_cv_regression_search_fits_only_outer_train():
+    from qtx.models.evaluate import cross_validate_regression
+
+    n = 60
+    X = pd.DataFrame({"a": np.linspace(0, 1, n), "b": np.arange(float(n))})
+    y = pd.Series(np.linspace(-1, 1, n))
+    log: list = []
+    k = 5
+    cross_validate_regression(
+        _spy_regressor_factory(log), X, np.arange(n), {"k": k}, seed=0, y=y
+    )
+    assert len(log) == k
+    assert all(call["n_rows"] < n for call in log)
+
+
+# ---------------------------------------------------------------------------
+# P1 — per-fold target normalization uses TRAIN-fold statistics only
+# ---------------------------------------------------------------------------
+
+def test_perfold_target_normalization_uses_train_stats_only():
+    """The validation-fold composite must be z-scored with train-fold stats.
+
+    Data is engineered so global stats differ measurably from train-fold stats:
+    if the val target were normalized with global (leaky) stats it would take a
+    different value, so we assert it matches the train-only normalization.
+    """
+    from qtx.outcomes.composite import (
+        apply_composite_normalizer,
+        fit_composite_normalizer,
+    )
+
+    # Single small cohort (< 30) → normalizer falls back to global-of-train stats.
+    train_vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    val_vals = [100.0, 200.0]  # far from the train distribution
+    df = pd.DataFrame(
+        {
+            "tug_improvement": train_vals + val_vals,
+            "cohort": ["A"] * (len(train_vals) + len(val_vals)),
+        }
+    )
+    train_idx = np.arange(len(train_vals))
+    val_idx = np.arange(len(train_vals), len(train_vals) + len(val_vals))
+
+    norm = fit_composite_normalizer(df.iloc[train_idx])
+    y_val = apply_composite_normalizer(df.iloc[val_idx], norm).to_numpy()
+
+    tr = pd.Series(train_vals)
+    expected_train_norm = ((pd.Series(val_vals) - tr.mean()) / tr.std(ddof=1)).to_numpy()
+    np.testing.assert_allclose(y_val, expected_train_norm)
+
+    # And it must NOT match the leaky global-over-everything normalization.
+    allv = df["tug_improvement"]
+    leaky = ((pd.Series(val_vals) - allv.mean()) / allv.std(ddof=1)).to_numpy()
+    assert not np.allclose(y_val, leaky)
+
+
+def test_train_classifier_threads_patient_groups(monkeypatch):
+    """train_classifier must pass the `sn` patient key as CV groups.
+
+    Captures the `groups` argument handed to cross_validate_classifier and
+    asserts it equals the modelling rows' `sn` in order. Tuning is shrunk so the
+    final artifact search stays cheap.
+    """
+    from qtx.models import classifier as clf_mod
+    from qtx.utils import config as cfg_mod
+    from qtx.models.classifier import train_classifier
+
+    models_cfg = cfg_mod.get_models_config()
+    monkeypatch.setitem(
+        models_cfg,
+        "tuning",
+        {"n_iter": 1, "cv": 2, "param_distributions": {"n_estimators": [5], "max_depth": [2]}},
+    )
+
+    captured: dict = {}
+
+    def _spy_cv(make_search, X, y, groups, cv_config, *, seed=None):
+        captured["groups"] = None if groups is None else np.asarray(groups).copy()
+        return {
+            "auc_roc_mean": 0.5, "auc_roc_std": 0.0, "auc_pr_mean": 0.5, "auc_pr_std": 0.0,
+            "brier_mean": 0.25, "brier_std": 0.0, "f1_mean": 0.5, "f1_std": 0.0,
+            "n_folds": cv_config.get("k", 5),
+        }
+
+    monkeypatch.setattr(clf_mod, "cross_validate_classifier", _spy_cv)
+
+    df = _make_featured_df(n=80)
+    df["sn"] = np.repeat(np.arange(40), 2).astype(str)  # 2 sessions per patient
+    result = train_classifier(df, imputation_strategy="median")
+
+    assert result
+    expected = np.repeat(np.arange(40), 2).astype(str)[:60]  # 60 modelling rows
+    assert captured["groups"] is not None
+    np.testing.assert_array_equal(captured["groups"], expected)
+
+
+def test_cross_validate_regression_recomputes_target_each_fold():
+    """cross_validate_regression drives target_builder per outer fold.
+
+    A target_builder that records its calls should be invoked once per fold with
+    disjoint validation indices — proving the target is rebuilt per split rather
+    than shared globally.
+    """
+    from qtx.models.evaluate import cross_validate_regression
+
+    n = 50
+    X = pd.DataFrame({"a": np.linspace(0, 1, n)})
+    base_y = np.linspace(-2, 2, n)
+    seen_val_idx: list = []
+
+    def target_builder(train_idx, val_idx):
+        seen_val_idx.append(tuple(val_idx))
+        return base_y[train_idx], base_y[val_idx]
+
+    log: list = []
+    cross_validate_regression(
+        _spy_regressor_factory(log), X, np.arange(n), {"k": 5}, seed=0,
+        target_builder=target_builder,
+    )
+    assert len(seen_val_idx) == 5
+    flat = [i for tup in seen_val_idx for i in tup]
+    assert len(flat) == len(set(flat)) == n  # each row validated exactly once
 
 
 # ---------------------------------------------------------------------------

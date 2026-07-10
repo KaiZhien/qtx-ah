@@ -153,29 +153,35 @@ def _render_model_subsection(result: dict, label: str, task: str) -> list[str]:
 
 
 def build_report(
-    reg_result_gbm: dict,
     reg_result_xgb: dict,
-    clf_result_gbm: dict,
     clf_result_xgb: dict,
-    drop_result_gbm: dict,
     drop_result_xgb: dict,
     reg_sensitivity: pd.DataFrame,
     clf_sensitivity: pd.DataFrame,
     drop_sensitivity: pd.DataFrame,
     strat_perf: pd.DataFrame,
 ) -> str:
-    """Build full HTML report string."""
+    """Build full HTML report string.
+
+    Only the served XGBoost family is trained/reported. The imputation-strategy
+    sensitivity tables still use the GBM+imputer pipeline (train_* default),
+    since XGBoost handles missing values natively and has no imputer step.
+    """
     sections = []
     sections.append(f"<html><head><title>QTX Model Report</title>{_HTML_STYLE}</head><body>")
     sections.append("<h1>QuantumTX — Model Training Report</h1>")
     sections.append("<p>Generated on <strong>2026-05-20</strong></p>")
+    sections.append(
+        "<p>Reported metrics are from nested, patient-grouped cross-validation "
+        "(hyperparameters selected inside each outer fold; regression target "
+        "normalisation refit per fold).</p>"
+    )
 
     # --- Regression ---
     sections.append('<div class="section">')
     sections.append("<h2>1. Composite Improvement Regression</h2>")
-    sections.extend(_render_model_subsection(reg_result_gbm, "GBM", "regression"))
     sections.extend(_render_model_subsection(reg_result_xgb, "XGBoost", "regression"))
-    sections.append("<h3>Sensitivity Analysis (Imputation Strategies)</h3>")
+    sections.append("<h3>Sensitivity Analysis (Imputation Strategies, GBM pipeline)</h3>")
     if not reg_sensitivity.empty:
         sections.append(df_to_html_table(reg_sensitivity))
     sections.append("</div>")
@@ -183,17 +189,12 @@ def build_report(
     # --- Classifier ---
     sections.append('<div class="section">')
     sections.append("<h2>2. Overall Responder Classifier</h2>")
-    sections.extend(_render_model_subsection(clf_result_gbm, "GBM", "classifier"))
-    cal_data = clf_result_gbm.get("calibration", (np.array([]), np.array([])))
-    if len(cal_data[0]) > 0:
-        cal_b64 = calibration_plot(cal_data, "Calibration Curve (GBM)")
-        sections.append(f'<div class="fig-box"><img src="data:image/png;base64,{cal_b64}"></div>')
     sections.extend(_render_model_subsection(clf_result_xgb, "XGBoost", "classifier"))
     cal_data_xgb = clf_result_xgb.get("calibration", (np.array([]), np.array([])))
     if len(cal_data_xgb[0]) > 0:
         cal_b64 = calibration_plot(cal_data_xgb, "Calibration Curve (XGBoost)")
         sections.append(f'<div class="fig-box"><img src="data:image/png;base64,{cal_b64}"></div>')
-    sections.append("<h3>Sensitivity Analysis</h3>")
+    sections.append("<h3>Sensitivity Analysis (Imputation Strategies, GBM pipeline)</h3>")
     if not clf_sensitivity.empty:
         sections.append(df_to_html_table(clf_sensitivity))
     if not strat_perf.empty:
@@ -204,9 +205,8 @@ def build_report(
     # --- Dropout ---
     sections.append('<div class="section">')
     sections.append("<h2>3. Dropout Prediction</h2>")
-    sections.extend(_render_model_subsection(drop_result_gbm, "GBM", "classifier"))
     sections.extend(_render_model_subsection(drop_result_xgb, "XGBoost", "classifier"))
-    sections.append("<h3>Sensitivity Analysis</h3>")
+    sections.append("<h3>Sensitivity Analysis (Imputation Strategies, GBM pipeline)</h3>")
     if not drop_sensitivity.empty:
         sections.append(df_to_html_table(drop_sensitivity))
     sections.append("</div>")
@@ -235,22 +235,15 @@ def main() -> None:
     reports_dir.mkdir(exist_ok=True)
 
     # -------------------------------------------------------------------------
-    # Train with default strategy
+    # Train served models (XGBoost only — GBM artefacts were never served and
+    # weighed 130-155 MB each; the imputation sensitivity tables below still
+    # exercise the GBM+imputer pipeline).
     # -------------------------------------------------------------------------
-    log.info("=== Training Regression GBM (iterative) ===")
-    reg_result_gbm = train_regression(df, imputation_strategy="iterative", estimator_type="gbm")
-
     log.info("=== Training Regression XGBoost ===")
     reg_result_xgb = train_regression(df, imputation_strategy="iterative", estimator_type="xgb")
 
-    log.info("=== Training Classifier GBM (iterative) ===")
-    clf_result_gbm = train_classifier(df, imputation_strategy="iterative", estimator_type="gbm")
-
     log.info("=== Training Classifier XGBoost ===")
     clf_result_xgb = train_classifier(df, imputation_strategy="iterative", estimator_type="xgb")
-
-    log.info("=== Training Dropout GBM (iterative) ===")
-    drop_result_gbm = train_dropout(df, imputation_strategy="iterative", estimator_type="gbm")
 
     log.info("=== Training Dropout XGBoost ===")
     drop_result_xgb = train_dropout(df, imputation_strategy="iterative", estimator_type="xgb")
@@ -259,11 +252,8 @@ def main() -> None:
     # Save model artefacts
     # -------------------------------------------------------------------------
     for label, result, fname in [
-        ("regression_gbm", reg_result_gbm, "regression_gbm.joblib"),
         ("regression_xgb", reg_result_xgb, "regression_xgb.joblib"),
-        ("classifier_gbm", clf_result_gbm, "classifier_gbm.joblib"),
         ("classifier_xgb", clf_result_xgb, "classifier_xgb.joblib"),
-        ("dropout_gbm", drop_result_gbm, "dropout_gbm.joblib"),
         ("dropout_xgb", drop_result_xgb, "dropout_xgb.joblib"),
     ]:
         if result.get("model"):
@@ -286,12 +276,12 @@ def main() -> None:
     # Stratified performance by cohort (classifier)
     # -------------------------------------------------------------------------
     strat_perf = pd.DataFrame()
-    if clf_result_gbm.get("model") and "X" in clf_result_gbm and "y" in clf_result_gbm:
+    if clf_result_xgb.get("model") and "X" in clf_result_xgb and "y" in clf_result_xgb:
         try:
-            X_clf = clf_result_gbm["X"]
-            y_clf = clf_result_gbm["y"]
+            X_clf = clf_result_xgb["X"]
+            y_clf = clf_result_xgb["y"]
             df_full_aligned = df.loc[X_clf.index] if X_clf.index.isin(df.index).all() else df.iloc[:len(X_clf)]
-            strat_perf = stratified_performance(clf_result_gbm["model"], X_clf, y_clf, df_full_aligned, "cohort")
+            strat_perf = stratified_performance(clf_result_xgb["model"], X_clf, y_clf, df_full_aligned, "cohort")
             log.info("Stratified performance:\n%s", strat_perf.to_string())
         except Exception as e:
             log.warning("Stratified performance failed: %s", e)
@@ -301,9 +291,9 @@ def main() -> None:
     # -------------------------------------------------------------------------
     log.info("Building HTML report...")
     html_content = build_report(
-        reg_result_gbm, reg_result_xgb,
-        clf_result_gbm, clf_result_xgb,
-        drop_result_gbm, drop_result_xgb,
+        reg_result_xgb,
+        clf_result_xgb,
+        drop_result_xgb,
         reg_sensitivity,
         clf_sensitivity,
         drop_sensitivity,
@@ -322,16 +312,10 @@ def main() -> None:
     print("=" * 60)
 
     for label, result, cv_keys in [
-        ("[REGRESSION GBM]  composite_improvement", reg_result_gbm,
-         [("RMSE", "rmse_mean", "rmse_std"), ("MAE", "mae_mean", "mae_std"), ("R²", "r2_mean", "r2_std")]),
         ("[REGRESSION XGB]  composite_improvement", reg_result_xgb,
          [("RMSE", "rmse_mean", "rmse_std"), ("MAE", "mae_mean", "mae_std"), ("R²", "r2_mean", "r2_std")]),
-        ("[CLASSIFIER GBM]  overall_responder", clf_result_gbm,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std"), ("F1", "f1_mean", "f1_std")]),
         ("[CLASSIFIER XGB]  overall_responder", clf_result_xgb,
          [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("Brier", "brier_mean", "brier_std"), ("F1", "f1_mean", "f1_std")]),
-        ("[DROPOUT GBM]     is_dropout", drop_result_gbm,
-         [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("F1", "f1_mean", "f1_std")]),
         ("[DROPOUT XGB]     is_dropout", drop_result_xgb,
          [("AUC-ROC", "auc_roc_mean", "auc_roc_std"), ("AUC-PR", "auc_pr_mean", "auc_pr_std"), ("F1", "f1_mean", "f1_std")]),
     ]:
@@ -343,9 +327,9 @@ def main() -> None:
         if result.get("best_params"):
             print(f"  Best params: {result['best_params']}")
 
-    print(f"\n[OUTPUT] models/regression_gbm.joblib  models/regression_xgb.joblib")
-    print(f"[OUTPUT] models/classifier_gbm.joblib  models/classifier_xgb.joblib")
-    print(f"\n[OUTPUT] models/dropout_gbm.joblib     models/dropout_xgb.joblib")
+    print(f"\n[OUTPUT] models/regression_xgb.joblib")
+    print(f"[OUTPUT] models/classifier_xgb.joblib")
+    print(f"[OUTPUT] models/dropout_xgb.joblib")
     print(f"[OUTPUT] reports/modelling.html")
     print("=" * 60)
 

@@ -208,7 +208,7 @@ def test_compute_patient_bias_returns_zero_for_fewer_than_two_sessions():
     from services.prediction import _compute_patient_bias
     db = MagicMock()
     db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.5, 0.4)]
-    assert _compute_patient_bias(uuid.uuid4(), db) == 0.0
+    assert _compute_patient_bias(uuid.uuid4(), 3, db) == 0.0
 
 
 def test_compute_patient_bias_returns_zero_for_no_sessions():
@@ -216,7 +216,7 @@ def test_compute_patient_bias_returns_zero_for_no_sessions():
     from services.prediction import _compute_patient_bias
     db = MagicMock()
     db.query.return_value.join.return_value.filter.return_value.all.return_value = []
-    assert _compute_patient_bias(uuid.uuid4(), db) == 0.0
+    assert _compute_patient_bias(uuid.uuid4(), 3, db) == 0.0
 
 
 def test_compute_patient_bias_averages_residuals():
@@ -224,7 +224,7 @@ def test_compute_patient_bias_averages_residuals():
     from services.prediction import _compute_patient_bias
     db = MagicMock()
     db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.5, 0.4), (0.6, 0.3)]
-    result = _compute_patient_bias(uuid.uuid4(), db)
+    result = _compute_patient_bias(uuid.uuid4(), 3, db)
     assert abs(result - 0.2) < 1e-9
 
 
@@ -233,8 +233,64 @@ def test_compute_patient_bias_three_sessions():
     from services.prediction import _compute_patient_bias
     db = MagicMock()
     db.query.return_value.join.return_value.filter.return_value.all.return_value = [(0.6, 0.5), (0.7, 0.5), (0.8, 0.5)]
-    result = _compute_patient_bias(uuid.uuid4(), db)
+    result = _compute_patient_bias(uuid.uuid4(), 4, db)
     assert abs(result - 0.2) < 1e-9
+
+
+# ── F4: bias must exclude the current (and any future) session ───────────────
+
+class _RecordingQuery:
+    """Minimal query stub that records the filter() clauses it received."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.filter_args: tuple = ()
+
+    def join(self, *a, **k):
+        return self
+
+    def filter(self, *args, **k):
+        self.filter_args = args
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _RecordingDB:
+    def __init__(self, rows):
+        self.q = _RecordingQuery(rows)
+
+    def query(self, *a, **k):
+        return self.q
+
+
+def test_compute_patient_bias_filters_to_prior_sessions_only():
+    """The query must constrain session_number < the session being predicted."""
+    from services.prediction import _compute_patient_bias
+
+    db = _RecordingDB([(0.5, 0.4), (0.6, 0.3)])
+    _compute_patient_bias(uuid.uuid4(), 5, db)
+
+    sn_clauses = [c for c in db.q.filter_args if "session_number" in str(c)]
+    assert sn_clauses, "expected a session_number filter to exclude current/future sessions"
+    # The bound comparison value must be the session being predicted (strictly less-than).
+    assert sn_clauses[0].right.value == 5
+    assert "<" in str(sn_clauses[0])
+
+
+def test_run_passes_session_number_into_bias():
+    """PredictionService.run must forward the session's number to the bias filter."""
+    from unittest.mock import MagicMock, patch
+    from services.prediction import PredictionService
+
+    db = MagicMock()
+    models = _make_models()
+    session = _make_session(session_number=7)
+    with patch("services.prediction._compute_patient_bias", return_value=0.0) as bias:
+        PredictionService(db, models).run(_make_patient(), session)
+    # called as (patient_id, session_number, db)
+    assert bias.call_args.args[1] == 7
 
 
 def test_run_applies_bias_correction():

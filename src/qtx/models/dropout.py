@@ -1,11 +1,14 @@
 """Fit dropout-prediction model to identify patients at risk of non-completion.
 
 Uses config/models.yaml dropout block. Trained on baseline features only.
-All 1716 rows are usable (dropout status known for all).
+Reported metrics come from a nested, patient-grouped, label-stratified
+cross-validation; the deployed artifact is fit with a search on the full data.
+All rows are usable (dropout status known for all).
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.pipeline import Pipeline
@@ -14,32 +17,15 @@ from sklearn.model_selection import RandomizedSearchCV
 from qtx.models.evaluate import (
     _build_sklearn_imputer,
     cross_validate_classifier,
+    make_stratified_group_kfold,
     sensitivity_card,
     shap_importances,
 )
+from qtx.models.preprocessing import CAT_COLS, encode_categoricals
 from qtx.utils.config import get_models_config, get_settings
 from qtx.utils.logging import get_logger
 
 log = get_logger(__name__)
-
-_CAT_COLS = ["cohort", "usage_frequency", "gender", "primary_indication"]
-
-_DEFAULT_PARAM_GRID = {
-    "n_estimators": [100, 200, 300, 500],
-    "learning_rate": [0.01, 0.05, 0.1, 0.2],
-    "max_depth": [2, 3, 4, 5],
-    "subsample": [0.7, 0.8, 1.0],
-    "min_samples_leaf": [1, 5, 10, 20],
-}
-
-_DEFAULT_XGB_PARAM_GRID = {
-    "n_estimators": [100, 200, 300, 500],
-    "learning_rate": [0.01, 0.05, 0.1, 0.2],
-    "max_depth": [2, 3, 4, 6],
-    "subsample": [0.7, 0.8, 1.0],
-    "min_child_weight": [1, 3, 5, 10],
-    "colsample_bytree": [0.6, 0.8, 1.0],
-}
 
 
 def _get_feature_cols() -> list[str]:
@@ -47,11 +33,9 @@ def _get_feature_cols() -> list[str]:
     return cfg["dropout"]["features"]
 
 
-def _encode_categoricals(df: pd.DataFrame, cat_cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
-    present = [c for c in cat_cols if c in df.columns]
-    df_enc = pd.get_dummies(df, columns=present, drop_first=True, dtype=float)
-    dummy_cols = [c for c in df_enc.columns if any(c.startswith(base + "_") for base in present)]
-    return df_enc, dummy_cols
+def _get_cv_config() -> dict:
+    cfg = get_models_config()
+    return cfg["dropout"].get("cv", {"kind": "stratified_grouped_kfold", "k": 5})
 
 
 def train_dropout(df: pd.DataFrame, imputation_strategy: str = "iterative", estimator_type: str = "gbm") -> dict:
@@ -63,10 +47,10 @@ def train_dropout(df: pd.DataFrame, imputation_strategy: str = "iterative", esti
     """
     seed = int(get_settings().get("random_seed", 42))
     feature_cols = _get_feature_cols()
+    cv_config = _get_cv_config()
+    group_col = cv_config.get("group_col", "sn")
     tuning_key = "tuning_xgb" if estimator_type == "xgb" else "tuning"
-    tuning_cfg = get_models_config().get(tuning_key, {})
-    default_grid = _DEFAULT_XGB_PARAM_GRID if estimator_type == "xgb" else _DEFAULT_PARAM_GRID
-    cv_config = {"kind": "stratified_kfold", "k": 5}
+    tuning_cfg = get_models_config()[tuning_key]
 
     log.info(
         "train_dropout: strategy=%s, estimator=%s, features=%d",
@@ -78,9 +62,9 @@ def train_dropout(df: pd.DataFrame, imputation_strategy: str = "iterative", esti
 
     cols_to_use = [c for c in feature_cols if c in df_out.columns]
     df_model = df_out[cols_to_use + ["is_dropout"]].copy()
-    df_model, dummy_cols = _encode_categoricals(df_model, _CAT_COLS)
+    df_model, dummy_cols = encode_categoricals(df_model, CAT_COLS)
 
-    non_cat_cols = [c for c in cols_to_use if c not in _CAT_COLS]
+    non_cat_cols = [c for c in cols_to_use if c not in CAT_COLS]
     final_feature_cols = non_cat_cols + dummy_cols
 
     df_model = df_model.dropna(subset=["is_dropout"])
@@ -102,6 +86,12 @@ def train_dropout(df: pd.DataFrame, imputation_strategy: str = "iterative", esti
         n_samples = len(X_raw)
         log.info("train_dropout: complete_case n=%d after NaN drop", n_samples)
 
+    if group_col in df_out.columns:
+        groups = df_out.loc[X_raw.index, group_col].to_numpy()
+    else:
+        log.warning("train_dropout: group_col %r absent; using one group per row", group_col)
+        groups = None
+
     if estimator_type == "xgb":
         from xgboost import XGBClassifier
         base_model = XGBClassifier(random_state=seed, n_jobs=-1, verbosity=0, tree_method="hist")
@@ -112,28 +102,36 @@ def train_dropout(df: pd.DataFrame, imputation_strategy: str = "iterative", esti
         pipeline = Pipeline([("imputer", sklearn_imputer), ("model", base_model)])
 
     param_distributions = {
-        "model__" + k: v
-        for k, v in tuning_cfg.get("param_distributions", default_grid).items()
+        "model__" + k: v for k, v in tuning_cfg["param_distributions"].items()
     }
+    inner_cv_k = tuning_cfg.get("cv", 5)
+    n_iter = tuning_cfg.get("n_iter", 30)
 
-    search = RandomizedSearchCV(
-        pipeline,
-        param_distributions,
-        n_iter=tuning_cfg.get("n_iter", 30),
-        cv=tuning_cfg.get("cv", 5),
-        scoring="roc_auc",
-        random_state=seed,
-        n_jobs=-1,
-        refit=True,
+    def make_search() -> RandomizedSearchCV:
+        return RandomizedSearchCV(
+            pipeline,
+            param_distributions,
+            n_iter=n_iter,
+            cv=make_stratified_group_kfold(inner_cv_k, seed),
+            scoring="roc_auc",
+            random_state=seed,
+            n_jobs=-1,
+            refit=True,
+        )
+
+    # Reported metrics: nested grouped, stratified CV.
+    cv_metrics = cross_validate_classifier(
+        make_search, X_raw, y, groups, cv_config, seed=seed
     )
-    search.fit(X_raw, y)
-
-    best_pipeline = search.best_estimator_
-    best_params = {k.replace("model__", ""): v for k, v in search.best_params_.items()}
-    log.info("train_dropout: best_params=%s", best_params)
-
-    cv_metrics = cross_validate_classifier(best_pipeline, X_raw, y, cv_config)
     cv_metrics["n"] = n_samples
+
+    # Deployed artifact: search on the full data.
+    groups_arr = groups if groups is not None else np.arange(len(X_raw))
+    final_search = make_search()
+    final_search.fit(X_raw, y, groups=groups_arr)
+    best_pipeline = final_search.best_estimator_
+    best_params = {k.replace("model__", ""): v for k, v in final_search.best_params_.items()}
+    log.info("train_dropout: best_params=%s", best_params)
 
     if estimator_type == "xgb":
         X_for_shap = X_raw
