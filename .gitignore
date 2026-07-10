@@ -38,3 +38,7 @@ TESTING.md
 SETUP.md
 PROMPT.md
 QuantumTX-DLMS-PRD.md
+models/.retrain.lock
+models/eval_set.parquet
+models/eval_manifest.json
+logs/
