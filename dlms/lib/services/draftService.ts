@@ -114,3 +114,33 @@ export async function promoteDraft(
 
   return device
 }
+
+/**
+ * Reject a draft — dismiss it from the pending queue without promoting to a
+ * device. Same permission gate as promoteDraft (whoever can confirm can reject).
+ * The draft is retained (never deleted), attributed to the reviewing engineer.
+ */
+export async function rejectDraft(
+  id: string,
+  reviewerActorId: string,
+  actorRole: Role
+): Promise<void> {
+  if (!can(actorRole, ACTIONS.CONFIRM_DRAFT)) {
+    throw new AppError({ type: 'permission', message: 'You do not have permission to confirm drafts' })
+  }
+
+  const supabase = createAdminClient()
+  const draft = await getDraft(id)
+  if (!draft) throw new Error('Draft not found')
+  if (draft.status !== 'pending_review') {
+    throw new AppError({ type: 'validation', message: `Draft is already ${draft.status}`, errors: {} })
+  }
+
+  await supabase
+    .from('extracted_device_draft')
+    .update({
+      status: 'rejected',
+      reviewed_by: reviewerActorId,
+    })
+    .eq('id', id)
+}

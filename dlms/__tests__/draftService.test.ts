@@ -8,7 +8,7 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { promoteDraft, fieldsToDeviceInput } from '@/lib/services/draftService'
+import { promoteDraft, rejectDraft, fieldsToDeviceInput } from '@/lib/services/draftService'
 
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
@@ -87,5 +87,62 @@ describe('promoteDraft', () => {
     expect(err.serviceError.type).toBe('validation')
     expect(err.serviceError.message).toContain('"In Production"')
     expect(err.serviceError.message).toContain('Stock')
+  })
+})
+
+describe('rejectDraft', () => {
+  it('denies a viewer (permission error)', async () => {
+    const err = await catchErr(rejectDraft('draft-1', 'actor-1', 'viewer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('permission')
+  })
+
+  it('throws when the draft does not exist', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [{ data: null, error: { message: 'no rows' } }],
+    })
+    await expect(rejectDraft('missing', 'actor-1', 'engineer')).rejects.toThrow('Draft not found')
+  })
+
+  it('rejects an already-confirmed draft (validation error)', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [
+        { data: { id: 'draft-1', status: 'confirmed', extracted_payload: { fields: {} } }, error: null },
+      ],
+    })
+    const err = await catchErr(rejectDraft('draft-1', 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('confirmed')
+  })
+
+  it('rejects an already-rejected draft (validation error)', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [
+        { data: { id: 'draft-1', status: 'rejected', extracted_payload: { fields: {} } }, error: null },
+      ],
+    })
+    const err = await catchErr(rejectDraft('draft-1', 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toContain('rejected')
+  })
+
+  it('marks a pending draft rejected and records the reviewer', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      extracted_device_draft: [
+        { data: { id: 'draft-1', status: 'pending_review', extracted_payload: { fields: {} } }, error: null },
+        { data: null, error: null },
+      ],
+    }, captures)
+
+    await rejectDraft('draft-1', 'actor-9', 'engineer')
+
+    const updateArgs = captures['extracted_device_draft.update']
+    expect(updateArgs).toBeTruthy()
+    const payload = updateArgs[0][0] as { status: string; reviewed_by: string }
+    expect(payload.status).toBe('rejected')
+    expect(payload.reviewed_by).toBe('actor-9')
   })
 })

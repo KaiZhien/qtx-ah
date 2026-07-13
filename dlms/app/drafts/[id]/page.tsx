@@ -3,6 +3,7 @@ import { getDraft } from '@/lib/services/draftService'
 import { requirePermission } from '@/lib/auth/session'
 import { ACTIONS } from '@/lib/auth/permissions'
 import { PromoteDraftButton } from './PromoteDraftButton'
+import { RejectDraftButton } from './RejectDraftButton'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { FIELD_LABELS } from '@/lib/i18n/fields'
@@ -70,7 +71,10 @@ export default async function DraftDetailPage({ params }: PageProps) {
       </div>
 
       {draft.status === 'pending_review' && (
-        <PromoteDraftButton draftId={draft.id} />
+        <div className="flex items-center gap-3">
+          <PromoteDraftButton draftId={draft.id} />
+          <RejectDraftButton draftId={draft.id} />
+        </div>
       )}
     </div>
   )
