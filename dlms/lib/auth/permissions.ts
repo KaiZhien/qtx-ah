@@ -23,6 +23,7 @@ export const ACTIONS = {
   VIEW_ANALYTICS:       'view_analytics',
   ASSIGN_DEVICE:        'assign_device',
   LOG_SERVICE_EVENT:    'log_service_event',
+  SAVE_FILTER_PRESET:   'save_filter_preset',   // personal filter presets (all human roles)
 } as const
 
 export type Action = (typeof ACTIONS)[keyof typeof ACTIONS]
@@ -32,6 +33,7 @@ const PERMISSIONS: Record<Role, Set<Action>> = {
   viewer: new Set([
     ACTIONS.VIEW_RECORDS,
     ACTIONS.VIEW_ANALYTICS,
+    ACTIONS.SAVE_FILTER_PRESET,
   ]),
   engineer: new Set([
     ACTIONS.VIEW_RECORDS,
@@ -45,6 +47,7 @@ const PERMISSIONS: Record<Role, Set<Action>> = {
     ACTIONS.VIEW_ANALYTICS,
     ACTIONS.ASSIGN_DEVICE,
     ACTIONS.LOG_SERVICE_EVENT,
+    ACTIONS.SAVE_FILTER_PRESET,
   ]),
   admin: new Set(Object.values(ACTIONS) as Action[]),
   system: new Set([]),  // system role writes only to extracted_device_draft (enforced by RLS)

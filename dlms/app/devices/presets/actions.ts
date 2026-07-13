@@ -1,7 +1,9 @@
 'use server'
 import { getCurrentUser } from '@/lib/auth/session'
+import { can, ACTIONS } from '@/lib/auth/permissions'
 import { listPresets, savePreset, deletePreset } from '@/lib/services/filterPresetService'
 import { revalidatePath } from 'next/cache'
+import type { Role } from '@/lib/types'
 
 export async function listPresetsAction() {
   const user = await getCurrentUser()
@@ -11,9 +13,9 @@ export async function listPresetsAction() {
 
 export async function savePresetAction(name: string, queryString: string) {
   const user = await getCurrentUser()
-  if (!user) return { error: 'Unauthorized' }
+  if (!user || !can(user.role as Role, ACTIONS.SAVE_FILTER_PRESET)) return { error: 'Unauthorized' }
   try {
-    const preset = await savePreset(user.id, name, queryString)
+    const preset = await savePreset(user.id, name, queryString, user.role as Role)
     revalidatePath('/devices')
     return { preset }
   } catch (e) {
@@ -23,9 +25,9 @@ export async function savePresetAction(name: string, queryString: string) {
 
 export async function deletePresetAction(id: string) {
   const user = await getCurrentUser()
-  if (!user) return { error: 'Unauthorized' }
+  if (!user || !can(user.role as Role, ACTIONS.SAVE_FILTER_PRESET)) return { error: 'Unauthorized' }
   try {
-    await deletePreset(id, user.id)
+    await deletePreset(id, user.id, user.role as Role)
     revalidatePath('/devices')
     return { ok: true }
   } catch (e) {

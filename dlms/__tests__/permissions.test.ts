@@ -138,3 +138,18 @@ describe('LOG_SERVICE_EVENT permission', () => {
     expect(can('system', ACTIONS.LOG_SERVICE_EVENT)).toBe(false)
   })
 })
+
+describe('SAVE_FILTER_PRESET permission', () => {
+  it('viewer can save_filter_preset', () => {
+    expect(can('viewer', ACTIONS.SAVE_FILTER_PRESET)).toBe(true)
+  })
+  it('engineer can save_filter_preset', () => {
+    expect(can('engineer', ACTIONS.SAVE_FILTER_PRESET)).toBe(true)
+  })
+  it('admin can save_filter_preset', () => {
+    expect(can('admin', ACTIONS.SAVE_FILTER_PRESET)).toBe(true)
+  })
+  it('system cannot save_filter_preset', () => {
+    expect(can('system', ACTIONS.SAVE_FILTER_PRESET)).toBe(false)
+  })
+})
