@@ -53,6 +53,7 @@ export async function addStatusOption(
   code: string,
   labelEn: string,
   labelZh: string,
+  actorId: string,
   actorRole: Role = 'admin'
 ): Promise<StatusOption> {
   if (!can(actorRole, ACTIONS.MANAGE_VOCABULARIES)) {
@@ -64,7 +65,7 @@ export async function addStatusOption(
 
   const { data, error } = await supabase
     .from('status_option')
-    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder })
+    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder, updated_by: actorId })
     .select()
     .single()
   if (error) throw new Error(error.message)
@@ -75,6 +76,7 @@ export async function addPhaseOption(
   code: string,
   labelEn: string,
   labelZh: string,
+  actorId: string,
   actorRole: Role = 'admin'
 ): Promise<PhaseOption> {
   if (!can(actorRole, ACTIONS.MANAGE_VOCABULARIES)) {
@@ -86,7 +88,7 @@ export async function addPhaseOption(
 
   const { data, error } = await supabase
     .from('phase_option')
-    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder })
+    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder, updated_by: actorId })
     .select()
     .single()
   if (error) throw new Error(error.message)
@@ -97,12 +99,13 @@ export async function toggleOptionActive(
   table: 'status_option' | 'phase_option',
   code: string,
   active: boolean,
+  actorId: string,
   actorRole: Role = 'admin'
 ): Promise<void> {
   if (!can(actorRole, ACTIONS.MANAGE_VOCABULARIES)) {
     throw new AppError({ type: 'permission', message: 'Only admins can manage vocabularies' })
   }
   const supabase = createAdminClient()
-  const { error } = await supabase.from(table).update({ active }).eq('code', code)
+  const { error } = await supabase.from(table).update({ active, updated_by: actorId }).eq('code', code)
   if (error) throw new Error(error.message)
 }

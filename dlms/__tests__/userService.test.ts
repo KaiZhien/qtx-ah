@@ -64,6 +64,8 @@ describe('updateUserRole', () => {
     expect(result).toEqual({ id: ADMIN_2, role: 'engineer' })
     const payload = captures['app_user.update'][0][0] as Record<string, unknown>
     expect(payload.role).toBe('engineer')
+    // Audit actor attribution: the update carries the acting admin's id.
+    expect(payload.updated_by).toBe(ADMIN_1)
   })
 
   it('allows promoting a non-admin to admin without consulting the admin count', async () => {
@@ -116,6 +118,8 @@ describe('deactivateUser', () => {
     expect(result).toEqual({ id: ADMIN_2, active: false })
     const payload = captures['app_user.update'][0][0] as Record<string, unknown>
     expect(payload.active).toBe(false)
+    // Audit actor attribution: the update carries the acting admin's id.
+    expect(payload.updated_by).toBe(ADMIN_1)
   })
 
   it('deactivates a non-admin without tripping the last-admin guard', async () => {

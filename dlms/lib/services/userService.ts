@@ -64,7 +64,7 @@ export async function updateUserRole(
 
   const { data, error } = await supabase
     .from('app_user')
-    .update({ role })
+    .update({ role, updated_by: actorId })
     .eq('id', userId)
     .select()
     .single()
@@ -109,7 +109,7 @@ export async function deactivateUser(
   // Never hard-delete; preserve audit attribution
   const { data, error } = await supabase
     .from('app_user')
-    .update({ active: false })
+    .update({ active: false, updated_by: actorId })
     .eq('id', userId)
     .select()
     .single()
@@ -119,6 +119,7 @@ export async function deactivateUser(
 
 export async function reactivateUser(
   userId: string,
+  actorId: string,
   actorRole: Role = 'admin'
 ): Promise<AppUser> {
   if (!can(actorRole, ACTIONS.MANAGE_USERS)) {
@@ -127,7 +128,7 @@ export async function reactivateUser(
   const supabase = createAdminClient()
   const { data, error } = await supabase
     .from('app_user')
-    .update({ active: true })
+    .update({ active: true, updated_by: actorId })
     .eq('id', userId)
     .select()
     .single()

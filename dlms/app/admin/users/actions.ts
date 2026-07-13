@@ -42,7 +42,7 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
   const user = await getCurrentUser()
   if (!user || !can(user.role as Role, ACTIONS.MANAGE_USERS)) return { error: 'Unauthorized' }
   try {
-    await reactivateUser(userId, user.role as Role)
+    await reactivateUser(userId, user.id, user.role as Role)
     revalidatePath('/admin/users')
     return {}
   } catch (e) {

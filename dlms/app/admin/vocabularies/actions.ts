@@ -13,24 +13,24 @@ async function adminCheck() {
 
 export async function addStatusAction(code: string, labelEn: string, labelZh: string) {
   const user = await adminCheck()
-  await addStatusOption(code, labelEn, labelZh, user.role as Role)
+  await addStatusOption(code, labelEn, labelZh, user.id, user.role as Role)
   revalidatePath('/admin/vocabularies')
 }
 
 export async function addPhaseAction(code: string, labelEn: string, labelZh: string) {
   const user = await adminCheck()
-  await addPhaseOption(code, labelEn, labelZh, user.role as Role)
+  await addPhaseOption(code, labelEn, labelZh, user.id, user.role as Role)
   revalidatePath('/admin/vocabularies')
 }
 
 export async function toggleStatusActiveAction(code: string, active: boolean) {
   const user = await adminCheck()
-  await toggleOptionActive('status_option', code, active, user.role as Role)
+  await toggleOptionActive('status_option', code, active, user.id, user.role as Role)
   revalidatePath('/admin/vocabularies')
 }
 
 export async function togglePhaseActiveAction(code: string, active: boolean) {
   const user = await adminCheck()
-  await toggleOptionActive('phase_option', code, active, user.role as Role)
+  await toggleOptionActive('phase_option', code, active, user.id, user.role as Role)
   revalidatePath('/admin/vocabularies')
 }

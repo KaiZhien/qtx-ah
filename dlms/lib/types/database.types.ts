@@ -23,6 +23,7 @@ export type Database = {
           email: string
           id: string
           role: string
+          updated_by: string | null
         }
         Insert: {
           active?: boolean
@@ -30,6 +31,7 @@ export type Database = {
           email: string
           id: string
           role: string
+          updated_by?: string | null
         }
         Update: {
           active?: boolean
@@ -37,6 +39,7 @@ export type Database = {
           email?: string
           id?: string
           role?: string
+          updated_by?: string | null
         }
         Relationships: []
       }
@@ -400,6 +403,7 @@ export type Database = {
           label_en: string
           label_zh: string
           sort_order: number
+          updated_by: string | null
         }
         Insert: {
           active?: boolean
@@ -407,6 +411,7 @@ export type Database = {
           label_en: string
           label_zh: string
           sort_order?: number
+          updated_by?: string | null
         }
         Update: {
           active?: boolean
@@ -414,6 +419,7 @@ export type Database = {
           label_en?: string
           label_zh?: string
           sort_order?: number
+          updated_by?: string | null
         }
         Relationships: []
       }
@@ -487,6 +493,7 @@ export type Database = {
           label_en: string
           label_zh: string
           sort_order: number
+          updated_by: string | null
         }
         Insert: {
           active?: boolean
@@ -494,6 +501,7 @@ export type Database = {
           label_en: string
           label_zh: string
           sort_order?: number
+          updated_by?: string | null
         }
         Update: {
           active?: boolean
@@ -501,6 +509,7 @@ export type Database = {
           label_en?: string
           label_zh?: string
           sort_order?: number
+          updated_by?: string | null
         }
         Relationships: []
       }
