@@ -10,8 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
-import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X, Bookmark, BookmarkPlus, Trash2 } from 'lucide-react'
-import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction } from '@/app/devices/actions'
+import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X, Bookmark, BookmarkPlus, Trash2, RotateCcw } from 'lucide-react'
+import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction, restoreDeviceAction } from '@/app/devices/actions'
 import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/devices/presets/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { toast } from 'sonner'
@@ -30,6 +30,7 @@ interface DeviceTableProps {
   phases: PhaseOption[]
   customers: string[]
   userRole: Role
+  deletedView?: boolean
   initialSearch?: string
   initialStatus?: string
   initialPhase?: string
@@ -315,6 +316,7 @@ function DeviceFormModal({
 
 export function DeviceTable({
   devices, total, page, pageSize, statuses, phases, customers, userRole,
+  deletedView = false,
   initialSearch = '', initialStatus = '', initialPhase = '', initialCustomer = '',
 }: DeviceTableProps) {
   const router = useRouter()
@@ -322,10 +324,17 @@ export function DeviceTable({
   const searchParams = useSearchParams()
   const [, startTransition] = useTransition()
 
-  const canEdit = can(userRole, ACTIONS.EDIT_DEVICE)
-  const canCreate = can(userRole, ACTIONS.CREATE_DEVICE)
-  const canChangeStatus = can(userRole, ACTIONS.CHANGE_STATUS)
-  const canDelete = can(userRole, ACTIONS.SOFT_DELETE)
+  // Admin capability for the deleted view (toggle + per-row Restore). Kept
+  // independent of `deletedView` so the toggle can turn the view off again.
+  const isAdmin = can(userRole, ACTIONS.SOFT_DELETE)
+  // Editing/creating/deleting affordances make no sense on soft-deleted rows —
+  // disable them all inside the deleted view (mirrors how viewers are gated).
+  const canEdit = can(userRole, ACTIONS.EDIT_DEVICE) && !deletedView
+  const canCreate = can(userRole, ACTIONS.CREATE_DEVICE) && !deletedView
+  const canChangeStatus = can(userRole, ACTIONS.CHANGE_STATUS) && !deletedView
+  const canDelete = can(userRole, ACTIONS.SOFT_DELETE) && !deletedView
+  // Trailing actions column: edit pencil (normal view) OR restore button (deleted view).
+  const showActions = canEdit || (deletedView && isAdmin)
 
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
@@ -357,6 +366,9 @@ export function DeviceTable({
   const [inlineCell, setInlineCell] = useState<{ id: string; field: keyof DeviceInput; version: number } | null>(null)
   const [inlineValue, setInlineValue] = useState<string>('')
   const [inlineSaving, setInlineSaving] = useState(false)
+
+  // Restore (deleted view) state
+  const [restoringId, setRestoringId] = useState<string | null>(null)
 
   const activeSort = searchParams.get('sort') ?? ''
   const activeDir  = searchParams.get('dir')  ?? ''
@@ -487,6 +499,22 @@ export function DeviceTable({
     }
     setSelectedIds(new Set())
     router.refresh()
+  }
+
+  async function handleRestore(device: DeviceRow) {
+    if (!confirm(`Restore device ${device.device_sn ?? device.pcba_a_sn}? It will return to the active list.`)) return
+    setRestoringId(device.id)
+    try {
+      const res = await restoreDeviceAction(device.id, device.version)
+      if ('error' in res) {
+        toast.error(res.error)
+      } else {
+        toast.success('Device restored')
+        router.refresh()
+      }
+    } finally {
+      setRestoringId(null)
+    }
   }
 
   function handleBulkExport() {
@@ -729,6 +757,17 @@ export function DeviceTable({
           >
             My Queue
           </Button>
+          {isAdmin && (
+            <Button
+              variant={deletedView ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => updateParam('deleted', deletedView ? '' : '1')}
+              title={deletedView ? 'Back to active devices' : 'View soft-deleted devices'}
+            >
+              <Trash2 className="h-4 w-4 mr-1" />
+              Deleted
+            </Button>
+          )}
           <Button
             variant={showFilters ? 'secondary' : 'outline'}
             size="sm"
@@ -936,7 +975,7 @@ export function DeviceTable({
               <GroupTh label="PCBA-B (控制板 Accessory Board)"         colSpan={4} section="pcbaB" />
               <GroupTh label="HMI Screen 触摸屏"                        colSpan={2} section="hmi" />
               <GroupTh label="出货信息" sub="Shipment Info"             colSpan={6} section="shipment" />
-              <GroupTh label="状态 Status & Notes" colSpan={canEdit ? 4 : 3} section="status" />
+              <GroupTh label="状态 Status & Notes" colSpan={showActions ? 4 : 3} section="status" />
             </tr>
             <tr>
               <th className="w-8 bg-gray-600 px-2 py-1.5 text-center">
@@ -969,14 +1008,14 @@ export function DeviceTable({
               <ColTh section="status" sortKey="status" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Status<br /><span className="opacity-70">状态</span></ColTh>
               <ColTh section="status" sortKey="phase" activeSort={activeSort} activeDir={activeDir} onSort={toggleSort}>Phase<br /><span className="opacity-70">阶段</span></ColTh>
               <ColTh section="status">Remarks<br /><span className="opacity-70">备注</span></ColTh>
-              {canEdit && <ColTh section="status"><span className="sr-only">Edit</span></ColTh>}
+              {showActions && <ColTh section="status"><span className="sr-only">{deletedView ? 'Restore' : 'Edit'}</span></ColTh>}
             </tr>
           </thead>
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td colSpan={canEdit ? 23 : 22} className="text-center text-muted-foreground py-8">
-                  No devices found.
+                <td colSpan={showActions ? 23 : 22} className="text-center text-muted-foreground py-8">
+                  {deletedView ? 'No deleted devices.' : 'No devices found.'}
                 </td>
               </tr>
             ) : (
@@ -1172,15 +1211,32 @@ export function DeviceTable({
                       </span>
                     )}
                   </Td>
-                  {canEdit && (
+                  {showActions && (
                     <Td>
-                      <button
-                        onClick={() => startEdit(device)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground"
-                        title="Edit row"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
+                      {deletedView ? (
+                        isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRestore(device)}
+                            disabled={restoringId === device.id}
+                            title="Restore device"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                            {restoringId === device.id ? 'Restoring…' : 'Restore'}
+                          </Button>
+                        )
+                      ) : (
+                        canEdit && (
+                          <button
+                            onClick={() => startEdit(device)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground"
+                            title="Edit row"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        )
+                      )}
                     </Td>
                   )}
                 </tr>

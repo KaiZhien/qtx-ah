@@ -4,6 +4,7 @@ import { listDevices, getDistinctCustomers, getExpiringWarrantyCount } from '@/l
 import { getOverdueServiceCount } from '@/lib/services/serviceScheduleService'
 import { getStatuses, getPhases } from '@/lib/services/vocabularyService'
 import { requireAuth } from '@/lib/auth/session'
+import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
 import { WarrantyBanner } from '@/components/device/WarrantyBanner'
 import { ServiceOverdueBanner } from '@/components/device/ServiceOverdueBanner'
@@ -19,6 +20,7 @@ interface PageProps {
     screen_model?: string;  hmi_ver?: string
     myQueue?: string
     serviceOverdue?: string
+    deleted?: string
   }
 }
 
@@ -26,6 +28,10 @@ export default async function DevicesPage({ searchParams }: PageProps) {
   const user = await requireAuth()
   const page = Number(searchParams.page ?? '1')
   const pageSize = 50
+
+  // Only-deleted (restore) view — admin-only. A non-admin passing ?deleted=1 in the
+  // URL falls through to the normal (non-deleted) list.
+  const deletedView = searchParams.deleted === '1' && can(user.role as Role, ACTIONS.SOFT_DELETE)
 
   const [{ rows, total }, statuses, phases, customers, expiringCount, overdueCount] = await Promise.all([
     listDevices({
@@ -50,6 +56,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
       dir: searchParams.dir,
       myQueueUserId: searchParams.myQueue === '1' ? user.id : undefined,
       serviceOverdue: searchParams.serviceOverdue === '1',
+      deleted: deletedView,
       page,
       pageSize,
     }),
@@ -81,6 +88,7 @@ export default async function DevicesPage({ searchParams }: PageProps) {
         phases={phases}
         customers={customers}
         userRole={(user?.role ?? 'viewer') as Role}
+        deletedView={deletedView}
         initialSearch={searchParams.q}
         initialStatus={searchParams.status}
         initialPhase={searchParams.phase}

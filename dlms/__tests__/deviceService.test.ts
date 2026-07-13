@@ -17,6 +17,7 @@ import {
   updateDevice,
   changeStatus,
   softDeleteDevice,
+  restoreDevice,
 } from '@/lib/services/deviceService'
 
 const VALID_INPUT: DeviceInput = {
@@ -235,5 +236,59 @@ describe('softDeleteDevice', () => {
     const payload = updateArgs[0][0] as Record<string, unknown>
     expect(typeof payload.deleted_at).toBe('string')
     expect(payload.updated_by).toBe('actor-9')
+  })
+})
+
+describe('restoreDevice', () => {
+  it('denies a non-admin (permission error, no DB call)', async () => {
+    const err = await catchErr(restoreDevice('dev-1', 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('permission')
+  })
+
+  it('rejects when the device does not exist', async () => {
+    fromImpl = makeFrom({ device: [{ data: null, error: { message: 'not found' } }] })
+    const err = await catchErr(restoreDevice('missing', 1, 'actor-9', 'admin'))
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toMatch(/not found/i)
+  })
+
+  it('rejects restoring a device that is not deleted (validation error)', async () => {
+    fromImpl = makeFrom({ device: [{ data: { version: 1, deleted_at: null }, error: null }] })
+    const err = await catchErr(restoreDevice('dev-1', 1, 'actor-9', 'admin'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+    expect(err.serviceError.message).toMatch(/not deleted/i)
+  })
+
+  it('rejects a version mismatch with a conflict error', async () => {
+    fromImpl = makeFrom({ device: [{ data: { version: 5, deleted_at: '2020-01-01T00:00:00Z' }, error: null }] })
+    const err = await catchErr(restoreDevice('dev-1', 3, 'actor-9', 'admin'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('conflict')
+  })
+
+  it('clears deleted_at and sets updated_by on the update (happy path)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const restoredRow = { id: 'dev-1', deleted_at: null, version: 3 }
+    fromImpl = makeFrom({ device: [
+      { data: { version: 2, deleted_at: '2020-01-01T00:00:00Z' }, error: null },  // pre-UPDATE fetch (incl. deleted)
+      { data: restoredRow, error: null },                                          // UPDATE ... select().single()
+    ] }, captures)
+
+    const result = await restoreDevice('dev-1', 2, 'actor-9', 'admin')
+    expect(result).toEqual(restoredRow)
+
+    const updateArgs = captures['device.update']
+    expect(updateArgs).toBeDefined()
+    const payload = updateArgs[0][0] as Record<string, unknown>
+    expect(payload.deleted_at).toBeNull()
+    expect(payload.updated_by).toBe('actor-9')
+    // version is bumped by the DB trigger (OLD.version + 1) — never set in the payload
+    expect('version' in payload).toBe(false)
+
+    // Optimistic concurrency: the UPDATE re-checks the expected version
+    const eqArgs = captures['device.eq'] ?? []
+    expect(eqArgs).toContainEqual(['version', 2])
   })
 })

@@ -125,6 +125,7 @@ export type ListDevicesParams = {
   page?: number
   pageSize?: number
   includeDeleted?: boolean
+  deleted?: boolean        // when set, return ONLY soft-deleted devices (admin restore view)
   myQueueUserId?: string   // when set, filter to devices assigned to this user
   serviceOverdue?: boolean // when set, filter to devices overdue for a service event
 }

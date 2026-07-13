@@ -66,12 +66,15 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
     pcba_b_hw_rev, pcba_b_bom_rev, pcba_b_fw_ver,
     screen_model, hmi_ver,
     sort, dir,
-    page = 1, pageSize = 50, includeDeleted = false,
+    page = 1, pageSize = 50, includeDeleted = false, deleted = false,
   } = params
 
   let query = supabase.from('device').select('*', { count: 'exact' })
 
-  if (!includeDeleted) {
+  if (deleted) {
+    // Opt-in only-deleted view (admin restore). Return EXCLUSIVELY soft-deleted rows.
+    query = query.not('deleted_at', 'is', null)
+  } else if (!includeDeleted) {
     query = query.is('deleted_at', null)
   }
 
@@ -336,6 +339,67 @@ export async function softDeleteDevice(
     .is('deleted_at', null)  // Idempotency: only soft-delete active records
 
   if (error) throw new Error(error.message)
+}
+
+/**
+ * Restore a soft-deleted device (admin-only). Mirror image of softDeleteDevice:
+ * clears deleted_at back to NULL and attributes the actor via updated_by. Gated
+ * on ACTIONS.SOFT_DELETE (the "delete" capability, admin-only today).
+ *
+ * The fetch deliberately does NOT filter on deleted_at so a deleted row is
+ * visible; restoring an already-active row is a validation error. Optimistic
+ * concurrency mirrors updateDevice exactly (pre-fetch version compare + a second
+ * .eq('version', …) guard on the UPDATE). The version is bumped by the DB trigger
+ * (fn_device_touch), never set here. The audit trigger logs this transition as a
+ * plain `update` (deleted_at → null), which is the accepted behavior.
+ */
+export async function restoreDevice(
+  id: string,
+  version: number,
+  actorId: string,
+  actorRole: Role
+): Promise<DeviceRow> {
+  if (!can(actorRole, ACTIONS.SOFT_DELETE)) {
+    throw new AppError({ type: 'permission', message: 'Only admins can restore records' })
+  }
+
+  const supabase = createAdminClient()
+
+  // Fetch INCLUDING soft-deleted rows (no deleted_at filter) so a deleted device
+  // is visible for restore.
+  const { data: current, error: fetchErr } = await supabase
+    .from('device')
+    .select('version, deleted_at')
+    .eq('id', id)
+    .single()
+
+  if (fetchErr || !current) throw new Error('Device not found')
+  if (current.deleted_at == null) {
+    throw new AppError({ type: 'validation', message: 'Device is not deleted', errors: {} })
+  }
+  if (current.version !== version) {
+    throw new AppError({
+      type: 'conflict',
+      message: 'Record has been modified by another user. Please reload and try again.',
+    })
+  }
+
+  const { data, error } = await supabase
+    .from('device')
+    .update({ deleted_at: null, updated_by: actorId })
+    .eq('id', id)
+    .eq('version', version)  // Double-check in the UPDATE itself
+    .select()
+    .single()
+
+  if (error) throw new Error(error.message)
+  if (!data) {
+    throw new AppError({
+      type: 'conflict',
+      message: 'Record has been modified by another user. Please reload and try again.',
+    })
+  }
+  return data as DeviceRow
 }
 
 export async function getDeviceStats(): Promise<DeviceStats> {

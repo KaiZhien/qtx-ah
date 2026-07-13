@@ -1,7 +1,7 @@
 'use server'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { createDevice, updateDevice, changeStatus, softDeleteDevice, getDevice, getDeviceByPcbaSn } from '@/lib/services/deviceService'
+import { createDevice, updateDevice, changeStatus, softDeleteDevice, restoreDevice, getDevice, getDeviceByPcbaSn } from '@/lib/services/deviceService'
 import { assignDevice, unassignDevice } from '@/lib/services/assignmentService'
 import { addServiceEvent } from '@/lib/services/serviceEventService'
 import { getCurrentUser } from '@/lib/auth/session'
@@ -54,6 +54,23 @@ export async function softDeleteAction(id: string) {
   await softDeleteDevice(id, user.id, user.role as Role)
   revalidatePath('/devices')
   redirect('/devices')
+}
+
+// Restore a soft-deleted device (admin-only). Mirrors softDeleteAction's auth +
+// can() re-check + revalidatePath, but returns a toast-able result so the deleted
+// view can stay put and refresh instead of redirecting.
+export async function restoreDeviceAction(
+  id: string, version: number
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const user = await getCurrentUser()
+    if (!user || !can(user.role as Role, ACTIONS.SOFT_DELETE)) return { error: 'Unauthorized' }
+    await restoreDevice(id, version, user.id, user.role as Role)
+    revalidatePath('/devices')
+    return { ok: true }
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : 'Restore failed' }
+  }
 }
 
 // Inline table create — does not redirect, returns the new row
