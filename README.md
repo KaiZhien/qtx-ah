@@ -98,8 +98,8 @@ quantumtx-ah/
 │   ├── app/                  # Next.js App Router pages + server actions (port 3001)
 │   ├── lib/                  # domain/ (pure logic), services/, auth/ (RBAC), supabase/
 │   ├── components/           # device/, analytics/, import/, layout/, ui/ (shadcn)
-│   ├── supabase/             # migrations/, seed.sql, edge functions (device-api,
-│   │                         #   warranty-alerts, weekly-digest)
+│   ├── supabase/             # migrations/, seed.sql, edge functions
+│   │                         #   (warranty-alerts, weekly-digest)
 │   └── __tests__/            # Vitest suite
 │
 ├── scripts/                  # Pipeline stages (01–08, 10), DB migrations & seeds (11–25)
@@ -397,7 +397,7 @@ Self-contained system under `dlms/` (Next.js 14 App Router + Supabase cloud). Tr
 
 - **RBAC** — viewer / engineer / admin roles via Supabase Auth; permission matrix in `lib/auth/permissions.ts` enforced in server actions; RLS + grants as a DB backstop (hardened 2026-07: `security_invoker` views, pinned `search_path`, anon revoked).
 - **Audit** — every INSERT/UPDATE/soft-delete captured to `audit_log` with old/new values via trigger.
-- **Edge functions** — `device-api` (API-key-protected machine API), `warranty-alerts` (daily cron), `weekly-digest`.
+- **Edge functions** — `warranty-alerts` (daily cron), `weekly-digest`.
 - **Domain layer** — pure, unit-tested logic in `lib/domain/` (serial ranges, status transitions, service schedules, component history); services do flat selects + JS reduction (no DB views/RPC).
 - Sign-up restricted to `@quantumtx.com`; new accounts start inactive until an admin activates them.
 
