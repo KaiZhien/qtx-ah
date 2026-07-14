@@ -1,12 +1,42 @@
 'use client'
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Cpu } from 'lucide-react'
 import { loginAction } from './actions'
+
+function ConfirmBanner() {
+  const confirm = useSearchParams().get('confirm')
+  if (!confirm) return null
+
+  if (confirm === 'success') {
+    return (
+      <div className="mb-4 rounded-md border border-green-600/40 bg-green-600/10 p-3 text-sm text-green-700 dark:text-green-400">
+        Email confirmed. An admin now needs to activate your account before you can sign in.
+      </div>
+    )
+  }
+  if (confirm === 'used') {
+    return (
+      <div className="mb-4 rounded-md border border-amber-600/40 bg-amber-600/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+        This confirmation link has already been used — your email is most likely already
+        confirmed. Once an admin activates your account you can sign in.
+      </div>
+    )
+  }
+  if (confirm === 'invalid') {
+    return (
+      <p className="mb-4 text-sm text-destructive">
+        That confirmation link is invalid. Try signing up again or contact an admin.
+      </p>
+    )
+  }
+  return null
+}
 
 export default function LoginPage() {
   const [error, setError] = useState('')
@@ -33,6 +63,9 @@ export default function LoginPage() {
           <p className="text-sm text-muted-foreground">Device Lifecycle Management</p>
         </CardHeader>
         <CardContent>
+          <Suspense fallback={null}>
+            <ConfirmBanner />
+          </Suspense>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1">
               <Label htmlFor="email">Email</Label>
