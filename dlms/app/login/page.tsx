@@ -1,5 +1,5 @@
 'use client'
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,24 @@ import { Cpu } from 'lucide-react'
 import { loginAction } from './actions'
 
 function ConfirmBanner() {
-  const confirm = useSearchParams().get('confirm')
+  const query = useSearchParams().get('confirm')
+  const [hashStatus, setHashStatus] = useState<string | null>(null)
+
+  // Supabase's default confirmation email verifies on their domain and redirects
+  // here with the outcome in the URL fragment (e.g. #error_code=otp_expired, or
+  // tokens on success). Read it once, then scrub it from the address bar.
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash) return
+    const params = new URLSearchParams(hash.slice(1))
+    if (params.get('error_code') === 'otp_expired') setHashStatus('used')
+    else if (params.get('access_token')) setHashStatus('success')
+    else if (params.get('error')) setHashStatus('invalid')
+    else return
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  }, [])
+
+  const confirm = query ?? hashStatus
   if (!confirm) return null
 
   if (confirm === 'success') {
