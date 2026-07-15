@@ -1,6 +1,21 @@
 /**
  * Analytics service — queries analytics views for dashboard metrics.
  * All functions use createAdminClient() and throw new Error(error.message) on query errors.
+ *
+ * ============================================================================
+ * PERMANENT DOCUMENTED EXCEPTION to the RLS read-client migration (Track 3).
+ * This service deliberately stays on createAdminClient() — it is NOT swapped to
+ * createReadClient() and never should be. Reasons:
+ *   - The throughput/dwell/transition analytics views (v_daily_throughput,
+ *     v_status_dwell, v_status_transition) and the engineer-activity/my-queue
+ *     queries read from audit_log, whose RLS blocks the `viewer` role entirely.
+ *   - VIEW_ANALYTICS, however, INCLUDES viewer — so a user-scoped (RLS) client
+ *     would return empty aggregates for exactly the role the page grants access.
+ *   - These are server-only aggregates, computed behind a page-level
+ *     VIEW_ANALYTICS gate; no raw audit rows are ever handed to the client.
+ * getMyQueue and getEngineerActivity likewise stay on the admin client for the
+ * same audit_log-under-the-hood reason.
+ * ============================================================================
  */
 
 import { createAdminClient } from '@/lib/supabase/server'
