@@ -9,7 +9,7 @@ export type QueryResult = { data: unknown; error: unknown }
 
 const CHAIN_METHODS = [
   'select', 'insert', 'update', 'delete', 'upsert',
-  'eq', 'is', 'in', 'not', 'gte', 'lte', 'order', 'limit',
+  'eq', 'is', 'in', 'not', 'or', 'ilike', 'gte', 'lte', 'order', 'range', 'limit',
   'single', 'maybeSingle',
 ] as const
 
