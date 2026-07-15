@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createReadClient } from '@/lib/supabase/server'
 import { SERVICE_INTERVAL_DAYS, computeOverdueDeviceIds } from '@/lib/domain/serviceSchedule'
 
 /**
@@ -6,7 +6,7 @@ import { SERVICE_INTERVAL_DAYS, computeOverdueDeviceIds } from '@/lib/domain/ser
  * falls between today and `days` days from now (inclusive).
  */
 export async function getUpcomingServiceCount(days = 7): Promise<number> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const today = new Date()
   const future = new Date(today)
   future.setDate(today.getDate() + days)
@@ -31,7 +31,7 @@ export async function getUpcomingServiceCount(days = 7): Promise<number> {
 export async function getOverdueServiceDeviceIds(
   intervalDays = SERVICE_INTERVAL_DAYS
 ): Promise<string[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
 
   const { data: devices, error: devicesError } = await supabase
     .from('device')
