@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { Role } from '@/lib/types'
@@ -11,7 +11,7 @@ export type FilterPreset = {
 }
 
 export async function listPresets(userId: string): Promise<FilterPreset[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data } = await (supabase.from('device_filter_preset') as any)
     .select('id, name, query_string, created_at')
     .eq('owner_id', userId)
