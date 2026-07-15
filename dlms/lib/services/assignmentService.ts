@@ -3,13 +3,13 @@
  * All DB writes go through here. No component or Server Action writes directly.
  */
 
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { AppUser, Role } from '@/lib/types'
 
 export async function listAssignees(deviceId: string): Promise<AppUser[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await (supabase.from('device_assignment') as any)
     .select('app_user!device_assignment_user_id_fkey(*)')
     .eq('device_id', deviceId)
@@ -75,7 +75,7 @@ export async function unassignDevice(
 }
 
 export async function getAssignedDeviceIds(userId: string): Promise<string[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await (supabase.from('device_assignment') as any)
     .select('device_id')
     .eq('user_id', userId)
