@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { createDevice } from '@/lib/services/deviceService'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
@@ -40,7 +40,7 @@ export function fieldsToDeviceInput(
 }
 
 export async function getPendingDraftCount(): Promise<number> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { count, error } = await supabase
     .from('extracted_device_draft')
     .select('*', { count: 'exact', head: true })
@@ -50,7 +50,7 @@ export async function getPendingDraftCount(): Promise<number> {
 }
 
 export async function listDrafts(): Promise<ExtractedDeviceDraft[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('extracted_device_draft')
     .select('*')
@@ -61,6 +61,24 @@ export async function listDrafts(): Promise<ExtractedDeviceDraft[]> {
 }
 
 export async function getDraft(id: string): Promise<ExtractedDeviceDraft | null> {
+  const supabase = createReadClient()
+  const { data, error } = await supabase
+    .from('extracted_device_draft')
+    .select('*')
+    .eq('id', id)
+    .single()
+  if (error) return null
+  return data as ExtractedDeviceDraft
+}
+
+/**
+ * Admin-client draft fetch for the promote/reject pre-read. MUST stay on the
+ * admin client (NOT the RLS-scoped getDraft): promoteDraft/rejectDraft read the
+ * draft's current status before writing, and that check must see the true row so
+ * the pending-review guard and reviewer attribution are consistent. Private by
+ * design — never hand this to a UI/read path.
+ */
+async function fetchDraftForWrite(id: string): Promise<ExtractedDeviceDraft | null> {
   const supabase = createAdminClient()
   const { data, error } = await supabase
     .from('extracted_device_draft')
@@ -85,7 +103,7 @@ export async function promoteDraft(
   }
 
   const supabase = createAdminClient()
-  const draft = await getDraft(id)
+  const draft = await fetchDraftForWrite(id)
   if (!draft) throw new Error('Draft not found')
   if (draft.status !== 'pending_review') {
     throw new AppError({ type: 'validation', message: `Draft is already ${draft.status}`, errors: {} })
@@ -130,7 +148,7 @@ export async function rejectDraft(
   }
 
   const supabase = createAdminClient()
-  const draft = await getDraft(id)
+  const draft = await fetchDraftForWrite(id)
   if (!draft) throw new Error('Draft not found')
   if (draft.status !== 'pending_review') {
     throw new AppError({ type: 'validation', message: `Draft is already ${draft.status}`, errors: {} })
