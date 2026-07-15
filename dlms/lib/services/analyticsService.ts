@@ -263,10 +263,11 @@ export async function getEngineerActivity(range: AnalyticsRange): Promise<Engine
     .sort((a, b) => b.changeCount - a.changeCount)
 }
 
-const TERMINAL_STATUSES = new Set(['retired', 'lost'])
-
 /**
  * Devices where the given user was the last actor and status is non-terminal.
+ * Terminal statuses are derived from the status_option.is_terminal flag (flat
+ * select + JS filter — house pattern), so admin-added terminal codes are
+ * excluded from the queue without a code change.
  */
 export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   const supabase = createAdminClient()
@@ -317,6 +318,15 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   const confirmedIds = candidateIds.filter(id => lastActorMap.get(id) === userId)
   if (confirmedIds.length === 0) return []
 
+  // Terminal codes from the live vocabulary flags (device.status FKs
+  // status_option.code, so the codes match exactly).
+  const { data: vocab, error: vocabError } = await supabase
+    .from('status_option')
+    .select('code, is_terminal')
+
+  if (vocabError) throw new Error(vocabError.message)
+  const terminalCodes = new Set((vocab ?? []).filter(s => s.is_terminal).map(s => s.code))
+
   // Step 3: Fetch device details for confirmed IDs
   // Use limit(100) then JS-slice to 50 after filtering terminal statuses,
   // so the DB limit does not cut off non-terminal candidates.
@@ -332,7 +342,7 @@ export async function getMyQueue(userId: string): Promise<MyQueueItem[]> {
   if (!devices) return []
 
   return devices
-    .filter(d => !TERMINAL_STATUSES.has((d.status ?? '').toLowerCase()))
+    .filter(d => !terminalCodes.has(d.status ?? ''))
     .slice(0, 50)
     .map(d => ({
       deviceId: d.id,

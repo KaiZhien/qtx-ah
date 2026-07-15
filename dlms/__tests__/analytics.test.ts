@@ -231,6 +231,14 @@ describe('getStatusDurations', () => {
 describe('getMyQueue', () => {
   const USER_ID = 'user-abc'
 
+  // Terminal statuses are now derived from this vocabulary flag, not a hardcode.
+  const STATUS_VOCAB = [
+    { code: 'Stock', is_terminal: false },
+    { code: 'In Use', is_terminal: false },
+    { code: 'Retired', is_terminal: true },
+    { code: 'Lost', is_terminal: true },
+  ]
+
   it('returns devices recently touched by user with non-terminal status', async () => {
     // First audit_log call: find entries by this user (capped at 500)
     const auditByUser = [
@@ -256,6 +264,7 @@ describe('getMyQueue', () => {
         return buildChain({ data, error: null })
       }
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
+      if (table === 'status_option') return buildChain({ data: STATUS_VOCAB, error: null })
       return buildChain({ data: [], error: null })
     }
 
@@ -283,6 +292,32 @@ describe('getMyQueue', () => {
         return buildChain({ data, error: null })
       }
       if (table === 'device') return buildChain({ data: deviceRows, error: null })
+      if (table === 'status_option') return buildChain({ data: STATUS_VOCAB, error: null })
+      return buildChain({ data: [], error: null })
+    }
+
+    const { getMyQueue } = await import('@/lib/services/analyticsService')
+    const result = await getMyQueue(USER_ID)
+    expect(result).toHaveLength(0)
+  })
+
+  it('excludes devices in an admin-added terminal status (flag-derived, not hardcoded)', async () => {
+    const auditByUser = [{ row_id: 'device-5', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
+    const auditVerify = [{ row_id: 'device-5', actor_id: USER_ID, occurred_at: '2024-02-10T10:00:00Z' }]
+    const deviceRows = [
+      { id: 'device-5', device_sn: 'SN005', model_no: 'ModelA', status: 'Scrapped', updated_at: '2024-02-10T10:00:00Z' },
+    ]
+    const grownVocab = [...STATUS_VOCAB, { code: 'Scrapped', is_terminal: true }]
+
+    let auditCallCount = 0
+    fromImpl = (table: string) => {
+      if (table === 'audit_log') {
+        const data = auditCallCount === 0 ? auditByUser : auditVerify
+        auditCallCount++
+        return buildChain({ data, error: null })
+      }
+      if (table === 'device') return buildChain({ data: deviceRows, error: null })
+      if (table === 'status_option') return buildChain({ data: grownVocab, error: null })
       return buildChain({ data: [], error: null })
     }
 
