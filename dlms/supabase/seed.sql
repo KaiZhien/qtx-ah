@@ -80,12 +80,12 @@ ON CONFLICT (id) DO NOTHING;
 -- -----------------------------------------------
 -- 3. Vocabularies
 -- -----------------------------------------------
-INSERT INTO status_option (code, label_en, label_zh, sort_order, active) VALUES
-  ('Stock',   'In Stock',     '库存',   1, true),
-  ('In Use',  'In Use',       '使用中', 2, true),
-  ('Repair',  'Under Repair', '维修中', 3, true),
-  ('Retired', 'Retired',      '退役',  4, true),
-  ('Lost',    'Lost',         '丢失',  5, true)
+INSERT INTO status_option (code, label_en, label_zh, sort_order, active, is_terminal, is_initial) VALUES
+  ('Stock',   'In Stock',     '库存',   1, true, false, true),
+  ('In Use',  'In Use',       '使用中', 2, true, false, false),
+  ('Repair',  'Under Repair', '维修中', 3, true, false, false),
+  ('Retired', 'Retired',      '退役',  4, true, true,  false),
+  ('Lost',    'Lost',         '丢失',  5, true, true,  false)
 ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO phase_option (code, label_en, label_zh, sort_order, active) VALUES

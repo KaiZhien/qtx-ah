@@ -506,6 +506,8 @@ export type Database = {
         Row: {
           active: boolean
           code: string
+          is_initial: boolean
+          is_terminal: boolean
           label_en: string
           label_zh: string
           sort_order: number
@@ -514,6 +516,8 @@ export type Database = {
         Insert: {
           active?: boolean
           code: string
+          is_initial?: boolean
+          is_terminal?: boolean
           label_en: string
           label_zh: string
           sort_order?: number
@@ -522,6 +526,8 @@ export type Database = {
         Update: {
           active?: boolean
           code?: string
+          is_initial?: boolean
+          is_terminal?: boolean
           label_en?: string
           label_zh?: string
           sort_order?: number
