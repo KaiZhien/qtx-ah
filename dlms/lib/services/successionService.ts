@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { Role } from '@/lib/types'
@@ -93,7 +93,7 @@ export async function linkReplacement(
  * Returns the device row where replaced_by = deviceId.
  */
 export async function getPredecessor(deviceId: string): Promise<{ id: string; device_sn: string | null; pcba_a_sn: string } | null> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data } = await (supabase.from('device') as any)
     .select('id, device_sn, pcba_a_sn')
     .eq('replaced_by', deviceId)
@@ -109,7 +109,7 @@ export async function getPredecessor(deviceId: string): Promise<{ id: string; de
  */
 export async function getSuccessor(replacedById: string): Promise<{ id: string; device_sn: string | null; pcba_a_sn: string } | null> {
   if (!replacedById) return null
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data } = await (supabase.from('device') as any)
     .select('id, device_sn, pcba_a_sn')
     .eq('id', replacedById)
