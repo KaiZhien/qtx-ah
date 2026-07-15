@@ -1,10 +1,12 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { AppUser, Role } from '@/lib/types'
 
 export async function listUsers(): Promise<AppUser[]> {
-  const supabase = createAdminClient()
+  // Needs the app_user directory-read policy (20260715 migration) in prod to
+  // return all active rows under the user client; admin still sees inactive too.
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('app_user')
     .select('*')
