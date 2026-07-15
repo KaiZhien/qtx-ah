@@ -1,67 +1,49 @@
 /**
  * Status transition domain module (§5.1.1).
  *
- * Status codes from seed.sql status_option table (the ONLY valid vocabulary):
- *   'Stock'   → label "In Stock"
- *   'In Use'  → label "In Use"
- *   'Repair'  → label "Under Repair"
- *   'Retired' → label "Retired"   (terminal)
- *   'Lost'    → label "Lost"      (terminal)
+ * The allowed transitions are COMPUTED from per-status flags on the live
+ * status_option vocabulary, not a hardcoded graph — so admin-added statuses are
+ * usable endpoints without a code change. Two flags drive the rule:
  *
- * This module uses the DB codes (not labels) as keys and values. Both the keys
- * and the transition targets are constrained to the codes above — there are no
- * 'Shipped' or 'In Production' codes in the vocabulary, so they are not valid
- * transition endpoints.
+ *   is_terminal — a transition sink: no onward transitions (device is done).
+ *   is_initial  — creation-only: nothing transitions INTO it.
  *
- * Transition graph:
- *   Stock   → In Use, Repair, Lost, Retired
- *   In Use  → Repair, Retired, Lost
- *   Repair  → In Use, Retired, Lost
- *   Retired → (none — terminal)
- *   Lost    → (none — terminal)
+ * Rule: from a non-terminal, known source you may move to any status that is
+ * active, non-initial, and not the source itself. Anything unknown (source not
+ * in the list, empty vocabulary) fails closed. With the seeded flags
+ * (Retired/Lost terminal, Stock initial) this reproduces the legacy 5-code graph
+ * membership exactly.
+ *
+ * Structural type: StatusOption (post-regen) satisfies TransitionStatus, so this
+ * module stays client/server-agnostic and takes no dependency on the DB layer.
  */
-
-/**
- * Allowed next status codes FROM each status code.
- * Terminal statuses map to an empty array.
- * Keys and values use the exact DB codes from seed.sql (status_option).
- */
-export const TRANSITIONS: Record<string, string[]> = {
-  // 'Stock' = "In Stock"
-  'Stock':   ['In Use', 'Repair', 'Lost', 'Retired'],
-  // 'In Use' = "In Use"
-  'In Use':  ['Repair', 'Retired', 'Lost'],
-  // 'Repair' = "Under Repair"
-  'Repair':  ['In Use', 'Retired', 'Lost'],
-  // Terminal statuses — no onward transitions
-  'Retired': [],
-  'Lost':    [],
+export type TransitionStatus = {
+  code: string
+  active: boolean
+  is_terminal: boolean
+  is_initial: boolean
 }
 
 /**
- * Returns true if the transition from → to is permitted.
- * Fails closed: an unknown source status code has no allowed transitions,
- * so it returns false rather than silently permitting any change.
- */
-export function isValidTransition(from: string, to: string): boolean {
-  if (!(from in TRANSITIONS)) {
-    // Unknown source status — fail closed (no allowed transitions)
-    return false
-  }
-  return TRANSITIONS[from].includes(to)
-}
-
-/**
- * Returns the list of allowed next status codes from the given status.
- * Fails closed: an unknown source status (e.g. a newly admin-added vocabulary
- * code not yet wired into TRANSITIONS) returns [] rather than offering every
- * option. This keeps the UI in lock-step with isValidTransition's server-side
+ * Returns the list of allowed next status codes from the given status, in the
+ * order the `statuses` list is supplied (callers pass it sort_order-ordered).
+ * Fails closed: an unknown or terminal source returns [] rather than offering
+ * every option, keeping the UI in lock-step with isValidTransition's server-side
  * enforcement — a status the server will reject is never presented as choosable.
- * Terminal statuses (Retired, Lost) return [] for the same reason.
  */
-export function allowedNextStatuses(from: string): string[] {
-  if (!(from in TRANSITIONS)) {
-    return []
-  }
-  return [...TRANSITIONS[from]]
+export function allowedNextStatuses(from: string, statuses: TransitionStatus[]): string[] {
+  const src = statuses.find((s) => s.code === from)
+  if (!src || src.is_terminal) return []   // unknown or terminal → fail closed
+  return statuses
+    .filter((t) => t.active && !t.is_initial && t.code !== from)
+    .map((t) => t.code)
+}
+
+/**
+ * Returns true if the transition from → to is permitted against the live
+ * vocabulary. `from` may be inactive (a device can leave a deactivated status);
+ * `to` must be active, non-initial, and ≠ from. Unknown anything fails closed.
+ */
+export function isValidTransition(from: string, to: string, statuses: TransitionStatus[]): boolean {
+  return allowedNextStatuses(from, statuses).includes(to)
 }
