@@ -9,7 +9,7 @@ import { deviceSchema } from '@/lib/domain/validation'
 import { normalizeSerial } from '@/lib/domain/normalize'
 import { isValidTransition } from '@/lib/domain/statusTransitions'
 import { AppError } from '@/lib/types'
-import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role } from '@/lib/types'
+import type { DeviceRow, DeviceInput, ListDevicesParams, DeviceStats, Role, StatusOption } from '@/lib/types'
 import { isTraceableField, groupDevicesByDimension } from '@/lib/domain/componentTraceability'
 import type { TraceabilityGroup } from '@/lib/domain/componentTraceability'
 import { getAssignedDeviceIds } from './assignmentService'
@@ -27,12 +27,18 @@ import { getAllStatuses, getAllPhases } from './vocabularyService'
  * exactly and never falsely rejects a same-status write on a code that was later
  * deactivated. If the vocabulary can't be read (empty), it defers to the DB FK
  * (fail-open) rather than blocking a write on a check it couldn't perform.
+ *
+ * Returns the fetched status vocabulary (empty when no status was checked) so the
+ * caller can reuse it for the transition check without a second round-trip. NOTE:
+ * an empty return makes the transition check fail closed — the existence check is
+ * fail-open, but a transition against an unreadable vocabulary is deliberately not.
  */
-async function assertVocabValid(status?: string | null, phase?: string | null): Promise<void> {
+async function assertVocabValid(status?: string | null, phase?: string | null): Promise<StatusOption[]> {
+  let statuses: StatusOption[] = []
   if (status != null) {
-    const all = await getAllStatuses()
-    if (all.length > 0 && !all.some((s) => s.code === status)) {
-      const active = all.filter((s) => s.active).map((s) => s.code)
+    statuses = await getAllStatuses()
+    if (statuses.length > 0 && !statuses.some((s) => s.code === status)) {
+      const active = statuses.filter((s) => s.active).map((s) => s.code)
       throw new AppError({
         type: 'validation',
         message: `Status "${status}" is not a valid status. Valid options: ${active.join(', ')}`,
@@ -51,6 +57,7 @@ async function assertVocabValid(status?: string | null, phase?: string | null): 
       })
     }
   }
+  return statuses
 }
 
 // NOTE: setSessionContext() was removed — it was a dead no-op stub that never
@@ -248,14 +255,17 @@ export async function updateDevice(
   // — isValidTransition fails closed on unknown codes, so checking vocabulary
   // first turns "transition not allowed" confusion into "not a valid status,
   // valid options are …". Empty strings fall through to the Zod "required" error.
-  await assertVocabValid(input.status || null, input.phase || null)
+  // The returned vocabulary is reused for the transition check (no second fetch).
+  const statusVocab = await assertVocabValid(input.status || null, input.phase || null)
 
   // Enforce status-transition rules only when the status is actually changing.
   // Same-status writes and writes that don't touch status are unaffected.
   // (changeStatus validates first and then calls this — the re-check here is
-  // idempotent: the same transition passes both times.)
+  // idempotent: the same transition passes both times.) The rule is computed from
+  // the live vocabulary's is_terminal/is_initial flags, so admin-added statuses
+  // are usable and terminal ones are dead-ends without a code change.
   if (input.status != null && input.status !== current.status) {
-    if (!isValidTransition(current.status ?? '', input.status)) {
+    if (!isValidTransition(current.status ?? '', input.status, statusVocab)) {
       throw new AppError({
         type: 'conflict',
         message: `Status transition from "${current.status}" to "${input.status}" is not allowed`,
@@ -311,8 +321,10 @@ export async function changeStatus(
     throw new AppError({ type: 'conflict', message: 'Device not found' })
   }
 
-  // Enforce status-transition rules
-  if (!isValidTransition(current.status ?? '', status)) {
+  // Enforce status-transition rules against the live vocabulary flags. This is a
+  // pre-check for a clear early error; updateDevice re-validates idempotently.
+  const statusVocab = await getAllStatuses()
+  if (!isValidTransition(current.status ?? '', status, statusVocab)) {
     throw new AppError({
       type: 'conflict',
       message: `Status transition from "${current.status}" to "${status}" is not allowed`,

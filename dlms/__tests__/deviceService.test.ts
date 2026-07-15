@@ -29,6 +29,20 @@ const VALID_INPUT: DeviceInput = {
   phase: 'Production',
 }
 
+// Seeded vocabulary WITH transition flags — drives isValidTransition. Includes an
+// inactive code (Legacy), a terminal code (Retired), and an admin-added one (RMA).
+const VOCAB_WITH_FLAGS: QueryResult = {
+  data: [
+    { code: 'Stock',   active: true,  is_initial: true,  is_terminal: false },
+    { code: 'In Use',  active: true,  is_initial: false, is_terminal: false },
+    { code: 'Repair',  active: true,  is_initial: false, is_terminal: false },
+    { code: 'Retired', active: true,  is_initial: false, is_terminal: true  },
+    { code: 'Legacy',  active: false, is_initial: false, is_terminal: false },
+    { code: 'RMA',     active: true,  is_initial: false, is_terminal: false },
+  ],
+  error: null,
+}
+
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
 }
@@ -83,9 +97,13 @@ describe('updateDevice', () => {
     expect(err.serviceError.type).toBe('validation')
   })
 
-  it('rejects an illegal status transition (Retired → In Use) with a conflict error', async () => {
-    // Pre-UPDATE select now also returns status so the transition can be validated.
-    fromImpl = makeFrom({ device: [{ data: { version: 1, deleted_at: null, status: 'Retired' }, error: null }] })
+  it('rejects a transition OUT of a terminal status (Retired → In Use) with a conflict error', async () => {
+    // Pre-UPDATE select now also returns status so the transition can be validated;
+    // the vocabulary is fetched and passed to isValidTransition (Retired is terminal).
+    fromImpl = makeFrom({
+      device: [{ data: { version: 1, deleted_at: null, status: 'Retired' }, error: null }],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
     const err = await catchErr(updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer'))
     expect(err).toBeInstanceOf(AppError)
     expect(err.serviceError.type).toBe('conflict')
@@ -94,12 +112,75 @@ describe('updateDevice', () => {
 
   it('allows a valid status transition (Stock → In Use) through to the update', async () => {
     const captures: Record<string, unknown[][]> = {}
-    fromImpl = makeFrom({ device: [
-      { data: { version: 1, deleted_at: null, status: 'Stock' }, error: null },  // pre-UPDATE select
-      { data: { id: 'dev-1', status: 'In Use' }, error: null },                  // UPDATE ... select().single()
-    ] }, captures)
+    fromImpl = makeFrom({
+      device: [
+        { data: { version: 1, deleted_at: null, status: 'Stock' }, error: null },  // pre-UPDATE select
+        { data: { id: 'dev-1', status: 'In Use' }, error: null },                  // UPDATE ... select().single()
+      ],
+      status_option: [VOCAB_WITH_FLAGS],
+    }, captures)
     const result = await updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer')
     expect(result).toEqual({ id: 'dev-1', status: 'In Use' })
+  })
+
+  it('allows a transition INTO an admin-added status (In Use → RMA)', async () => {
+    fromImpl = makeFrom({
+      device: [
+        { data: { version: 1, deleted_at: null, status: 'In Use' }, error: null },
+        { data: { id: 'dev-1', status: 'RMA' }, error: null },
+      ],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
+    const result = await updateDevice('dev-1', { status: 'RMA' }, 1, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', status: 'RMA' })
+  })
+
+  it('allows a transition OUT of an inactive status (Legacy → In Use)', async () => {
+    // A device sitting in a deactivated status must still be able to move out.
+    fromImpl = makeFrom({
+      device: [
+        { data: { version: 1, deleted_at: null, status: 'Legacy' }, error: null },
+        { data: { id: 'dev-1', status: 'In Use' }, error: null },
+      ],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
+    const result = await updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', status: 'In Use' })
+  })
+
+  it('rejects a transition INTO an inactive status (In Use → Legacy) with a conflict error', async () => {
+    fromImpl = makeFrom({
+      device: [{ data: { version: 1, deleted_at: null, status: 'In Use' }, error: null }],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
+    const err = await catchErr(updateDevice('dev-1', { status: 'Legacy' }, 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('conflict')
+    expect(err.serviceError.message).toMatch(/transition/i)
+  })
+
+  it('rejects a transition INTO an initial status (In Use → Stock) with a conflict error', async () => {
+    fromImpl = makeFrom({
+      device: [{ data: { version: 1, deleted_at: null, status: 'In Use' }, error: null }],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
+    const err = await catchErr(updateDevice('dev-1', { status: 'Stock' }, 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('conflict')
+    expect(err.serviceError.message).toMatch(/transition/i)
+  })
+
+  it('fails closed on the transition when the vocabulary cannot be read (existence check stays fail-open)', async () => {
+    // status_option resolves empty → assertVocabValid does NOT raise a validation
+    // error (existence fail-open), but the transition check fails closed: with no
+    // vocabulary there are no allowed targets, so the move is rejected as a conflict.
+    fromImpl = makeFrom({
+      device: [{ data: { version: 1, deleted_at: null, status: 'Stock' }, error: null }],
+    })
+    const err = await catchErr(updateDevice('dev-1', { status: 'In Use' }, 1, 'actor-1', 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('conflict')
+    expect(err.serviceError.message).toMatch(/transition/i)
   })
 
   it('does not block a same-status write, even on a terminal status', async () => {
@@ -210,11 +291,29 @@ describe('vocabulary validation (createDevice / updateDevice)', () => {
 
 describe('changeStatus', () => {
   it('rejects an invalid transition with a conflict error', async () => {
-    // Current status 'Retired' is terminal → no transition is valid
-    fromImpl = makeFrom({ device: [{ data: { id: 'dev-1', status: 'Retired', phase: 'MP' }, error: null }] })
+    // Current status 'Retired' is terminal → no transition is valid. changeStatus
+    // fetches getAllStatuses() for its pre-check, so the vocabulary is mocked.
+    fromImpl = makeFrom({
+      device: [{ data: { id: 'dev-1', status: 'Retired', phase: 'MP' }, error: null }],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
     const err = await catchErr(changeStatus('dev-1', 'In Use', 'MP', 1, 'actor-1', 'engineer'))
     expect(err).toBeInstanceOf(AppError)
     expect(err.serviceError.type).toBe('conflict')
+  })
+
+  it('allows a valid transition into an admin-added status through to the update', async () => {
+    // getDevice → getAllStatuses (pre-check) → updateDevice (re-fetch + getAllStatuses + update).
+    fromImpl = makeFrom({
+      device: [
+        { data: { id: 'dev-1', status: 'In Use', phase: 'Production' }, error: null },  // getDevice
+        { data: { version: 1, deleted_at: null, status: 'In Use' }, error: null },       // updateDevice pre-select
+        { data: { id: 'dev-1', status: 'RMA', phase: 'Production' }, error: null },       // updateDevice update
+      ],
+      status_option: [VOCAB_WITH_FLAGS],
+    })
+    const result = await changeStatus('dev-1', 'RMA', 'Production', 1, 'actor-1', 'engineer')
+    expect(result).toEqual({ id: 'dev-1', status: 'RMA', phase: 'Production' })
   })
 })
 
