@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { Role } from '@/lib/types'
@@ -11,7 +11,9 @@ export type ReportSubscriber = {
 }
 
 export async function listSubscribers(): Promise<ReportSubscriber[]> {
-  const supabase = createAdminClient()
+  // report_subscriber SELECT RLS is admin-only, matching the page's MANAGE_USERS
+  // gating — the app-layer gate stays the enforcement boundary; RLS backstops it.
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('report_subscriber')
     .select('*')
