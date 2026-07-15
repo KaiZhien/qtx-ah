@@ -3,7 +3,7 @@
  * All DB writes go through here. No component or Server Action writes directly.
  */
 
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { parseSheetDate } from '@/lib/domain/normalize'
 import { AppError } from '@/lib/types'
@@ -11,7 +11,7 @@ import type { ServiceEvent, Role } from '@/lib/types'
 import type { ServiceEventWithActor } from '@/lib/domain/serviceEvents'
 
 export async function listServiceEvents(deviceId: string): Promise<ServiceEventWithActor[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await (supabase.from('service_event') as any)
     .select('*, app_user!service_event_created_by_fkey(email)')
     .eq('device_id', deviceId)
