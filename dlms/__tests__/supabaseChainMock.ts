@@ -58,3 +58,33 @@ export function makeFrom(
     return buildChain(result, table, captures)
   }
 }
+
+/**
+ * Build a `vi.mock('@/lib/supabase/server', …)` factory that exposes ALL server
+ * client factories — createClient, createAdminClient, and createReadClient —
+ * each backed by the same stub client. This keeps every mock in lockstep with
+ * `lib/supabase/server.ts`: when a service swaps its read from createAdminClient
+ * to createReadClient (RLS read-path migration), its test mock already resolves
+ * that key, so the swap lands service-by-service with no test churn. Adding a
+ * fourth factory later is a one-line change here, not 16.
+ *
+ * `getFrom` supplies the `from(table)` implementation, read lazily on every call
+ * so tests can reassign a module-level `let fromImpl` per test/`beforeEach`.
+ * `extra` merges additional client properties (e.g. `storage`) for the callers
+ * that need them; `from` always wins so it cannot be shadowed.
+ *
+ * Auth-flow tests (login/signup/authConfirm) mock `createClient` with a bespoke
+ * `auth` object and keep their own factories — this helper is for the
+ * `from`-backed service factories.
+ */
+export function makeServerModuleMock(
+  getFrom: () => (table: string) => unknown,
+  extra: Record<string, unknown> = {},
+) {
+  const client = { ...extra, from: (table: string) => getFrom()(table) }
+  return {
+    createClient: () => client,
+    createAdminClient: () => client,
+    createReadClient: () => client,
+  }
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { buildChain, makeFrom, type QueryResult } from './supabaseChainMock'
+import { buildChain, makeFrom, makeServerModuleMock, type QueryResult } from './supabaseChainMock'
 import { AppError } from '@/lib/types'
 import type { DeviceInput } from '@/lib/types'
 
@@ -8,9 +8,7 @@ import type { DeviceInput } from '@/lib/types'
 // ---------------------------------------------------------------------------
 let fromImpl: (table: string) => unknown
 
-vi.mock('@/lib/supabase/server', () => ({
-  createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
-}))
+vi.mock('@/lib/supabase/server', () => makeServerModuleMock(() => fromImpl))
 
 import {
   createDevice,

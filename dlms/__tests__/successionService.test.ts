@@ -1,12 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { buildChain, makeFrom } from './supabaseChainMock'
+import { buildChain, makeFrom, makeServerModuleMock } from './supabaseChainMock'
 import { AppError } from '@/lib/types'
 
 let fromImpl: (table: string) => unknown
 
-vi.mock('@/lib/supabase/server', () => ({
-  createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
-}))
+vi.mock('@/lib/supabase/server', () => makeServerModuleMock(() => fromImpl))
 
 import { linkReplacement, getPredecessor, getSuccessor } from '@/lib/services/successionService'
 

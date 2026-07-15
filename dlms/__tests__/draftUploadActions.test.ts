@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { makeServerModuleMock } from './supabaseChainMock'
 
 // --- Service mocks ---
 const { createDevice, getDeviceByPcbaSn, extractInvoiceFields } = vi.hoisted(() => ({
@@ -25,12 +26,11 @@ function draftChain(): Record<string, unknown> {
     Promise.resolve(upsertResult).then(res, rej)
   return chain
 }
-vi.mock('@/lib/supabase/server', () => ({
-  createAdminClient: () => ({
+vi.mock('@/lib/supabase/server', () =>
+  makeServerModuleMock(() => () => draftChain(), {
     storage: { from: () => ({ upload: (...a: unknown[]) => upload(...a) }) },
-    from: () => draftChain(),
-  }),
-}))
+  })
+)
 
 let currentUser: { id: string; role: string; email?: string } | null = null
 vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(currentUser) }))

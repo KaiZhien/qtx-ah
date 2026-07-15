@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { buildChain, makeFrom, type QueryResult } from './supabaseChainMock'
+import { buildChain, makeFrom, makeServerModuleMock, type QueryResult } from './supabaseChainMock'
 import { AppError } from '@/lib/types'
 
 // `dbCalls` counts every from() invocation, so permission-gate tests can prove the
@@ -7,9 +7,7 @@ import { AppError } from '@/lib/types'
 let dbCalls = 0
 let fromImpl: (table: string) => unknown
 
-vi.mock('@/lib/supabase/server', () => ({
-  createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
-}))
+vi.mock('@/lib/supabase/server', () => makeServerModuleMock(() => fromImpl))
 
 import {
   listSubscribers,

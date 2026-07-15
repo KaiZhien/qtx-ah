@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// Imported before analyticsService so makeServerModuleMock is initialized when
+// the hoisted vi.mock factory below runs (that factory executes as soon as
+// analyticsService pulls in the mocked @/lib/supabase/server).
+import { makeServerModuleMock } from './supabaseChainMock'
 import { parseIntervalToSeconds } from '@/lib/services/analyticsService'
 
 // ---------------------------------------------------------------------------
@@ -30,11 +34,7 @@ function buildChain(result: { data: unknown; error: unknown }) {
 // We'll swap out what `from` returns per test
 let fromImpl: (table: string) => unknown
 
-vi.mock('@/lib/supabase/server', () => ({
-  createAdminClient: () => ({
-    from: (table: string) => fromImpl(table),
-  }),
-}))
+vi.mock('@/lib/supabase/server', () => makeServerModuleMock(() => fromImpl))
 
 // ---------------------------------------------------------------------------
 // Unit tests for parseIntervalToSeconds helper
