@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createReadClient } from '@/lib/supabase/server'
 import { can } from '@/lib/auth/permissions'
 import type { AppUser } from '@/lib/types'
 import type { Action } from '@/lib/auth/permissions'
@@ -22,7 +22,11 @@ export async function getCurrentUser(): Promise<AppUser | null> {
     const cookieStore = cookies()
     const devUserId = cookieStore.get(DEV_COOKIE)?.value
     if (devUserId) {
-      const { data } = await supabase
+      // No real Supabase session exists under dev-mode impersonation, so the
+      // user-scoped client would read as `anon` (empty/denied post anon-SELECT
+      // revoke). createReadClient falls back to the admin client here; the
+      // production path below keeps its user-scoped, own-row read unchanged.
+      const { data } = await createReadClient()
         .from('app_user')
         .select('*')
         .eq('id', devUserId)

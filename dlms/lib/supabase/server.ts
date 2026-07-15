@@ -48,3 +48,17 @@ export function createAdminClient() {
     }
   )
 }
+
+/**
+ * Read-path client. User-scoped (RLS-enforced) normally; falls back to the
+ * admin client under dev-mode impersonation, where there is no real Supabase
+ * session (auth.uid() = NULL → RLS empty results / 42501 after the anon-SELECT
+ * revoke). Mirrors the session.ts dev-mode guard exactly: server-only var +
+ * NODE_ENV, so it is inert in production builds.
+ */
+export function createReadClient() {
+  if (process.env.DLMS_DEV_MODE === 'true' && process.env.NODE_ENV !== 'production') {
+    return createAdminClient()
+  }
+  return createClient()
+}
