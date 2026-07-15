@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import { DeviceTable } from '@/components/device/DeviceTable'
 import { listDevices, getDistinctCustomers, getExpiringWarrantyCount } from '@/lib/services/deviceService'
 import { getOverdueServiceCount } from '@/lib/services/serviceScheduleService'
-import { getStatuses, getPhases } from '@/lib/services/vocabularyService'
+import { getAllStatuses, getPhases } from '@/lib/services/vocabularyService'
 import { requireAuth } from '@/lib/auth/session'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import type { Role } from '@/lib/types'
@@ -60,7 +60,10 @@ export default async function DevicesPage({ searchParams }: PageProps) {
       page,
       pageSize,
     }),
-    getStatuses(),
+    // Full status list (incl. inactive) — DeviceTable needs the flags for the
+    // transition rule, and a device sitting in a deactivated status must still
+    // be able to leave it. Active-only filtering happens in the table.
+    getAllStatuses(),
     getPhases(),
     getDistinctCustomers(),
     getExpiringWarrantyCount(),

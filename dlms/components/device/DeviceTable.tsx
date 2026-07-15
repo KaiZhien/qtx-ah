@@ -167,9 +167,13 @@ function FieldControl({
 
   if (fieldKey === 'status') {
     // Filter statuses to only allowed transitions when we know the current status.
-    const filteredStatuses = currentStatus
-      ? statuses.filter(s => allowedNextStatuses(currentStatus).includes(s.code))
-      : statuses
+    // `statuses` is the FULL vocabulary (incl. inactive) — the rule needs the flags,
+    // and a device in a deactivated status must still be able to leave it. For a
+    // new device (no current status) offer every active status instead.
+    const allowed = currentStatus ? new Set(allowedNextStatuses(currentStatus, statuses)) : null
+    const filteredStatuses = allowed
+      ? statuses.filter(s => allowed.has(s.code))
+      : statuses.filter(s => s.active)
 
     return (
       <select
@@ -335,6 +339,11 @@ export function DeviceTable({
   const canDelete = can(userRole, ACTIONS.SOFT_DELETE) && !deletedView
   // Trailing actions column: edit pencil (normal view) OR restore button (deleted view).
   const showActions = canEdit || (deletedView && isAdmin)
+
+  // `statuses` is the FULL vocabulary (incl. inactive) so the transition rule sees
+  // the flags and devices can leave a deactivated status. Plain dropdowns (toolbar
+  // filter, bulk fallback) only ever offer active codes.
+  const activeStatuses = statuses.filter(s => s.active)
 
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [editData, setEditData] = useState<DeviceInput>(EMPTY)
@@ -560,14 +569,15 @@ export function DeviceTable({
   }
 
   // For the bulk status dialog, compute an intersection of allowed next statuses
-  // across all selected devices. Fall back to showing all statuses if complex/empty.
+  // across all selected devices. Fall back to showing all active statuses if
+  // complex/empty. The full list feeds the rule; only active codes are offered.
   const bulkAllowedStatuses: StatusOption[] = (() => {
-    if (selectedIds.size === 0) return statuses
+    if (selectedIds.size === 0) return activeStatuses
     const selectedDevices = devices.filter(d => selectedIds.has(d.id))
-    if (selectedDevices.length === 0) return statuses
-    const sets = selectedDevices.map(d => new Set(allowedNextStatuses(d.status)))
+    if (selectedDevices.length === 0) return activeStatuses
+    const sets = selectedDevices.map(d => new Set(allowedNextStatuses(d.status, statuses)))
     const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
-    return intersection.length > 0 ? intersection : statuses
+    return intersection.length > 0 ? intersection : activeStatuses
   })()
 
   const actionsCol = canEdit ? (
@@ -733,7 +743,7 @@ export function DeviceTable({
             <SelectTrigger className="w-36"><SelectValue placeholder="All Statuses" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="_all">All Statuses</SelectItem>
-              {statuses.map((s) => <SelectItem key={s.code} value={s.code}>{s.label_en}</SelectItem>)}
+              {activeStatuses.map((s) => <SelectItem key={s.code} value={s.code}>{s.label_en}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select defaultValue={initialPhase || '_all'} onValueChange={(v) => updateParam('phase', v === '_all' ? '' : v)}>

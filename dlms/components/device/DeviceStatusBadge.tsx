@@ -1,12 +1,14 @@
 import { Badge } from '@/components/ui/badge'
 import type { BadgeProps } from '@/components/ui/badge'
 
+// Keyed by the real seeded status_option codes. Admin-added statuses fall back
+// to 'outline' via the ?? in StatusBadge.
 const STATUS_VARIANT: Record<string, BadgeProps['variant']> = {
-  'Shipped':       'success',
-  'In Production': 'info',
-  'In Stock':      'warning',
-  'Returned':      'destructive',
-  'Retired':       'gray',
+  'Stock':   'warning',
+  'In Use':  'success',
+  'Repair':  'info',
+  'Retired': 'gray',
+  'Lost':    'destructive',
 }
 
 const PHASE_VARIANT: Record<string, BadgeProps['variant']> = {
