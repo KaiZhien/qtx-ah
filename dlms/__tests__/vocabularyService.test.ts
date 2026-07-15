@@ -50,6 +50,30 @@ describe('addStatusOption', () => {
     expect(payload.code).toBe('new_code')
     expect(payload.updated_by).toBe(ADMIN)
   })
+
+  it('defaults is_terminal/is_initial to false when no flags are given', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom(
+      { status_option: [maxOrder(20), inserted({ code: 'new_code' })] },
+      captures,
+    )
+    await addStatusOption('new_code', 'New', '新', ADMIN, 'admin')
+    const payload = captures['status_option.insert'][0][0] as Record<string, unknown>
+    expect(payload.is_terminal).toBe(false)
+    expect(payload.is_initial).toBe(false)
+  })
+
+  it('spreads the terminal/initial flags into the insert payload', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom(
+      { status_option: [maxOrder(20), inserted({ code: 'RMA' })] },
+      captures,
+    )
+    await addStatusOption('RMA', 'RMA', '返修', ADMIN, 'admin', { isTerminal: true, isInitial: false })
+    const payload = captures['status_option.insert'][0][0] as Record<string, unknown>
+    expect(payload.is_terminal).toBe(true)
+    expect(payload.is_initial).toBe(false)
+  })
 })
 
 describe('addPhaseOption', () => {

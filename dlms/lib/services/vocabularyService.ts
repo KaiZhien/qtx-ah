@@ -54,7 +54,8 @@ export async function addStatusOption(
   labelEn: string,
   labelZh: string,
   actorId: string,
-  actorRole: Role = 'admin'
+  actorRole: Role = 'admin',
+  flags?: { isTerminal?: boolean; isInitial?: boolean }
 ): Promise<StatusOption> {
   if (!can(actorRole, ACTIONS.MANAGE_VOCABULARIES)) {
     throw new AppError({ type: 'permission', message: 'Only admins can manage vocabularies' })
@@ -63,9 +64,16 @@ export async function addStatusOption(
   const { data: existing } = await supabase.from('status_option').select('sort_order').order('sort_order', { ascending: false }).limit(1).single()
   const nextOrder = existing ? (existing.sort_order ?? 0) + 10 : 10
 
+  // Transition flags are creation-time only (no flag-edit UI — SQL is the escape
+  // hatch). Default false, matching the column default.
+  const transitionFlags = {
+    is_terminal: flags?.isTerminal ?? false,
+    is_initial: flags?.isInitial ?? false,
+  }
+
   const { data, error } = await supabase
     .from('status_option')
-    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder, updated_by: actorId })
+    .insert({ code: code.trim(), label_en: labelEn.trim(), label_zh: labelZh.trim(), sort_order: nextOrder, updated_by: actorId, ...transitionFlags })
     .select()
     .single()
   if (error) throw new Error(error.message)

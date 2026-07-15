@@ -11,9 +11,14 @@ async function adminCheck() {
   return user
 }
 
-export async function addStatusAction(code: string, labelEn: string, labelZh: string) {
+export async function addStatusAction(
+  code: string,
+  labelEn: string,
+  labelZh: string,
+  flags?: { isTerminal?: boolean; isInitial?: boolean }
+) {
   const user = await adminCheck()
-  await addStatusOption(code, labelEn, labelZh, user.id, user.role as Role)
+  await addStatusOption(code, labelEn, labelZh, user.id, user.role as Role, flags)
   revalidatePath('/admin/vocabularies')
 }
 
