@@ -1,10 +1,10 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { AppError } from '@/lib/types'
 import type { StatusOption, PhaseOption, Role } from '@/lib/types'
 
 export async function getStatuses(): Promise<StatusOption[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('status_option')
     .select('*')
@@ -16,7 +16,7 @@ export async function getStatuses(): Promise<StatusOption[]> {
 }
 
 export async function getPhases(): Promise<PhaseOption[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('phase_option')
     .select('*')
@@ -28,7 +28,7 @@ export async function getPhases(): Promise<PhaseOption[]> {
 }
 
 export async function getAllStatuses(): Promise<StatusOption[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('status_option')
     .select('*')
@@ -39,7 +39,7 @@ export async function getAllStatuses(): Promise<StatusOption[]> {
 }
 
 export async function getAllPhases(): Promise<PhaseOption[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('phase_option')
     .select('*')
