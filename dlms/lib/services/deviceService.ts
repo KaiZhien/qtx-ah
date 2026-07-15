@@ -3,7 +3,7 @@
  * All DB writes go through here. No component or Server Action writes directly.
  */
 
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createReadClient } from '@/lib/supabase/server'
 import { can, ACTIONS } from '@/lib/auth/permissions'
 import { deviceSchema } from '@/lib/domain/validation'
 import { normalizeSerial } from '@/lib/domain/normalize'
@@ -64,8 +64,28 @@ async function assertVocabValid(status?: string | null, phase?: string | null): 
 // actually set the app.actor_id GUC. The fn_audit trigger now reads actor_id
 // directly from the row's created_by/updated_by columns (migration 20250106000000).
 
-export async function listDevices(params: ListDevicesParams = {}): Promise<{ rows: DeviceRow[]; total: number }> {
+/**
+ * Admin-client device fetch for write-path pre-reads (optimistic-concurrency
+ * version check + status-transition validation). MUST stay on the admin client:
+ * the read client is RLS-scoped and can legitimately return null for a row the
+ * writer is entitled to mutate — e.g. a soft-deleted row during restoreDevice,
+ * which the read path is meant to hide. Routing the pre-read through the read
+ * client would surface those as spurious "not found"/conflict errors and break
+ * optimistic concurrency. Private by design: never hand this to a UI/read path.
+ */
+async function fetchDeviceForWrite(id: string): Promise<DeviceRow | null> {
   const supabase = createAdminClient()
+  const { data, error } = await supabase
+    .from('device')
+    .select('*')
+    .eq('id', id)
+    .single()
+  if (error) return null
+  return data as DeviceRow
+}
+
+export async function listDevices(params: ListDevicesParams = {}): Promise<{ rows: DeviceRow[]; total: number }> {
+  const supabase = createReadClient()
   const {
     search, status, phase, customer, model,
     buildDateFrom, buildDateTo, shipDateFrom, shipDateTo,
@@ -157,7 +177,7 @@ export async function listDevices(params: ListDevicesParams = {}): Promise<{ row
 }
 
 export async function getDevice(id: string): Promise<DeviceRow | null> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('device')
     .select('*')
@@ -230,19 +250,16 @@ export async function updateDevice(
     throw new AppError({ type: 'permission', message: 'You do not have permission to edit devices' })
   }
 
-  const supabase = createAdminClient()
+  // Optimistic concurrency check. The pre-read stays on the admin client
+  // (fetchDeviceForWrite) so the version/status it compares against is the true
+  // row, never an RLS-filtered view — see fetchDeviceForWrite. Pulling `status`
+  // also lets us enforce the status-transition rules here, closing the bypass
+  // where the full edit form and inline (double-click) editing called
+  // updateDevice directly and could perform illegal moves (e.g. Retired → In
+  // Use) that changeStatus blocks.
+  const current = await fetchDeviceForWrite(id)
 
-  // Optimistic concurrency check. Also pull `status` so we can enforce the
-  // status-transition rules here — this closes the bypass where the full edit
-  // form and inline (double-click) editing called updateDevice directly and
-  // could perform illegal moves (e.g. Retired → In Use) that changeStatus blocks.
-  const { data: current, error: fetchErr } = await supabase
-    .from('device')
-    .select('version, deleted_at, status')
-    .eq('id', id)
-    .single()
-
-  if (fetchErr || !current) throw new Error('Device not found')
+  if (!current) throw new Error('Device not found')
   if (current.deleted_at) throw new AppError({ type: 'validation', message: 'Cannot edit a deleted record', errors: {} })
   if (current.version !== version) {
     throw new AppError({
@@ -282,6 +299,7 @@ export async function updateDevice(
     })
   }
 
+  const supabase = createAdminClient()
   const { data, error } = await supabase
     .from('device')
     .update({
@@ -315,8 +333,10 @@ export async function changeStatus(
     throw new AppError({ type: 'permission', message: 'You do not have permission to change status' })
   }
 
-  // Fetch the current device to validate the transition
-  const current = await getDevice(id)
+  // Fetch the current device to validate the transition. Uses the admin-client
+  // write pre-read (NOT the RLS-scoped getDevice) so the transition is checked
+  // against the true row and stays consistent with updateDevice's own pre-read.
+  const current = await fetchDeviceForWrite(id)
   if (!current) {
     throw new AppError({ type: 'conflict', message: 'Device not found' })
   }
@@ -375,17 +395,12 @@ export async function restoreDevice(
     throw new AppError({ type: 'permission', message: 'Only admins can restore records' })
   }
 
-  const supabase = createAdminClient()
+  // Fetch INCLUDING soft-deleted rows on the admin client (fetchDeviceForWrite,
+  // no deleted_at filter) so a deleted device is visible for restore — the RLS
+  // read client would hide exactly the row we need here.
+  const current = await fetchDeviceForWrite(id)
 
-  // Fetch INCLUDING soft-deleted rows (no deleted_at filter) so a deleted device
-  // is visible for restore.
-  const { data: current, error: fetchErr } = await supabase
-    .from('device')
-    .select('version, deleted_at')
-    .eq('id', id)
-    .single()
-
-  if (fetchErr || !current) throw new Error('Device not found')
+  if (!current) throw new Error('Device not found')
   if (current.deleted_at == null) {
     throw new AppError({ type: 'validation', message: 'Device is not deleted', errors: {} })
   }
@@ -396,6 +411,7 @@ export async function restoreDevice(
     })
   }
 
+  const supabase = createAdminClient()
   const { data, error } = await supabase
     .from('device')
     .update({ deleted_at: null, updated_by: actorId })
@@ -415,7 +431,7 @@ export async function restoreDevice(
 }
 
 export async function getDeviceStats(): Promise<DeviceStats> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
 
   const [{ data: devices }, { data: stats }] = await Promise.all([
     supabase
@@ -447,7 +463,7 @@ export async function getDeviceStats(): Promise<DeviceStats> {
 
 
 export async function getDistinctCustomers(): Promise<string[]> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data } = await supabase
     .from('device')
     .select('customer')
@@ -474,7 +490,7 @@ export async function getComponentTraceability(field: string): Promise<Traceabil
   if (!isTraceableField(field)) {
     throw new AppError({ type: 'validation', message: `"${field}" is not a traceable component field`, errors: {} })
   }
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const { data, error } = await supabase
     .from('device')
     .select(`id, qty, ${field}`)
@@ -492,7 +508,7 @@ export async function getComponentTraceability(field: string): Promise<Traceabil
  * Used by the /devices page banner.
  */
 export async function getExpiringWarrantyCount(withinDays = 7): Promise<number> {
-  const supabase = createAdminClient()
+  const supabase = createReadClient()
   const today = new Date().toISOString().split('T')[0]   // 'YYYY-MM-DD'
   const future = new Date(Date.now() + withinDays * 86_400_000)
     .toISOString().split('T')[0]
