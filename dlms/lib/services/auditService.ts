@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createReadClient } from '@/lib/supabase/server'
 import type { AuditEntry } from '@/lib/types'
 
 export type AuditLogParams = {
@@ -11,7 +11,12 @@ export type AuditLogParams = {
 }
 
 export async function getAuditLog(params: AuditLogParams = {}): Promise<{ rows: AuditEntry[]; total: number }> {
-  const supabase = createAdminClient()
+  // Read path (createReadClient). NOTE the RLS SELECT policy on audit_log grants
+  // BOTH engineer and admin every row — looser than the app-layer gate on the
+  // full audit-log page, which is admin-only (getDeviceHistory's per-device view
+  // is intentionally broader). The app-layer permission check remains the
+  // enforcement boundary for the full view; RLS is the defense-in-depth backstop.
+  const supabase = createReadClient()
   const { tableFilter, actorFilter, actionFilter, rowId, page = 1, pageSize = 50 } = params
 
   let query = supabase
