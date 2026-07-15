@@ -8,7 +8,7 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { updateUserRole, deactivateUser } from '@/lib/services/userService'
+import { updateUserRole, deactivateUser, listUsers, reactivateUser } from '@/lib/services/userService'
 
 const ADMIN_1 = 'aaaaaaaa-0000-0000-0000-000000000001'
 const ADMIN_2 = 'aaaaaaaa-0000-0000-0000-000000000002'
@@ -136,5 +136,44 @@ describe('deactivateUser', () => {
     })
     const result = await deactivateUser(ADMIN_2, ADMIN_1, 'admin')
     expect(result).toEqual({ id: ADMIN_2, active: false })
+  })
+})
+
+describe('listUsers', () => {
+  it('returns all users ordered by created_at', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const rows = [{ id: ADMIN_1, role: 'admin' }, { id: ENGINEER, role: 'engineer' }]
+    fromImpl = makeFrom({ app_user: [{ data: rows, error: null }] }, captures)
+    expect(await listUsers()).toEqual(rows)
+    expect(captures['app_user.order']).toContainEqual(['created_at'])
+  })
+
+  it('returns [] when there are no users', async () => {
+    fromImpl = makeFrom({ app_user: [{ data: null, error: null }] })
+    expect(await listUsers()).toEqual([])
+  })
+
+  it('propagates a DB error', async () => {
+    fromImpl = makeFrom({ app_user: [{ data: null, error: { message: 'boom' } }] })
+    await expect(listUsers()).rejects.toThrow('boom')
+  })
+})
+
+describe('reactivateUser', () => {
+  it('denies a non-admin actor (permission error)', async () => {
+    const err = await catchErr(reactivateUser(ENGINEER, ADMIN_1, 'engineer'))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('permission')
+  })
+
+  it('sets active=true and attributes the acting admin via updated_by', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ app_user: [updated({ id: ENGINEER, active: true })] }, captures)
+    const result = await reactivateUser(ENGINEER, ADMIN_1, 'admin')
+    expect(result).toEqual({ id: ENGINEER, active: true })
+    const payload = captures['app_user.update'][0][0] as Record<string, unknown>
+    expect(payload.active).toBe(true)
+    expect(payload.updated_by).toBe(ADMIN_1)
+    expect(captures['app_user.eq']).toContainEqual(['id', ENGINEER])
   })
 })

@@ -8,7 +8,15 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { promoteDraft, rejectDraft, fieldsToDeviceInput } from '@/lib/services/draftService'
+import {
+  promoteDraft,
+  rejectDraft,
+  fieldsToDeviceInput,
+  getPendingDraftCount,
+  listDrafts,
+  getDraft,
+} from '@/lib/services/draftService'
+import type { QueryResult } from './supabaseChainMock'
 
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
@@ -144,5 +152,65 @@ describe('rejectDraft', () => {
     const payload = updateArgs[0][0] as { status: string; reviewed_by: string }
     expect(payload.status).toBe('rejected')
     expect(payload.reviewed_by).toBe('actor-9')
+  })
+})
+
+describe('getPendingDraftCount', () => {
+  it('counts only pending_review drafts', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      extracted_device_draft: [{ data: null, error: null, count: 3 } as unknown as QueryResult],
+    }, captures)
+    expect(await getPendingDraftCount()).toBe(3)
+    expect(captures['extracted_device_draft.eq']).toContainEqual(['status', 'pending_review'])
+  })
+
+  it('returns 0 when the count comes back null', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [{ data: null, error: null } as QueryResult],
+    })
+    expect(await getPendingDraftCount()).toBe(0)
+  })
+
+  it('propagates a DB error', async () => {
+    fromImpl = makeFrom({
+      extracted_device_draft: [{ data: null, error: { message: 'boom' } } as QueryResult],
+    })
+    await expect(getPendingDraftCount()).rejects.toThrow('boom')
+  })
+})
+
+describe('listDrafts', () => {
+  it('returns pending_review drafts newest-first', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const rows = [{ id: 'draft-1' }, { id: 'draft-2' }]
+    fromImpl = makeFrom({ extracted_device_draft: [{ data: rows, error: null }] }, captures)
+    expect(await listDrafts()).toEqual(rows)
+    expect(captures['extracted_device_draft.eq']).toContainEqual(['status', 'pending_review'])
+    expect(captures['extracted_device_draft.order']).toContainEqual(['created_at', { ascending: false }])
+  })
+
+  it('returns [] when there are no pending drafts', async () => {
+    fromImpl = makeFrom({ extracted_device_draft: [{ data: null, error: null }] })
+    expect(await listDrafts()).toEqual([])
+  })
+
+  it('propagates a DB error', async () => {
+    fromImpl = makeFrom({ extracted_device_draft: [{ data: null, error: { message: 'boom' } }] })
+    await expect(listDrafts()).rejects.toThrow('boom')
+  })
+})
+
+describe('getDraft', () => {
+  it('returns the draft row by id', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ extracted_device_draft: [{ data: { id: 'draft-1' }, error: null }] }, captures)
+    expect(await getDraft('draft-1')).toEqual({ id: 'draft-1' })
+    expect(captures['extracted_device_draft.eq']).toContainEqual(['id', 'draft-1'])
+  })
+
+  it('returns null (not a throw) when the row is missing', async () => {
+    fromImpl = makeFrom({ extracted_device_draft: [{ data: null, error: { message: 'no rows' } }] })
+    expect(await getDraft('missing')).toBeNull()
   })
 })

@@ -18,6 +18,7 @@ import {
   changeStatus,
   softDeleteDevice,
   restoreDevice,
+  listDevices,
 } from '@/lib/services/deviceService'
 
 const VALID_INPUT: DeviceInput = {
@@ -389,5 +390,208 @@ describe('restoreDevice', () => {
     // Optimistic concurrency: the UPDATE re-checks the expected version
     const eqArgs = captures['device.eq'] ?? []
     expect(eqArgs).toContainEqual(['version', 2])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// listDevices — the filter/sort/pagination matrix. These assert the query the
+// service composes (captured builder calls), not SQL, per the house convention.
+// A `count` rides alongside `data` on the awaited result to drive `total`.
+// ---------------------------------------------------------------------------
+const page = (rows: unknown[], count = rows.length): QueryResult =>
+  ({ data: rows, error: null, count } as unknown as QueryResult)
+
+describe('listDevices — soft-delete visibility', () => {
+  it('defaults to active-only via is(deleted_at, null)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({})
+    expect(captures['device.is']).toContainEqual(['deleted_at', null])
+    expect(captures['device.not']).toBeUndefined()
+  })
+
+  it('deleted:true returns ONLY soft-deleted rows via not(deleted_at, is, null)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ deleted: true })
+    expect(captures['device.not']).toContainEqual(['deleted_at', 'is', null])
+    expect(captures['device.is']).toBeUndefined()
+  })
+
+  it('includeDeleted:true filters neither way (returns active + deleted)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ includeDeleted: true })
+    expect(captures['device.is']).toBeUndefined()
+    expect(captures['device.not']).toBeUndefined()
+  })
+})
+
+describe('listDevices — search', () => {
+  it('fans a sanitized, upper-cased term across the 8 searchable columns via or()', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ search: 'pa-001' })
+    const orArg = captures['device.or'][0][0] as string
+    for (const colFrag of [
+      'pcba_a_sn_normalized.ilike.%PA-001%',
+      'pcba_b_sn_normalized.ilike.%PA-001%',
+      'device_sn_normalized.ilike.%PA-001%',
+      'customer.ilike.%PA-001%',
+      'product_name.ilike.%PA-001%',
+      'model_no.ilike.%PA-001%',
+      'screen_model.ilike.%PA-001%',
+      'destination.ilike.%PA-001%',
+    ]) {
+      expect(orArg).toContain(colFrag)
+    }
+  })
+
+  it('rejects a search term with PostgREST filter-injection characters (validation error)', async () => {
+    const err = await catchErr(listDevices({ search: 'a,b)(' }))
+    expect(err).toBeInstanceOf(AppError)
+    expect(err.serviceError.type).toBe('validation')
+  })
+})
+
+describe('listDevices — scalar filters', () => {
+  it('applies status and phase as exact eq matches', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ status: 'In Use', phase: 'MP' })
+    expect(captures['device.eq']).toContainEqual(['status', 'In Use'])
+    expect(captures['device.eq']).toContainEqual(['phase', 'MP'])
+  })
+
+  it('applies customer and model as case-insensitive ilike contains', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ customer: 'Acme', model: 'QTX' })
+    expect(captures['device.ilike']).toContainEqual(['customer', '%Acme%'])
+    expect(captures['device.ilike']).toContainEqual(['model_no', '%QTX%'])
+  })
+
+  it('bounds build_date and ship_date with gte/lte', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ buildDateFrom: '2025-01-01', buildDateTo: '2025-12-31', shipDateFrom: '2025-02-01', shipDateTo: '2025-11-30' })
+    expect(captures['device.gte']).toContainEqual(['build_date', '2025-01-01'])
+    expect(captures['device.lte']).toContainEqual(['build_date', '2025-12-31'])
+    expect(captures['device.gte']).toContainEqual(['ship_date', '2025-02-01'])
+    expect(captures['device.lte']).toContainEqual(['ship_date', '2025-11-30'])
+  })
+
+  it('applies each of the 8 traceability revision fields as an exact eq', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({
+      pcba_a_hw_rev: 'HA', pcba_a_bom_rev: 'BA', pcba_a_fw_ver: 'FA',
+      pcba_b_hw_rev: 'HB', pcba_b_bom_rev: 'BB', pcba_b_fw_ver: 'FB',
+      screen_model: 'SM', hmi_ver: 'HV',
+    })
+    const eqs = captures['device.eq']
+    for (const pair of [
+      ['pcba_a_hw_rev', 'HA'], ['pcba_a_bom_rev', 'BA'], ['pcba_a_fw_ver', 'FA'],
+      ['pcba_b_hw_rev', 'HB'], ['pcba_b_bom_rev', 'BB'], ['pcba_b_fw_ver', 'FB'],
+      ['screen_model', 'SM'], ['hmi_ver', 'HV'],
+    ]) {
+      expect(eqs).toContainEqual(pair)
+    }
+  })
+})
+
+describe('listDevices — myQueue + serviceOverdue id pre-resolution', () => {
+  it('resolves the user\'s assigned ids then constrains with in(id, ids)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      device: [page([])],
+      device_assignment: [{ data: [{ device_id: 'd1' }, { device_id: 'd2' }], error: null }],
+    }, captures)
+    await listDevices({ myQueueUserId: 'user-1' })
+    expect(captures['device_assignment.eq']).toContainEqual(['user_id', 'user-1'])
+    expect(captures['device.in']).toContainEqual(['id', ['d1', 'd2']])
+  })
+
+  it('short-circuits to an empty page when the user has zero assignments (no id filter)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      device: [page([{ id: 'x' }], 99)],
+      device_assignment: [{ data: [], error: null }],
+    }, captures)
+    const result = await listDevices({ myQueueUserId: 'user-1' })
+    expect(result).toEqual({ rows: [], total: 0 })
+    expect(captures['device.in']).toBeUndefined()
+  })
+
+  it('resolves overdue ids then constrains with in(id, ids)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      device: [
+        page([]),                                                              // main query
+        { data: [{ id: 'd1', ship_date: '2020-01-01' }], error: null },        // overdue scan
+      ],
+      service_event: [{ data: [], error: null }],
+    }, captures)
+    await listDevices({ serviceOverdue: true })
+    expect(captures['device.in']).toContainEqual(['id', ['d1']])
+  })
+
+  it('short-circuits to an empty page when nothing is overdue', async () => {
+    fromImpl = makeFrom({
+      device: [
+        page([{ id: 'x' }], 99),
+        { data: [{ id: 'd1', ship_date: null }], error: null },  // no baseline → not overdue
+      ],
+      service_event: [{ data: [], error: null }],
+    })
+    const result = await listDevices({ serviceOverdue: true })
+    expect(result).toEqual({ rows: [], total: 0 })
+  })
+
+  it('intersects assigned and overdue ids when both filters are set', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({
+      device: [
+        page([]),                                                              // main query
+        { data: [{ id: 'd2', ship_date: '2020-01-01' }, { id: 'd3', ship_date: '2020-01-01' }], error: null },
+      ],
+      device_assignment: [{ data: [{ device_id: 'd1' }, { device_id: 'd2' }], error: null }],
+      service_event: [{ data: [], error: null }],
+    }, captures)
+    await listDevices({ myQueueUserId: 'user-1', serviceOverdue: true })
+    expect(captures['device.in']).toContainEqual(['id', ['d2']])
+  })
+})
+
+describe('listDevices — sort + pagination', () => {
+  it('defaults to created_at DESC and the first page window range(0, 49)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({})
+    expect(captures['device.order']).toContainEqual(['created_at', { ascending: false }])
+    expect(captures['device.range']).toContainEqual([0, 49])
+  })
+
+  it('honors an allow-listed sort column + direction', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ sort: 'customer', dir: 'desc' })
+    expect(captures['device.order']).toContainEqual(['customer', { ascending: false }])
+  })
+
+  it('falls back to created_at for a non-allow-listed sort column (injection guard)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([])] }, captures)
+    await listDevices({ sort: 'password; DROP TABLE', dir: 'asc' })
+    // The column is coerced back to created_at (only the direction honors dir=asc).
+    expect(captures['device.order']).toContainEqual(['created_at', { ascending: true }])
+  })
+
+  it('computes the page window for an explicit page/pageSize and passes the count through as total', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    fromImpl = makeFrom({ device: [page([{ id: 'a' }], 42)] }, captures)
+    const { total } = await listDevices({ page: 2, pageSize: 10 })
+    expect(captures['device.range']).toContainEqual([10, 19])
+    expect(total).toBe(42)
   })
 })

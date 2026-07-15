@@ -8,7 +8,7 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { savePreset, deletePreset } from '@/lib/services/filterPresetService'
+import { savePreset, deletePreset, listPresets } from '@/lib/services/filterPresetService'
 
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
@@ -54,5 +54,23 @@ describe('deletePreset', () => {
     const eqCalls = captures['device_filter_preset.eq']
     expect(eqCalls).toContainEqual(['id', 'p-1'])
     expect(eqCalls).toContainEqual(['owner_id', 'actor-2'])
+  })
+})
+
+describe('listPresets', () => {
+  it('returns the user\'s presets newest-first, capped at 20 (ungated read)', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const rows = [{ id: 'p-1', name: 'A', query_string: 'status=Stock', created_at: '2025-06-15T00:00:00Z' }]
+    fromImpl = makeFrom({ device_filter_preset: [{ data: rows, error: null }] }, captures)
+
+    expect(await listPresets('actor-2')).toEqual(rows)
+    expect(captures['device_filter_preset.eq']).toContainEqual(['owner_id', 'actor-2'])
+    expect(captures['device_filter_preset.order']).toContainEqual(['created_at', { ascending: false }])
+    expect(captures['device_filter_preset.limit']).toContainEqual([20])
+  })
+
+  it('returns [] when the user has no presets', async () => {
+    fromImpl = makeFrom({ device_filter_preset: [{ data: null, error: null }] })
+    expect(await listPresets('actor-2')).toEqual([])
   })
 })

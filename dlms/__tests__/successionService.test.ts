@@ -8,14 +8,18 @@ vi.mock('@/lib/supabase/server', () => ({
   createAdminClient: () => ({ from: (table: string) => fromImpl(table) }),
 }))
 
-import { linkReplacement } from '@/lib/services/successionService'
+import { linkReplacement, getPredecessor, getSuccessor } from '@/lib/services/successionService'
 
 async function catchErr(p: Promise<unknown>): Promise<AppError> {
   return p.then(() => { throw new Error('expected rejection') }, (e) => e as AppError)
 }
 
+// Counts from() calls so the getSuccessor short-circuit can be proven DB-free.
+let dbCalls = 0
+
 beforeEach(() => {
-  fromImpl = () => buildChain({ data: null, error: null })
+  dbCalls = 0
+  fromImpl = () => { dbCalls++; return buildChain({ data: null, error: null }) }
 })
 
 describe('linkReplacement', () => {
@@ -91,5 +95,42 @@ describe('linkReplacement', () => {
     const payload = updateArgs[0][0] as Record<string, unknown>
     expect(payload.replaced_by).toBe('new')
     expect(payload.updated_by).toBe('actor-7')
+  })
+})
+
+describe('getPredecessor', () => {
+  it('finds the active device whose replaced_by points at this device', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const pred = { id: 'old', device_sn: 'DS-1', pcba_a_sn: 'PA-old' }
+    fromImpl = makeFrom({ device: [{ data: pred, error: null }] }, captures)
+    expect(await getPredecessor('new')).toEqual(pred)
+    expect(captures['device.eq']).toContainEqual(['replaced_by', 'new'])
+    expect(captures['device.is']).toContainEqual(['deleted_at', null])
+  })
+
+  it('returns null when nothing points at the device', async () => {
+    fromImpl = makeFrom({ device: [{ data: null, error: null }] })
+    expect(await getPredecessor('new')).toBeNull()
+  })
+})
+
+describe('getSuccessor', () => {
+  it('returns null without any DB call when there is no replaced_by id', async () => {
+    expect(await getSuccessor('')).toBeNull()
+    expect(dbCalls).toBe(0)
+  })
+
+  it('fetches the active successor device by id', async () => {
+    const captures: Record<string, unknown[][]> = {}
+    const succ = { id: 'new', device_sn: 'DS-2', pcba_a_sn: 'PA-new' }
+    fromImpl = makeFrom({ device: [{ data: succ, error: null }] }, captures)
+    expect(await getSuccessor('new')).toEqual(succ)
+    expect(captures['device.eq']).toContainEqual(['id', 'new'])
+    expect(captures['device.is']).toContainEqual(['deleted_at', null])
+  })
+
+  it('returns null when the successor id resolves to no row', async () => {
+    fromImpl = makeFrom({ device: [{ data: null, error: null }] })
+    expect(await getSuccessor('missing')).toBeNull()
   })
 })
