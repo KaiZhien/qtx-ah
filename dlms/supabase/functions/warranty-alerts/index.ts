@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { buildWarrantyHtml, filterFreshDevices, toDateStamp } from './logic.ts'
 
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -37,8 +38,8 @@ serve(async (req) => {
     }
 
     // 2. Get devices expiring within 7 days
-    const today = new Date().toISOString().split('T')[0]
-    const future = new Date(Date.now() + 7 * 86_400_000).toISOString().split('T')[0]
+    const today = toDateStamp(new Date())
+    const future = toDateStamp(new Date(Date.now() + 7 * 86_400_000))
 
     const { data: expiring, error: expiryError } = await supabase
       .from('device')
@@ -60,8 +61,7 @@ serve(async (req) => {
       .in('device_id', expiringIds)
 
     if (notifError) throw notifError
-    const notifiedIds = new Set((alreadyNotified ?? []).map((r: { device_id: string }) => r.device_id))
-    const fresh = expiring.filter((d: { id: string }) => !notifiedIds.has(d.id))
+    const fresh = filterFreshDevices(expiring, alreadyNotified)
 
     if (fresh.length === 0) {
       return new Response(JSON.stringify({ sent: 0, message: 'All expiring devices already notified' }), { status: 200 })
@@ -116,60 +116,3 @@ serve(async (req) => {
     return new Response(JSON.stringify({ error: String(err) }), { status: 500 })
   }
 })
-
-/** Escape HTML special characters to prevent XSS in email body */
-function esc(s: string | null): string {
-  if (s == null) return '—'
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function buildWarrantyHtml(
-  devices: Array<{ device_sn: string | null; model_no: string | null; ship_date: string | null; warranty_expiry: string | null }>
-): string {
-  const rows = devices
-    .map(d => `
-      <tr>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${esc(d.device_sn)}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${esc(d.model_no)}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${esc(d.ship_date)}</td>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #b45309;">${esc(d.warranty_expiry)}</td>
-      </tr>`)
-    .join('')
-
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>DLMS Warranty Alert</title></head>
-<body style="font-family: -apple-system, sans-serif; color: #111; background: #f9fafb; padding: 32px;">
-  <div style="max-width: 640px; margin: 0 auto; background: white; border-radius: 8px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
-      <span style="font-size: 24px;">⚠️</span>
-      <h1 style="font-size: 20px; margin: 0;">Warranty Expiry Alert</h1>
-    </div>
-    <p style="color: #6b7280; font-size: 13px; margin-bottom: 24px;">
-      ${devices.length} device${devices.length !== 1 ? 's have' : ' has'} warranty expiring within the next 7 days.
-    </p>
-
-    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-      <thead>
-        <tr style="background: #fef3c7;">
-          <th style="padding: 8px 12px; text-align: left; font-weight: 600;">Device S/N</th>
-          <th style="padding: 8px 12px; text-align: left; font-weight: 600;">Model</th>
-          <th style="padding: 8px 12px; text-align: left; font-weight: 600;">Ship Date</th>
-          <th style="padding: 8px 12px; text-align: left; font-weight: 600;">Warranty Expiry</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-
-    <p style="font-size: 12px; color: #9ca3af; text-align: center; margin-top: 24px;">
-      DLMS · Device Lifecycle Management System
-    </p>
-  </div>
-</body>
-</html>`
-}
