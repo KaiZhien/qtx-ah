@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import deps
-from routers import patients, predict, wearable, webhooks, import_data, sessions, ask, report, admin, calibration, benchmark, anomaly, plan, cohorts
+from routers import patients, predict, wearable, webhooks, import_data, sessions, ask, report, admin, calibration, benchmark, anomaly, plan, cohorts, triage
 
 
 @asynccontextmanager
@@ -103,3 +103,4 @@ app.include_router(benchmark.router, prefix="/api", tags=["benchmark"])
 app.include_router(anomaly.router, prefix="/api")
 app.include_router(plan.router, prefix="/api")
 app.include_router(cohorts.router, prefix="/api")
+app.include_router(triage.router, prefix="/api")
