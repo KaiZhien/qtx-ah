@@ -19,9 +19,9 @@ beforeEach(() => {
   currentUser = null
 })
 
-// NOTE (discrepancy vs brief): this action has NO can() gate — only a null-user check.
-// The role authorization is delegated entirely to linkReplacement in the service.
-// Error convention: RESULT ({ ok } / { error }); never throws.
+// This action carries a belt-and-suspenders can(EDIT_DEVICE) gate at the action
+// layer (restores the house convention); the service also enforces it in
+// linkReplacement. Error convention: RESULT ({ ok } / { error }); never throws.
 
 describe('linkReplacementAction', () => {
   it('returns { error: Unauthorized } when no user', async () => {
@@ -30,12 +30,11 @@ describe('linkReplacementAction', () => {
     expect(linkReplacement).not.toHaveBeenCalled()
   })
 
-  it('does NOT gate a viewer at the action layer — delegates to the service', async () => {
+  it('gates a viewer at the ACTION layer — the service is never called', async () => {
     currentUser = VIEWER
-    linkReplacement.mockResolvedValue(undefined)
     const out = await linkReplacementAction('old', 'new', 1)
-    expect(linkReplacement).toHaveBeenCalledWith('old', 'new', 1, 'vwr-1', 'viewer')
-    expect(out).toEqual({ ok: true })
+    expect(out).toEqual({ error: 'Unauthorized' })
+    expect(linkReplacement).not.toHaveBeenCalled()
   })
 
   it('happy path: delegates then revalidates BOTH device detail paths', async () => {

@@ -2,6 +2,20 @@
 // No Deno globals, no URL imports, no network/env — plain data-in/data-out TS
 // so it is importable by both Deno (index.ts) and vitest (Node).
 
+/** Escape HTML special characters to prevent XSS in the email body. Mirrors the
+ * warranty-alerts builder — every interpolated value must be escaped even when it
+ * currently comes from a controlled source, so a future data-source change can't
+ * silently open an injection hole. */
+export function esc(s: string | null): string {
+  if (s == null) return '—'
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 /**
  * Sum the digest totals over the last-7-days throughput rows and the current
  * distribution rows. Lifted verbatim from the handler's step 3 reduces; the
@@ -42,7 +56,7 @@ export function buildDigestHtml({
   const rows = distribution
     .map(r => `
       <tr>
-        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${r.status_label_en}</td>
+        <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb;">${esc(r.status_label_en)}</td>
         <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">${r.device_count}</td>
         <td style="padding: 6px 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">${r.unit_count}</td>
       </tr>`)

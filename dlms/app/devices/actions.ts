@@ -125,6 +125,15 @@ export async function bulkChangeStatusAction(
     const conflicts: string[] = []
     for (const { id, version } of items) {
       try {
+        // Pre-read uses the RLS-scoped getDevice (not fetchDeviceForWrite) purely
+        // to fill null status/phase fallbacks below. This is deliberate and safe
+        // here: the action is gated to CHANGE_STATUS (engineer/admin), whose device
+        // RLS grants full non-deleted SELECT, so getDevice sees the row. TOCTOU and
+        // version safety are enforced downstream by fetchDeviceForWrite + the
+        // .eq('version', …) guard inside changeStatus; a row RLS legitimately hides
+        // returns null and correctly lands in `conflicts`. Do NOT reroute to the
+        // admin client without making that a conscious decision — if device RLS is
+        // ever tightened, this fallback read should degrade visibly, not silently.
         const current = await getDevice(id)
         if (!current) { conflicts.push(id); continue }
         const newStatus = status ?? current.status

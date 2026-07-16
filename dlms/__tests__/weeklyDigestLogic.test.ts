@@ -92,20 +92,21 @@ describe('buildDigestHtml', () => {
     expect(html).toContain('>0</div>')
   })
 
-  it('does NOT escape status_label_en (documents an escaping gap — see report concern)', () => {
-    // Unlike the warranty builder, buildDigestHtml interpolates status_label_en
-    // raw. status labels come from the controlled v_current_distribution view,
-    // not free user text, but this pins the current (unescaped) behavior so any
-    // change is deliberate.
+  it('escapes status_label_en so a hostile label cannot inject markup', () => {
+    // Matches the warranty builder: every interpolated value is HTML-escaped even
+    // though status labels come from the controlled v_current_distribution view.
+    // Belt-and-suspenders against a future data-source change opening an injection
+    // hole in the email body.
     const html = buildDigestHtml({
       distribution: [
-        { status: 'x', status_label_en: '<b>raw</b>', device_count: 1, unit_count: 1 },
+        { status: 'x', status_label_en: '<script>alert(1)</script>', device_count: 1, unit_count: 1 },
       ],
       totalCreated: 0,
       totalCompleted: 0,
       totalActive: 0,
     })
-    expect(html).toContain('<b>raw</b>')
+    expect(html).not.toContain('<script>alert(1)</script>')
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 })
 

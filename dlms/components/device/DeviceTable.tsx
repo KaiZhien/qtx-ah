@@ -569,15 +569,19 @@ export function DeviceTable({
   }
 
   // For the bulk status dialog, compute an intersection of allowed next statuses
-  // across all selected devices. Fall back to showing all active statuses if
-  // complex/empty. The full list feeds the rule; only active codes are offered.
+  // across all selected devices. The full list feeds the rule; only active codes
+  // are offered. When the intersection is empty we fall back to active statuses,
+  // but drop is_initial ones (e.g. Stock): those are never legal transition
+  // TARGETS and the server always rejects them, so offering them is a dead end.
+  // Terminal codes stay — they ARE legal targets. The no-selection early returns
+  // keep the full active list (nothing is being transitioned yet).
   const bulkAllowedStatuses: StatusOption[] = (() => {
     if (selectedIds.size === 0) return activeStatuses
     const selectedDevices = devices.filter(d => selectedIds.has(d.id))
     if (selectedDevices.length === 0) return activeStatuses
     const sets = selectedDevices.map(d => new Set(allowedNextStatuses(d.status, statuses)))
     const intersection = statuses.filter(s => sets.every(set => set.has(s.code)))
-    return intersection.length > 0 ? intersection : activeStatuses
+    return intersection.length > 0 ? intersection : activeStatuses.filter(s => !s.is_initial)
   })()
 
   const actionsCol = canEdit ? (
