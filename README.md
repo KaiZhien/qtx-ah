@@ -84,7 +84,7 @@ quantumtx-ah/
 │   ├── main.py               # App entry; API-key middleware, CORS, router mounting
 │   ├── db.py / deps.py       # SQLAlchemy engine, model registry, hot-reload
 │   ├── models/               # ORM: patients, sessions, predictions, insights, wearables
-│   ├── routers/              # 14 routers (see Clinical API section)
+│   ├── routers/              # 15 routers (see Clinical API section)
 │   ├── services/             # prediction, insight, retrain, calibration, anomaly, trend,
 │   │                         #   ingest, report, terra, voyage, claude_client, wearable_features
 │   └── templates/            # WeasyPrint PDF report template
@@ -313,6 +313,7 @@ FastAPI app (`api/`), deployed on Railway. All routes except `/webhooks/*` requi
 | `calibration` | Per-cohort calibration metrics + drift status |
 | `benchmark` | Cohort benchmark comparisons |
 | `cohorts` | Cohort response curves |
+| `triage` | Cross-patient attention worklist — read-only rollup of new anomalies, declining trends, and prediction divergence |
 | `import_data` | CSV/Excel bulk import + parquet seeding (admin-gated) |
 | `wearable` | Wearable enrollment + feature summaries |
 | `webhooks` | Terra webhook ingest (HMAC-verified) |
