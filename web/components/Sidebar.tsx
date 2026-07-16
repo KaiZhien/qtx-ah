@@ -72,6 +72,12 @@ export function Sidebar({ page, setPage, filters, setFilters }: SidebarProps) {
         >
           <Icon.Clinical /> Clinical Tools
         </button>
+        <button
+          className={`nav-item ${page === "triage" ? "active" : ""}`}
+          onClick={() => setPage("triage")}
+        >
+          <Icon.Triage /> Triage
+        </button>
       </nav>
 
       <div className="filters">

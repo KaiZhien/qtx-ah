@@ -27,4 +27,11 @@ export const Icon = {
       <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
     </svg>
   ),
+  Triage: () => (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M8 2.5L14 13H2L8 2.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+      <path d="M8 6.5v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+      <circle cx="8" cy="11.3" r="0.7" fill="currentColor"/>
+    </svg>
+  ),
 };

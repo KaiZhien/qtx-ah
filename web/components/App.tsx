@@ -38,6 +38,7 @@ import {
 import { OverviewPage } from "@/components/pages/OverviewPage";
 import { CohortsPage } from "@/components/pages/CohortsPage";
 import { ClinicalPage } from "@/components/pages/ClinicalPage";
+import { TriagePage } from "@/components/pages/TriagePage";
 
 interface TweaksUIProps {
   open: boolean;
@@ -96,6 +97,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: "Overview", sub: "Programme-level KPIs and outcomes" },
   cohorts: { title: "Cohort Analysis", sub: "Compare outcomes across phenotype cohorts" },
   clinical: { title: "Clinical Tools", sub: "Patient lookup, intake estimation, dosage recommendations" },
+  triage: { title: "Triage", sub: "Patients needing clinical attention" },
 };
 
 export function App() {
@@ -271,6 +273,9 @@ export function App() {
             )}
             {page === "clinical" && (
               <ClinicalPage data={allData} onPatientClick={openDrawer} />
+            )}
+            {page === "triage" && (
+              <TriagePage patients={allData} onPatientSelect={openDrawer} />
             )}
           </>
         )}

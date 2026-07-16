@@ -17,6 +17,7 @@ import type {
   CalibrationReport,
   PreSessionBrief,
   ModelStatusResponse,
+  TriageResponse,
 } from "./types";
 
 // Requests go through the same-origin BFF proxy (web/app/api/[...path]/route.ts),
@@ -148,6 +149,18 @@ export async function fetchTimeline(sn: string): Promise<TimelineResponse> {
     headers: apiHeaders(),
   });
   if (!res.ok) throw new Error(`fetchTimeline: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Fetch the cross-patient triage worklist. GET /api/triage returns the full
+ * attention envelope `{ generated_at, total, items }`, pre-sorted server-side.
+ * Unlike the silent-catch helpers, this THROWS on failure — the Triage page
+ * surfaces a visible error + Retry rather than an empty worklist.
+ */
+export async function fetchTriage(): Promise<TriageResponse> {
+  const res = await fetch("/api/triage", { headers: apiHeaders() });
+  if (!res.ok) throw new Error(`fetchTriage: ${res.status}`);
   return res.json();
 }
 

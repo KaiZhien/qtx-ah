@@ -237,6 +237,45 @@ export interface AnomalyWarning {
   created_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// Triage worklist — cross-patient attention rollup returned by GET /api/triage.
+// Shape mirrors api/services/triage.py::build_triage exactly. Items arrive
+// pre-sorted (anomaly-first, signal-count, recency, sn) — render in given order.
+// ---------------------------------------------------------------------------
+export interface TriageAnomalySignal {
+  session_number: number;
+  content: string;
+  created_at: string;
+}
+export interface TriageDecliningTrend {
+  metric: string;            // one of the post_* keys, e.g. "post_tug_s"
+  magnitude: number | null;  // nullable — show label alone when null
+  sessions_used: number;
+}
+export interface TriageDivergenceSignal {
+  session_number: number;
+  predicted: number;   // signed
+  actual: number;      // signed
+  delta: number;       // abs(actual - predicted)
+}
+export interface TriageSignals {
+  anomaly: TriageAnomalySignal | null;
+  declining_trends: TriageDecliningTrend[];   // possibly empty
+  divergence: TriageDivergenceSignal | null;
+}
+export interface TriageItem {
+  sn: string;
+  name: string;
+  last_session_number: number | null;   // nullable (session-less edge case)
+  last_session_date: string | null;     // ISO date or null
+  signals: TriageSignals;
+}
+export interface TriageResponse {
+  generated_at: string;
+  total: number;
+  items: TriageItem[];
+}
+
 export type BenchmarkMetric = {
   metric: string;
   patient_value: number;
