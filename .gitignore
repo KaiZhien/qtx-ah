@@ -29,6 +29,7 @@ dlms/supabase/.temp/
 # AI tooling artifacts
 .superpowers/
 docs/superpowers/
+CLAUDE.md
 HANDOFF.md
 IMPLEMENTATION.md
 PROMPTS.md
