@@ -11,15 +11,22 @@ process.env.TEST_DATABASE_URL = TEST_DB
 // projects (DLMS's `bkvbqopcebfjfiemqdvk` vs. the new `qtx-ops-platform` — see
 // docs/superpowers/specs/2026-07-17-ops-platform-design.md). They also collide by
 // name: DLMS already has its own `app_user` and `audit_log` tables (from the
-// 2025010* migrations). Per the implementation plan
-// (docs/superpowers/plans/2026-07-17-weeks-1-2-foundation-and-demo.md, line 54),
-// every platform-schema migration is dated 2026-07-18 or later; every legacy DLMS
-// migration (including several also dated 2026-07-06 through 2026-07-16) is dated
-// strictly earlier. That is the real boundary — filtering by a bare `202607`
-// prefix (as an earlier draft of this file did) would also sweep up those legacy
-// 2026-07-06..16 DLMS migrations, which reference tables (`device`, DLMS's own
-// `app_user`) that don't exist in this bare test database and would fail immediately.
-const PLATFORM_MIGRATIONS_FROM = '20260718000000'
+// 2025010* migrations).
+//
+// Provenance, not a date range, is what actually distinguishes platform migrations
+// from legacy DLMS ones: every platform migration carries a `platform_` prefix
+// after its timestamp (this task's two, plus `20260718000002_platform_resolve_actor.sql`
+// renamed to preserve the convention, and more to come). A date-based filter
+// (`f >= '20260718000000'`, as an earlier draft of this file used) has two bugs:
+// JS string comparison means ANY letter-initial filename (e.g. a hypothetical
+// `rollback.sql` or `seed_dev.sql` dropped into this directory) also passes the
+// comparison since letters sort after digits; and DLMS is a live codebase still
+// receiving its own migrations, so its first migration dated on or after
+// 2026-07-18 would get swept into this platform test database and collide on
+// `app_user`/`audit_log` with the legacy DLMS schema those migrations expect.
+// Matching the `platform_` prefix directly closes both holes regardless of when
+// either migration set is dated.
+const PLATFORM_MIGRATION_RE = /^\d{14}_platform_.*\.sql$/
 
 /**
  * Applies every platform migration, in filename order, plus the deterministic
@@ -42,9 +49,27 @@ async function migratePlatformSchema() {
     const { rows } = await client.query(`SELECT to_regclass('public.role') AS reg`)
     if (rows[0].reg) return // already migrated by an earlier setup() run against this container
 
+    // The platform migrations GRANT/REVOKE against Supabase's platform-provisioned
+    // `anon`/`authenticated` roles, same as every pre-existing DLMS migration in
+    // this directory — on a real Supabase project those roles always already
+    // exist. The bare postgres:15-alpine test container has neither, so the test
+    // harness stands in minimal equivalents here rather than teaching the
+    // migration itself to special-case a non-Supabase environment.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+      END $$;
+    `)
+
     const dir = join(process.cwd(), 'supabase/migrations')
     const files = readdirSync(dir)
-      .filter((f) => f.endsWith('.sql') && f >= PLATFORM_MIGRATIONS_FROM)
+      .filter((f) => PLATFORM_MIGRATION_RE.test(f))
       .sort()
     for (const f of files) {
       await client.query(readFileSync(join(dir, f), 'utf8'))

@@ -12,7 +12,7 @@
 CREATE TABLE audit_log (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   table_name  text NOT NULL,
-  row_id      uuid,                     -- NULL for text-keyed tables
+  row_id      uuid,                     -- NULL for composite-keyed tables (there are no text-keyed tables in this schema)
   action      text NOT NULL CHECK (action IN ('insert','update','soft_delete','delete')),
   actor_id    uuid REFERENCES app_user(id),
   old_values  jsonb,
@@ -41,6 +41,46 @@ CREATE TABLE auth_event (
 );
 CREATE INDEX auth_event_user_idx ON auth_event(user_id, occurred_at DESC);
 CREATE INDEX auth_event_type_idx ON auth_event(event_type, occurred_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- INSERT-only at the grant level. No role — not public, not anon, not
+-- authenticated — may UPDATE or DELETE either audit table; fn_audit's
+-- SECURITY DEFINER is what lets low-privilege callers still get their audit
+-- rows written despite holding no direct write grant of their own beyond
+-- INSERT. That combination, not a trigger, is what makes the trail
+-- tamper-resistant: nobody with ordinary application privileges can edit or
+-- erase history, only append to it.
+-- ---------------------------------------------------------------------------
+REVOKE ALL ON audit_log, auth_event FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON audit_log, auth_event TO authenticated;
+
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_event ENABLE ROW LEVEL SECURITY;
+
+-- Permissive policies for now: every authenticated caller can SELECT every row,
+-- and can INSERT (matching the GRANT above — RLS defaults to deny per command
+-- when no policy names it, so INSERT needs its own WITH CHECK or the GRANT
+-- above would be silently nullified). Per-record audit visibility (e.g.
+-- scoping which rows a non-admin may see) is enforced in the service layer
+-- today, not here. Full RLS read policies that narrow this at the database
+-- level are planned for week 3 — until then, these policies exist only so RLS
+-- being enabled doesn't itself block the reads/writes the grants above allow.
+CREATE POLICY audit_log_select_authenticated ON audit_log
+  FOR SELECT TO authenticated USING (true);
+CREATE POLICY audit_log_insert_authenticated ON audit_log
+  FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY auth_event_select_authenticated ON auth_event
+  FOR SELECT TO authenticated USING (true);
+CREATE POLICY auth_event_insert_authenticated ON auth_event
+  FOR INSERT TO authenticated WITH CHECK (true);
+COMMENT ON POLICY audit_log_select_authenticated ON audit_log IS
+  'Permissive placeholder: service layer enforces per-record audit visibility today. Narrower RLS read policies land week 3.';
+COMMENT ON POLICY audit_log_insert_authenticated ON audit_log IS
+  'Permissive placeholder matching the table''s GRANT INSERT: lets the grant actually take effect under RLS. Narrower policies land week 3.';
+COMMENT ON POLICY auth_event_select_authenticated ON auth_event IS
+  'Permissive placeholder: service layer enforces per-record audit visibility today. Narrower RLS read policies land week 3.';
+COMMENT ON POLICY auth_event_insert_authenticated ON auth_event IS
+  'Permissive placeholder matching the table''s GRANT INSERT: lets the grant actually take effect under RLS. Narrower policies land week 3.';
 
 CREATE OR REPLACE FUNCTION fn_audit()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
@@ -91,7 +131,7 @@ CREATE OR REPLACE FUNCTION fn_attach_audit(p_table text)
 RETURNS void LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
   EXECUTE format(
-    'CREATE TRIGGER trg_audit_%1$s AFTER INSERT OR UPDATE OR DELETE ON %1$I
+    'CREATE TRIGGER trg_audit_%1$I AFTER INSERT OR UPDATE OR DELETE ON %1$I
      FOR EACH ROW EXECUTE FUNCTION fn_audit()', p_table);
 END $$;
 
