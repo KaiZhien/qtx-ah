@@ -349,6 +349,8 @@ CREATE TABLE device (
   build_date date, ship_date date, delivered_date date,
   product_name text, model_no text, destination text,
   remarks text,                         -- bilingual free text, preserved verbatim
+  pcba_a_sn_legacy text,                -- DLMS de-facto identity, verbatim (may hold a range/list);
+                                        -- superseded by component_installation, never used for new records
   device_sn_normalized text,            -- trigger-maintained, search
   needs_data_review boolean NOT NULL DEFAULT false,  -- legacy ranged-serial flag
   created_at timestamptz NOT NULL DEFAULT now(),
