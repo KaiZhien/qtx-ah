@@ -256,34 +256,21 @@ describe('fn_audit()', () => {
 })
 
 describe('audit_log immutability', () => {
-  it('rejects UPDATE and DELETE as a non-owner role, while INSERT (direct and trigger-driven) still succeeds', async () => {
+  it('rejects direct INSERT, UPDATE, and DELETE as a non-owner role, while the fn_audit trigger path still succeeds', async () => {
     const subjectId = await seedTestUser('immutability')
-
-    // Trigger-driven INSERT still works under the new grant-level lockdown: fn_audit's
-    // SECURITY DEFINER runs with the definer's (table owner's) privileges, independent of the
-    // caller's own grants on audit_log.
-    const { rows: before } = await db.query(
-      `SELECT count(*)::int AS n FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`,
-      [subjectId],
-    )
-    await db.query(`UPDATE app_user SET full_name = 'Immutability trigger check' WHERE id = $1`, [subjectId])
-    const { rows: after } = await db.query(
-      `SELECT count(*)::int AS n FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`,
-      [subjectId],
-    )
-    expect(after[0].n).toBe(before[0].n + 1)
 
     // `authenticated` did not exist in the bare test container, so __tests__/integration/setup.ts
     // creates a minimal NOLOGIN stand-in before applying migrations (see setup.ts for why).
     await db.query('SET ROLE authenticated')
     try {
-      // Direct grant: authenticated has SELECT, INSERT — a bare INSERT must succeed.
-      const { rows: inserted } = await db.query(
-        `INSERT INTO audit_log (table_name, action) VALUES ('manual_test', 'insert') RETURNING id`,
-      )
-      expect(inserted).toHaveLength(1)
+      // authenticated holds SELECT only on audit_log — no INSERT grant exists, so a bare
+      // INSERT must be rejected. This is the forgery hole the fix closes: without this,
+      // any authenticated caller could fabricate audit rows implicating someone else.
+      await expect(
+        db.query(`INSERT INTO audit_log (table_name, action) VALUES ('manual_test', 'insert')`),
+      ).rejects.toThrow(/permission denied/)
 
-      // But UPDATE and DELETE were revoked from every role — both must be rejected.
+      // UPDATE and DELETE were revoked from every role — both must be rejected.
       await expect(
         db.query(
           `UPDATE audit_log SET reason = 'tampered' WHERE table_name = 'app_user' AND row_id = $1`,
@@ -297,5 +284,31 @@ describe('audit_log immutability', () => {
     } finally {
       await db.query('RESET ROLE')
     }
+
+    // The SECURITY DEFINER path proves the lockdown costs nothing: fn_audit's trigger still
+    // writes a correctly-attributed audit_log row for an ordinary app_user UPDATE, even though
+    // NO role — including whatever role performs this UPDATE — holds an INSERT grant on
+    // audit_log any more. (app_user itself carries no grant to `authenticated` yet — that's a
+    // separate, not-yet-built piece of the RBAC rollout — so this step runs as the test's
+    // normal privileged connection, same as the other fn_audit() tests above; the property
+    // under test is audit_log's own grants, which fn_audit's SECURITY DEFINER bypasses
+    // regardless of which role fired the triggering statement.)
+    const { rows: before } = await db.query(
+      `SELECT count(*)::int AS n FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`,
+      [subjectId],
+    )
+    await db.query(`SELECT set_config('app.actor_id', $1, false)`, [superAdminId])
+    try {
+      await db.query(`UPDATE app_user SET full_name = 'Immutability trigger check' WHERE id = $1`, [subjectId])
+    } finally {
+      await db.query(`SELECT set_config('app.actor_id', '', false)`)
+    }
+    const { rows: after } = await db.query(
+      `SELECT count(*)::int AS n, (array_agg(actor_id ORDER BY occurred_at DESC))[1] AS last_actor
+       FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`,
+      [subjectId],
+    )
+    expect(after[0].n).toBe(before[0].n + 1)
+    expect(after[0].last_actor).toBe(superAdminId)
   })
 })

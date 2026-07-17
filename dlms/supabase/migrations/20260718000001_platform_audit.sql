@@ -2,8 +2,12 @@
 -- Audit trail (spec §6.3/§11). Two changes vs the DLMS original:
 --   1. Actor comes from the app.actor_id GUC set by withTransaction(), with the
 --      legacy column-sniffing kept as fallback for triggers fired outside a tx.
---   2. audit_log is INSERT-only at the grant level — no role may UPDATE/DELETE it.
---      That, not a trigger, is what makes the trail tamper-resistant.
+--   2. No application role holds any write grant on audit_log at all — not even
+--      INSERT. Every write reaches it through fn_audit()'s SECURITY DEFINER
+--      path (or, for auth_event, the service-role client), both of which bypass
+--      grants and RLS entirely. That, not a trigger, is what makes the trail
+--      tamper-resistant: nobody with ordinary application privileges can forge,
+--      edit, or erase history — only append to it through the audited paths.
 --
 -- Belongs to the new `qtx-ops-platform` project (see the sibling
 -- 20260718000000_platform_rbac.sql header for why this directory holds both the
@@ -43,44 +47,42 @@ CREATE INDEX auth_event_user_idx ON auth_event(user_id, occurred_at DESC);
 CREATE INDEX auth_event_type_idx ON auth_event(event_type, occurred_at DESC);
 
 -- ---------------------------------------------------------------------------
--- INSERT-only at the grant level. No role — not public, not anon, not
--- authenticated — may UPDATE or DELETE either audit table; fn_audit's
--- SECURITY DEFINER is what lets low-privilege callers still get their audit
--- rows written despite holding no direct write grant of their own beyond
--- INSERT. That combination, not a trigger, is what makes the trail
--- tamper-resistant: nobody with ordinary application privileges can edit or
--- erase history, only append to it.
+-- No role — not public, not anon, not authenticated — may INSERT, UPDATE, or
+-- DELETE either audit table directly. Writes reach these tables through
+-- exactly two paths, neither of which needs (or should have) a direct grant:
+-- fn_audit() below runs SECURITY DEFINER, so it writes audit_log with the
+-- function owner's privileges regardless of the calling role's own grants;
+-- auth_event is written by recordAuthEvent() through the Supabase
+-- service-role client, which likewise bypasses both grants and RLS.
+-- `authenticated` therefore gets SELECT only — no INSERT, no UPDATE, no
+-- DELETE. That is what makes the trail tamper-resistant: nobody holding
+-- ordinary application privileges can forge an entry, edit one, or erase
+-- history; they can only append to it via the audited code paths above.
 -- ---------------------------------------------------------------------------
 REVOKE ALL ON audit_log, auth_event FROM PUBLIC, anon, authenticated;
-GRANT SELECT, INSERT ON audit_log, auth_event TO authenticated;
+GRANT SELECT ON audit_log, auth_event TO authenticated;
 
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth_event ENABLE ROW LEVEL SECURITY;
 
--- Permissive policies for now: every authenticated caller can SELECT every row,
--- and can INSERT (matching the GRANT above — RLS defaults to deny per command
--- when no policy names it, so INSERT needs its own WITH CHECK or the GRANT
--- above would be silently nullified). Per-record audit visibility (e.g.
--- scoping which rows a non-admin may see) is enforced in the service layer
--- today, not here. Full RLS read policies that narrow this at the database
--- level are planned for week 3 — until then, these policies exist only so RLS
--- being enabled doesn't itself block the reads/writes the grants above allow.
+-- Permissive SELECT policy for now: every authenticated caller can SELECT
+-- every row. Per-record audit visibility (e.g. scoping which rows a
+-- non-admin may see) is enforced in the service layer today, not here. Full
+-- RLS read policies that narrow this at the database level are planned for
+-- week 3 — until then, this policy exists only so RLS being enabled doesn't
+-- itself block the reads the grant above allows. There is deliberately no
+-- INSERT/UPDATE/DELETE policy on either table: with no corresponding grant,
+-- RLS has nothing to gate for those commands, and all real writes go through
+-- fn_audit()'s SECURITY DEFINER path or the service-role client, both of
+-- which bypass RLS entirely.
 CREATE POLICY audit_log_select_authenticated ON audit_log
   FOR SELECT TO authenticated USING (true);
-CREATE POLICY audit_log_insert_authenticated ON audit_log
-  FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY auth_event_select_authenticated ON auth_event
   FOR SELECT TO authenticated USING (true);
-CREATE POLICY auth_event_insert_authenticated ON auth_event
-  FOR INSERT TO authenticated WITH CHECK (true);
 COMMENT ON POLICY audit_log_select_authenticated ON audit_log IS
   'Permissive placeholder: service layer enforces per-record audit visibility today. Narrower RLS read policies land week 3.';
-COMMENT ON POLICY audit_log_insert_authenticated ON audit_log IS
-  'Permissive placeholder matching the table''s GRANT INSERT: lets the grant actually take effect under RLS. Narrower policies land week 3.';
 COMMENT ON POLICY auth_event_select_authenticated ON auth_event IS
   'Permissive placeholder: service layer enforces per-record audit visibility today. Narrower RLS read policies land week 3.';
-COMMENT ON POLICY auth_event_insert_authenticated ON auth_event IS
-  'Permissive placeholder matching the table''s GRANT INSERT: lets the grant actually take effect under RLS. Narrower policies land week 3.';
 
 CREATE OR REPLACE FUNCTION fn_audit()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
