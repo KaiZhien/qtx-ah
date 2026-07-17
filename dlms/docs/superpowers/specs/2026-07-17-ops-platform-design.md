@@ -91,7 +91,7 @@ Six roles, DB-stored, plus per-user **module access** flags. One role per user; 
 | 11 | `download_files` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 12 | `export_data` (filtered CSV) | ✅ | ✅ | ✅ | — | ✅ | — |
 | 13 | `import_data` | ✅ | ✅ | ✅ | — | — | — |
-| 14 | `view_finance` | ✅ | ✅ | ① | — | ✅ | ① |
+| 14 | `view_finance` | ✅ | ✅ | ① | — | ✅ | — |
 | 15 | `manage_finance` | ✅ | ✅ | — | — | ✅ | — |
 | 16 | `view_buyer_details` | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 17 | `log_usage_service` | ✅ | ✅ | ✅ | ✅ | — | — |
@@ -103,7 +103,9 @@ Six roles, DB-stored, plus per-user **module access** flags. One role per user; 
 | 23 | `manage_settings` | ✅ | — | — | — | — | — |
 | 24 | `request_full_export` | ✅ | — | — | — | — | — |
 
-① Manager/Viewer see Finance records only if granted Finance **module access** (the hybrid boundary, BR-3). Module access is checked before permissions: `authorize()` = module access ∧ role permission ∧ overrides.
+① Manager sees financial information only if also granted Finance **module access** (the hybrid boundary, BR-3). Module access is checked before permissions: `authorize()` = module access ∧ role permission ∧ overrides.
+
+**Viewer never holds `view_finance`** (decided 2026-07-17): a read-only stakeholder granted Finance module access can see that invoices and buyers exist, but never financial information — the Finance module's monetary pages and fields check `view_finance`, which no Viewer holds. Granting a Viewer sight of money means giving them the Finance role, not the Finance module.
 
 ### 3.3 Super Admin console [CONFIRMED — July 31 scope]
 
