@@ -1,0 +1,9 @@
+# docker-compose.test.yml — real Postgres for integration tests (spec §14 testing pyramid)
+services:
+  testdb:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: testpw
+      POSTGRES_DB: qtx_test
+    ports: ['55432:5432']
+    tmpfs: ['/var/lib/postgresql/data']   # ephemeral: fast, wiped every run
