@@ -266,9 +266,13 @@ describe('audit_log immutability', () => {
       // authenticated holds SELECT only on audit_log — no INSERT grant exists, so a bare
       // INSERT must be rejected. This is the forgery hole the fix closes: without this,
       // any authenticated caller could fabricate audit rows implicating someone else.
+      // Matcher is anchored to the table name: `/permission denied/` alone matches
+      // "permission denied for schema public" just as readily as "for table audit_log",
+      // so an un-anchored matcher wouldn't actually prove the audit_log grant is the
+      // thing being enforced.
       await expect(
         db.query(`INSERT INTO audit_log (table_name, action) VALUES ('manual_test', 'insert')`),
-      ).rejects.toThrow(/permission denied/)
+      ).rejects.toThrow(/permission denied for table audit_log/)
 
       // UPDATE and DELETE were revoked from every role — both must be rejected.
       await expect(
@@ -276,11 +280,11 @@ describe('audit_log immutability', () => {
           `UPDATE audit_log SET reason = 'tampered' WHERE table_name = 'app_user' AND row_id = $1`,
           [subjectId],
         ),
-      ).rejects.toThrow(/permission denied/)
+      ).rejects.toThrow(/permission denied for table audit_log/)
 
       await expect(
         db.query(`DELETE FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`, [subjectId]),
-      ).rejects.toThrow(/permission denied/)
+      ).rejects.toThrow(/permission denied for table audit_log/)
     } finally {
       await db.query('RESET ROLE')
     }
@@ -310,5 +314,93 @@ describe('audit_log immutability', () => {
     )
     expect(after[0].n).toBe(before[0].n + 1)
     expect(after[0].last_actor).toBe(superAdminId)
+  })
+
+  it('rejects service_role on INSERT/UPDATE/DELETE of audit_log', async () => {
+    // This is the assertion that would have caught Defect 1: the migration originally
+    // REVOKEd from PUBLIC, anon, and authenticated but left service_role un-revoked.
+    // On a real Supabase project service_role is NOT a passive default — every new
+    // public-schema table is born with service_role already holding full DML (see
+    // 20250101000008_grants.sql's ALTER DEFAULT PRIVILEGES, reproduced for this test
+    // database in setup.ts) — and service_role is BYPASSRLS, so the RLS policies above
+    // cannot backstop it. If the audit_log REVOKE ever regresses to omit service_role,
+    // this is the test that fails.
+    const subjectId = await seedTestUser('service-role-audit-log')
+
+    await db.query('SET ROLE service_role')
+    try {
+      await expect(
+        db.query(`INSERT INTO audit_log (table_name, action) VALUES ('manual_test', 'insert')`),
+      ).rejects.toThrow(/permission denied for table audit_log/)
+
+      await expect(
+        db.query(
+          `UPDATE audit_log SET reason = 'tampered-by-service-role' WHERE table_name = 'app_user' AND row_id = $1`,
+          [subjectId],
+        ),
+      ).rejects.toThrow(/permission denied for table audit_log/)
+
+      await expect(
+        db.query(`DELETE FROM audit_log WHERE table_name = 'app_user' AND row_id = $1`, [subjectId]),
+      ).rejects.toThrow(/permission denied for table audit_log/)
+    } finally {
+      await db.query('RESET ROLE')
+    }
+  })
+
+  it('lets service_role INSERT auth_event (recordAuthEvent depends on it) but rejects UPDATE/DELETE', async () => {
+    // Positive-direction counterpart to the test above: auth_event deliberately grants
+    // service_role INSERT (recordAuthEvent() writes through the service-role client, a
+    // direct DML path with no SECURITY DEFINER function to bypass grants for it) but
+    // never UPDATE or DELETE — once written, an auth_event row is as immutable as an
+    // audit_log row.
+    let eventId: string | undefined
+    await db.query('SET ROLE service_role')
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO auth_event (event_type, email) VALUES ('login_success', 'service-role-test@example.com')
+         RETURNING id`,
+      )
+      expect(rows).toHaveLength(1)
+      eventId = rows[0].id as string
+
+      await expect(
+        db.query(`UPDATE auth_event SET detail = '{}'::jsonb WHERE id = $1`, [eventId]),
+      ).rejects.toThrow(/permission denied for table auth_event/)
+
+      await expect(
+        db.query(`DELETE FROM auth_event WHERE id = $1`, [eventId]),
+      ).rejects.toThrow(/permission denied for table auth_event/)
+    } finally {
+      await db.query('RESET ROLE')
+    }
+    // service_role can't clean up its own row (no DELETE grant) — do it as the test's
+    // normal privileged connection so this test doesn't leak rows into later ones.
+    if (eventId) {
+      await db.query(`DELETE FROM auth_event WHERE id = $1`, [eventId])
+    }
+  })
+
+  it('lets authenticated SELECT from audit_log', async () => {
+    // The positive direction: without this, misdirecting the SELECT grant to anon
+    // instead of authenticated (or omitting it entirely) would pass every other test
+    // in this file unnoticed, since they only ever assert that writes are rejected.
+    await db.query('SET ROLE authenticated')
+    try {
+      await expect(db.query(`SELECT count(*)::int AS n FROM audit_log`)).resolves.toBeDefined()
+    } finally {
+      await db.query('RESET ROLE')
+    }
+  })
+
+  it('rejects anon entirely on audit_log', async () => {
+    await db.query('SET ROLE anon')
+    try {
+      await expect(
+        db.query(`SELECT count(*)::int AS n FROM audit_log`),
+      ).rejects.toThrow(/permission denied for table audit_log/)
+    } finally {
+      await db.query('RESET ROLE')
+    }
   })
 })

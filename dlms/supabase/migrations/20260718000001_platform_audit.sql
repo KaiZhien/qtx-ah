@@ -2,12 +2,38 @@
 -- Audit trail (spec §6.3/§11). Two changes vs the DLMS original:
 --   1. Actor comes from the app.actor_id GUC set by withTransaction(), with the
 --      legacy column-sniffing kept as fallback for triggers fired outside a tx.
---   2. No application role holds any write grant on audit_log at all — not even
---      INSERT. Every write reaches it through fn_audit()'s SECURITY DEFINER
---      path (or, for auth_event, the service-role client), both of which bypass
---      grants and RLS entirely. That, not a trigger, is what makes the trail
---      tamper-resistant: nobody with ordinary application privileges can forge,
---      edit, or erase history — only append to it through the audited paths.
+--   2. Grants are asymmetric across the two tables, and deliberately so:
+--        - audit_log: NO application role — anon, authenticated, or
+--          service_role — holds INSERT/UPDATE/DELETE. Writes arrive only
+--          through fn_audit()'s SECURITY DEFINER path, which runs as the
+--          function owner and so bypasses grants and RLS entirely; no write
+--          grant is needed anywhere for that path to keep working.
+--        - auth_event: same lockdown, except service_role also holds INSERT,
+--          because recordAuthEvent() (a later task) writes login/lockout/etc.
+--          events through the Supabase service-role client — a direct DML
+--          path, not a SECURITY DEFINER function, so it genuinely needs the
+--          grant. service_role still never gets UPDATE or DELETE on either
+--          table.
+--      service_role matters here because it is NOT a passive default: on a
+--      real Supabase project every newly created public-schema table starts
+--      with service_role already holding full DML (see
+--      20250101000008_grants.sql's ALTER DEFAULT PRIVILEGES), and service_role
+--      is BYPASSRLS, so the RLS policies below cannot backstop it — the
+--      REVOKEs below are the only thing between service_role (the identity
+--      every admin-client path in this codebase runs as) and the ability to
+--      tamper with the trail. Omitting service_role from the REVOKE, or
+--      REVOKing both tables identically, would silently leave that door open.
+--      That, not a trigger, is what makes the trail tamper-resistant against
+--      ordinary application-role privileges: nobody holding anon,
+--      authenticated, or service_role privileges can forge, edit, or erase
+--      history through a direct DML statement — only append via the audited
+--      paths above.
+--      Caveat this does NOT cover: the application's own transactional write
+--      path (lib/db/tx.ts, via DATABASE_URL) connects as the `postgres` OWNER
+--      role, which grants don't meaningfully constrain — an owner can always
+--      re-grant itself privileges or drop the table. That's total database
+--      compromise, a different (and separate) concern from a compromised or
+--      buggy application-role path, and not something a GRANT/REVOKE can fix.
 --
 -- Belongs to the new `qtx-ops-platform` project (see the sibling
 -- 20260718000000_platform_rbac.sql header for why this directory holds both the
@@ -47,20 +73,28 @@ CREATE INDEX auth_event_user_idx ON auth_event(user_id, occurred_at DESC);
 CREATE INDEX auth_event_type_idx ON auth_event(event_type, occurred_at DESC);
 
 -- ---------------------------------------------------------------------------
--- No role — not public, not anon, not authenticated — may INSERT, UPDATE, or
--- DELETE either audit table directly. Writes reach these tables through
--- exactly two paths, neither of which needs (or should have) a direct grant:
--- fn_audit() below runs SECURITY DEFINER, so it writes audit_log with the
--- function owner's privileges regardless of the calling role's own grants;
--- auth_event is written by recordAuthEvent() through the Supabase
--- service-role client, which likewise bypasses both grants and RLS.
--- `authenticated` therefore gets SELECT only — no INSERT, no UPDATE, no
--- DELETE. That is what makes the trail tamper-resistant: nobody holding
--- ordinary application privileges can forge an entry, edit one, or erase
--- history; they can only append to it via the audited code paths above.
+-- audit_log: no role — not PUBLIC, not anon, not authenticated, and not
+-- service_role either — may INSERT, UPDATE, or DELETE. fn_audit() below runs
+-- SECURITY DEFINER, so it writes audit_log with the function owner's
+-- privileges regardless of the calling role's own grants; no write grant is
+-- needed by anyone for that path to keep working. `authenticated` and
+-- `service_role` get SELECT only.
+REVOKE ALL ON audit_log FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON audit_log TO authenticated, service_role;
+
+-- auth_event: same lockdown, except service_role additionally gets INSERT —
+-- recordAuthEvent() (a later task) writes through the Supabase service-role
+-- client, a direct DML path that (unlike audit_log's SECURITY DEFINER
+-- trigger) genuinely needs a grant to work. service_role still never gets
+-- UPDATE or DELETE: once written, an auth event is as immutable as an
+-- audit_log row. That is what makes both trails tamper-resistant: nobody
+-- holding ordinary application privileges — including service_role — can
+-- forge an entry, edit one, or erase history; they can only append to it via
+-- the audited code paths above.
+REVOKE ALL ON auth_event FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON auth_event TO authenticated;
+GRANT SELECT, INSERT ON auth_event TO service_role;
 -- ---------------------------------------------------------------------------
-REVOKE ALL ON audit_log, auth_event FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON audit_log, auth_event TO authenticated;
 
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth_event ENABLE ROW LEVEL SECURITY;
@@ -136,6 +170,14 @@ BEGIN
     'CREATE TRIGGER trg_audit_%1$I AFTER INSERT OR UPDATE OR DELETE ON %1$I
      FOR EACH ROW EXECUTE FUNCTION fn_audit()', p_table);
 END $$;
+
+-- One-time migration-setup function (attaches the four audit triggers below) — no
+-- REST client should ever call it. Follows the same pattern as
+-- 20260706070156_function_execute_hardening.sql: revoke the PUBLIC default plus the
+-- explicit anon/authenticated grantees; service_role keeps EXECUTE via the explicit
+-- ACL entry it already holds from 20250101000008_grants.sql's ALTER DEFAULT
+-- PRIVILEGES, so calling it below (as the migration-applying owner) is unaffected.
+REVOKE EXECUTE ON FUNCTION fn_attach_audit(text) FROM PUBLIC, anon, authenticated;
 
 SELECT fn_attach_audit(t) FROM unnest(ARRAY[
   'role','role_permission','app_user','user_permission_override'

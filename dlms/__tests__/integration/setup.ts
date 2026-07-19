@@ -50,11 +50,20 @@ async function migratePlatformSchema() {
     if (rows[0].reg) return // already migrated by an earlier setup() run against this container
 
     // The platform migrations GRANT/REVOKE against Supabase's platform-provisioned
-    // `anon`/`authenticated` roles, same as every pre-existing DLMS migration in
-    // this directory — on a real Supabase project those roles always already
-    // exist. The bare postgres:15-alpine test container has neither, so the test
-    // harness stands in minimal equivalents here rather than teaching the
-    // migration itself to special-case a non-Supabase environment.
+    // `anon`/`authenticated`/`service_role` roles, same as every pre-existing DLMS
+    // migration in this directory — on a real Supabase project those roles always
+    // already exist. The bare postgres:15-alpine test container has none of them,
+    // so the test harness stands in minimal equivalents here rather than teaching
+    // the migration itself to special-case a non-Supabase environment.
+    //
+    // service_role additionally gets BYPASSRLS: that is a real, load-bearing
+    // property of Supabase's service_role (see this migration's own header comment
+    // and 20260710120100_rls_defense_in_depth.sql's "the app talks to Postgres as
+    // service_role, bypasses RLS") — every admin-client path in this codebase runs
+    // as service_role and never gets blocked by RLS. Without it here, a service_role
+    // INSERT that a REAL Supabase project allows (recordAuthEvent() on auth_event)
+    // would instead fail on a ROW-level-security violation in this harness, masking
+    // the actual property under test (the table-level GRANT).
     await client.query(`
       DO $$
       BEGIN
@@ -64,7 +73,29 @@ async function migratePlatformSchema() {
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
           CREATE ROLE authenticated NOLOGIN;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+          CREATE ROLE service_role NOLOGIN BYPASSRLS;
+        END IF;
       END $$;
+    `)
+
+    // Reproduce this repo's real default-privilege bootstrap (mirrors
+    // 20250101000008_grants.sql:20-24) BEFORE applying any migration below. On a
+    // real Supabase project every public-schema table is born with these grants
+    // already standing, including audit_log/auth_event — that pre-existing grant
+    // is exactly what platform_audit's REVOKE statements claw back. Skip this step
+    // and the harness proves nothing: `authenticated`/`service_role` would never
+    // have held a grant on audit_log in the first place, so deleting the REVOKE
+    // line entirely would leave every test green — the suite would be proving the
+    // absence of a grant, not the presence of a revoke, and the exact class of
+    // regression (Defect 1: service_role left un-revoked) would ship undetected
+    // again. ALTER DEFAULT PRIVILEGES only binds tables the SAME role later
+    // creates, so this must run on this same `client` connection (postgres) before
+    // the migration files below run their CREATE TABLE statements as that role.
+    await client.query(`
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated, service_role;
     `)
 
     const dir = join(process.cwd(), 'supabase/migrations')
