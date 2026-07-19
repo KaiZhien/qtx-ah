@@ -55,6 +55,7 @@ export type LegacyDevice = {
   build_date: Date | null
   ship_date: Date | null
   created_at: Date
+  deleted_at: Date | null
 }
 
 export type PlatformDevice = {
@@ -76,6 +77,7 @@ export type PlatformDevice = {
   created_at: Date
   created_by: string
   updated_by: string
+  deleted_at: Date | null
 }
 
 /** Matches the trigger-maintained normalization: lowercase, strip spaces and dashes. */
@@ -122,6 +124,13 @@ const mapPhase = (legacy: string | null): string | null =>
  * needs_data_review = true rather than split into N devices. Splitting would
  * invent device identities the business never assigned, and the cutover must not
  * block on data cleansing (spec §15) — the flag becomes an admin cleanup queue.
+ *
+ * deleted_at is carried verbatim, not filtered out and not reset to NULL. A
+ * legacy row's soft-delete state and its audit trail (which migrateAuditLog
+ * copies unconditionally, including any "soft_delete" action) must agree on
+ * the platform side the same way they agreed on the legacy side — inserting
+ * a soft-deleted legacy device as live would leave a device whose history
+ * says "deleted" sitting in every live query and count.
  */
 export function mapDeviceRow(
   row: LegacyDevice, variantIds: Record<string, string>, actorId: string,
@@ -149,6 +158,7 @@ export function mapDeviceRow(
     created_at: row.created_at,
     created_by: actorId,
     updated_by: actorId,
+    deleted_at: row.deleted_at,
   }
 }
 
@@ -214,7 +224,7 @@ async function loadActorMapByEmail(
 }
 
 /** Name fn_attach_audit('device') gives the trigger (20260718000001_platform_audit.sql:170). */
-const DEVICE_AUDIT_TRIGGER = 'trg_audit_device'
+export const DEVICE_AUDIT_TRIGGER = 'trg_audit_device'
 
 /**
  * Migrates device rows in batches of BATCH_SIZE ordered by (created_at, id) —
@@ -228,15 +238,25 @@ const DEVICE_AUDIT_TRIGGER = 'trg_audit_device'
  * ON CONFLICT (id) DO NOTHING makes the whole migration re-runnable: a second
  * run after fixing STATUS_MAP only inserts what's still missing.
  *
- * trg_audit_device is disabled for the duration of this batch loop. Without
- * this, every INSERT below would ALSO fire fn_audit and manufacture a brand
- * new "insert" audit_log row (dated now(), attributed to whoever ran the
- * migration) for every device — a synthetic event that never happened,
- * sitting alongside the real history migrateAuditLog copies verbatim below.
- * That would double-count every device's audit trail and permanently break
- * reconcile.ts's audit_log row-count check. Re-enabled in the finally clause
- * regardless of outcome, and this must run OUTSIDE the batches' transactions
- * (ALTER TABLE is not something we want tied to a batch's commit/rollback).
+ * Each batch opens with `SET LOCAL session_replication_role = 'replica'`,
+ * which stops fn_audit (and every other user trigger, including
+ * trg_device_normalize — harmless here since device_sn_normalized is already
+ * computed in JS above) from firing on the INSERTs below. Without it, every
+ * migrated device would ALSO manufacture a brand-new "insert" audit_log row
+ * (dated now(), attributed to whoever ran the migration) alongside the real
+ * history migrateAuditLog copies verbatim below — double-counting every
+ * device's trail and breaking reconcile.ts's audit_log count check.
+ *
+ * This is a GUC, not DDL: SET LOCAL scopes it to the current transaction, so
+ * it is never a committed catalog change (unlike the previous
+ * `ALTER TABLE ... DISABLE TRIGGER`, which is auto-committed and persists
+ * until something re-enables it). COMMIT, ROLLBACK, or the process dying
+ * outright (SIGKILL/OOM/power loss) all leave trg_audit_device exactly as it
+ * was before this call — there is no window in which a crash can leave
+ * auditing off, and no `finally` needed to re-enable anything. Requires the
+ * connecting role to have permission to SET session_replication_role
+ * (superuser, or an explicit `GRANT SET ON PARAMETER` on PG15+) — see RB-07's
+ * prerequisites for the cutover-role note.
  */
 async function migrateDevices(
   legacyPool: Pool, platformPool: Pool, variantIds: Record<string, string>, actorId: string,
@@ -245,67 +265,92 @@ async function migrateDevices(
   let migrated = 0
   let cursor: { createdAt: Date; id: string } | null = null
 
-  await platformPool.query(`ALTER TABLE device DISABLE TRIGGER ${DEVICE_AUDIT_TRIGGER}`)
-  try {
-    for (;;) {
-      // sql/params are resolved BEFORE the call (rather than inlining the ternary as
-      // the call's argument) so the compiler doesn't have to jointly resolve this
-      // generic call's type together with `cursor`'s reassignment later in this same
-      // loop body — inlined, tsc reports rows as circularly self-referential (TS7022).
-      const sql: string = cursor
-        ? `SELECT id, device_sn, pcba_a_sn, product_name, model_no, status, phase,
-                  customer, destination, remarks, build_date, ship_date, created_at
-             FROM device WHERE (created_at, id) > ($1, $2)
-            ORDER BY created_at ASC, id ASC LIMIT $3`
-        : `SELECT id, device_sn, pcba_a_sn, product_name, model_no, status, phase,
-                  customer, destination, remarks, build_date, ship_date, created_at
-             FROM device ORDER BY created_at ASC, id ASC LIMIT $1`
-      const params: unknown[] = cursor ? [cursor.createdAt, cursor.id, BATCH_SIZE] : [BATCH_SIZE]
-      const { rows }: { rows: LegacyDevice[] } = await legacyPool.query<LegacyDevice>(sql, params)
-      if (rows.length === 0) break
+  for (;;) {
+    // sql/params are resolved BEFORE the call (rather than inlining the ternary as
+    // the call's argument) so the compiler doesn't have to jointly resolve this
+    // generic call's type together with `cursor`'s reassignment later in this same
+    // loop body — inlined, tsc reports rows as circularly self-referential (TS7022).
+    const sql: string = cursor
+      ? `SELECT id, device_sn, pcba_a_sn, product_name, model_no, status, phase,
+                customer, destination, remarks, build_date, ship_date, created_at, deleted_at
+           FROM device WHERE (created_at, id) > ($1, $2)
+          ORDER BY created_at ASC, id ASC LIMIT $3`
+      : `SELECT id, device_sn, pcba_a_sn, product_name, model_no, status, phase,
+                customer, destination, remarks, build_date, ship_date, created_at, deleted_at
+           FROM device ORDER BY created_at ASC, id ASC LIMIT $1`
+    const params: unknown[] = cursor ? [cursor.createdAt, cursor.id, BATCH_SIZE] : [BATCH_SIZE]
+    const { rows }: { rows: LegacyDevice[] } = await legacyPool.query<LegacyDevice>(sql, params)
+    if (rows.length === 0) break
 
-      const mapped: PlatformDevice[] = []
-      for (const row of rows) {
-        try {
-          mapped.push(mapDeviceRow(row, variantIds, actorId))
-        } catch (err) {
-          failures.push({ id: row.id, status: row.status, error: (err as Error).message })
-        }
+    const mapped: PlatformDevice[] = []
+    for (const row of rows) {
+      try {
+        mapped.push(mapDeviceRow(row, variantIds, actorId))
+      } catch (err) {
+        failures.push({ id: row.id, status: row.status, error: (err as Error).message })
       }
-
-      if (mapped.length > 0) {
-        // rowCount (not mapped.length) is what's actually summed: ON CONFLICT DO
-        // NOTHING returns rowCount 0 for a row already present, so a re-run after
-        // fixing STATUS_MAP reports only what it newly inserted, not every row it
-        // merely re-attempted — the runtime/count this produces is the first real
-        // data point for the week-10 cutover window and must not overstate itself.
-        await withTransaction(actorId, async (tx) => {
-          for (const d of mapped) {
-            const result = await tx.query(
-              `INSERT INTO device (
-                 id, device_sn, device_sn_normalized, pcba_a_sn_legacy, variant_id, status,
-                 phase, product_name, model_no, customer, destination, remarks,
-                 build_date, ship_date, needs_data_review, created_at, created_by, updated_by
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-               ON CONFLICT (id) DO NOTHING`,
-              [d.id, d.device_sn, d.device_sn_normalized, d.pcba_a_sn_legacy, d.variant_id, d.status,
-                d.phase, d.product_name, d.model_no, d.customer, d.destination, d.remarks,
-                d.build_date, d.ship_date, d.needs_data_review, d.created_at, d.created_by, d.updated_by],
-            )
-            migrated += result.rowCount ?? 0
-          }
-        })
-      }
-
-      const last: LegacyDevice = rows[rows.length - 1]
-      cursor = { createdAt: last.created_at, id: last.id }
-      if (rows.length < BATCH_SIZE) break
     }
-  } finally {
-    await platformPool.query(`ALTER TABLE device ENABLE TRIGGER ${DEVICE_AUDIT_TRIGGER}`)
+
+    if (mapped.length > 0) {
+      // rowCount (not mapped.length) is what's actually summed: ON CONFLICT DO
+      // NOTHING returns rowCount 0 for a row already present, so a re-run after
+      // fixing STATUS_MAP reports only what it newly inserted, not every row it
+      // merely re-attempted — the runtime/count this produces is the first real
+      // data point for the week-10 cutover window and must not overstate itself.
+      await withTransaction(actorId, async (tx) => {
+        await tx.query(`SET LOCAL session_replication_role = 'replica'`)
+        for (const d of mapped) {
+          const result = await tx.query(
+            `INSERT INTO device (
+               id, device_sn, device_sn_normalized, pcba_a_sn_legacy, variant_id, status,
+               phase, product_name, model_no, customer, destination, remarks,
+               build_date, ship_date, needs_data_review, created_at, created_by, updated_by,
+               deleted_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+             ON CONFLICT (id) DO NOTHING`,
+            [d.id, d.device_sn, d.device_sn_normalized, d.pcba_a_sn_legacy, d.variant_id, d.status,
+              d.phase, d.product_name, d.model_no, d.customer, d.destination, d.remarks,
+              d.build_date, d.ship_date, d.needs_data_review, d.created_at, d.created_by, d.updated_by,
+              d.deleted_at],
+          )
+          migrated += result.rowCount ?? 0
+        }
+      })
+    }
+
+    const last: LegacyDevice = rows[rows.length - 1]
+    cursor = { createdAt: last.created_at, id: last.id }
+    if (rows.length < BATCH_SIZE) break
   }
 
   return { migrated, failures }
+}
+
+/**
+ * Defense in depth for Issue 1: migrateDevices' SET LOCAL suppression never
+ * touches trg_audit_device's catalog state, so in the normal case this check
+ * is a formality — but it runs unconditionally (including when migration
+ * itself failed, see main()) to catch a stale disable left by a prior run of
+ * the old ALTER-TABLE-based approach, or any other out-of-band cause. 'O'
+ * (fires in the default/origin session mode) and 'A' (fires always) are the
+ * two enabled states; 'D' (disabled) or 'R' (replica-only — invisible in the
+ * origin mode the application runs in) both mean device writes are not being
+ * audited right now. reconcile.ts runs the identical check independently,
+ * for whenever this process isn't the one to catch it.
+ */
+export async function assertAuditTriggerEnabled(platformPool: Pool): Promise<void> {
+  const { rows } = await platformPool.query<{ tgenabled: string }>(
+    `SELECT tgenabled FROM pg_trigger WHERE tgname = $1 AND NOT tgisinternal`,
+    [DEVICE_AUDIT_TRIGGER],
+  )
+  const state = rows[0]?.tgenabled
+  if (state !== 'O' && state !== 'A') {
+    throw new Error(
+      `${DEVICE_AUDIT_TRIGGER} is not enabled (tgenabled=${state ?? 'MISSING'}) after ` +
+      `migrate_demo.ts ran — device audit trail may be silently OFF. Investigate before ` +
+      `running anything else against this database. Re-enable with: ` +
+      `ALTER TABLE device ENABLE TRIGGER ${DEVICE_AUDIT_TRIGGER};`)
+  }
 }
 
 /**
@@ -386,6 +431,12 @@ export async function main(): Promise<void> {
   const legacyPool = new Pool({ connectionString: legacyUrl, max: 5 })
   const platformPool = new Pool({ connectionString: platformUrl, max: 5 })
 
+  // Captured rather than left to propagate through a bare try/finally so that
+  // assertAuditTriggerEnabled below always runs — including when the body
+  // throws — without its own (expected-passing) check masking the real
+  // failure. If both fail, the body's error is what gets surfaced; the
+  // trigger-check failure is still logged, never silently dropped.
+  let thrown: unknown = null
   try {
     const variantIds = await loadVariantIds(platformPool)
     const superAdmin = await platformPool.query<{ id: string }>(
@@ -410,10 +461,24 @@ export async function main(): Promise<void> {
     if (failures.length > 0) {
       process.exitCode = 1
     }
-  } finally {
-    await legacyPool.end()
-    await platformPool.end()
+  } catch (err) {
+    thrown = err
   }
+
+  // Runs unconditionally, success or failure above (see Issue 1): a hard
+  // crash mid-batch is exactly the scenario this whole fix targets, and
+  // verifying only on the happy path would miss it.
+  try {
+    await assertAuditTriggerEnabled(platformPool)
+  } catch (auditErr) {
+    console.error(auditErr)
+    if (!thrown) thrown = auditErr
+  }
+
+  await legacyPool.end()
+  await platformPool.end()
+
+  if (thrown) throw thrown
 }
 
 // Only run main() when this file is executed directly (npm run migrate:demo),

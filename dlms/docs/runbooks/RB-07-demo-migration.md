@@ -8,17 +8,26 @@ any way (see Safety below).
 
 ## Status of this runbook
 
-Written 2026-07-20 alongside the migration code (Task 14). **The actual run
-against real staging/demo data has NOT happened yet** — the platform schema
-is not yet applied to any cloud project, and this environment has no real
-DLMS credentials. The mapping functions and the runner/reconcile scripts are
-verified by:
+Written 2026-07-20 alongside the migration code (Task 14); updated the same
+day after a review pass found two data-integrity defects (trigger-disable
+residue risk, soft-deleted legacy rows resurfacing as live — see "Fix pass"
+in `.superpowers/sdd/task-14-report.md` for the full writeup). **The actual
+run against real staging/demo data has NOT happened yet** — the platform
+schema is not yet applied to any cloud project, and this environment has no
+real DLMS credentials. The mapping functions and the runner/reconcile scripts
+are verified by:
 
-- 11 automated tests (`__tests__/integration/migrateDemo.test.ts`) covering
-  `mapStatus` (live codes, drifted seed codes, throws on unknown) and
-  `mapDeviceRow` (UUID preservation, bilingual verbatim text, variant
-  derivation, ranged-serial flagging, no-serial flagging, clean-row
-  non-flagging, normalized search column).
+- 19 automated tests (`__tests__/integration/migrateDemo.test.ts`): `mapStatus`
+  (live codes, drifted seed codes, the two remaining terminal codes including
+  the non-obvious `Lost` → `scrapped`, throws on unknown), `mapDeviceRow`
+  (UUID preservation, bilingual verbatim text, variant derivation,
+  ranged-serial flagging, no-serial flagging, clean-row non-flagging,
+  normalized search column, every legacy phase → platform code, unknown phase
+  → `null`, `deleted_at` carried verbatim), plus two DB-backed end-to-end
+  suites against the same Docker Postgres container: a soft-deleted legacy
+  device migrates still-deleted and stays out of `listDevices`, and
+  `trg_audit_device` stays enabled both after an ordinary run and after a
+  genuine mid-batch Postgres failure (forced unique-constraint violation).
 - A manual local end-to-end run against a seeded stand-in "legacy" schema in
   the same Docker Postgres container the integration suite uses (see
   "What was actually verified locally" below) — **not a run against any real
@@ -58,6 +67,17 @@ migrations are applied to cloud):
 4. Confirm the platform project has at least one `super_admin` `app_user` row
    — the migration attributes `created_by`/`updated_by` on migrated devices to
    the earliest such user. (`supabase/seed/platform_seed.sql` seeds one.)
+5. **Confirm the `DATABASE_URL` role can `SET session_replication_role`.**
+   `migrateDevices` runs `SET LOCAL session_replication_role = 'replica'`
+   inside each batch's transaction to suppress `trg_audit_device` (see Design
+   notes) — this GUC is superuser-only by default. Supabase's `postgres` role
+   has it. If the cutover ever runs as a role WITHOUT that privilege (e.g. a
+   narrowly-scoped migration role on a non-Supabase target), it needs either
+   superuser, an equivalent role (`rds_superuser` and similar managed-Postgres
+   analogues), or an explicit `GRANT SET ON PARAMETER session_replication_role
+   TO <role>` (PG15+). Without one of these, `migrateDevices` fails outright
+   on the first batch (a loud, immediate failure — not a silent one) rather
+   than falling back to disabling the trigger.
 
 ## Run procedure
 
@@ -101,6 +121,7 @@ mapping failures (fix `STATUS_MAP`, re-run `migrate:demo`, re-run
 | `sha256(device_sn \|\| pcba_a_sn)`, sorted | Catches silent corruption/truncation even when counts match |
 | `needs_data_review` count | Informational only — no legacy-side equivalent to compare against |
 | `audit_log` row count + `max(occurred_at)`, scoped to `table_name = 'device'` | Scoped deliberately — legacy `audit_log` also covers tables this task never migrates, and the platform `audit_log` already carries its own seed-time entries for role/permission/app_user rows; an unscoped comparison would never match for reasons unrelated to this migration |
+| `trg_audit_device` enabled | Queries `pg_trigger.tgenabled` directly; fails unless it is `O` or `A`. Independent of migrate_demo.ts's own internal check (see Design notes) — reconcile runs as its own process, possibly long after migrate_demo exited, so it re-verifies from scratch rather than trusting that invariant held |
 
 ## Design notes (why the code does what it does)
 
@@ -115,14 +136,29 @@ mapping failures (fix `STATUS_MAP`, re-run `migrate:demo`, re-run
   `pcba_a_sn_legacy`, flagged `needs_data_review = true`. Splitting would
   invent device identities the business never assigned; the cutover must not
   block on data cleansing.
-- **`trg_audit_device` is disabled for the duration of the device-migration
-  batch loop, then re-enabled.** Without this, every migrated INSERT would
-  also fire the platform's own `fn_audit` trigger and manufacture a brand-new
-  "insert" audit_log row (dated at migration time, not the device's real
-  history) *alongside* the real history `migrateAuditLog` copies verbatim —
+- **Each device batch opens with `SET LOCAL session_replication_role =
+  'replica'`, not `ALTER TABLE ... DISABLE/ENABLE TRIGGER`.** Without
+  suppressing `trg_audit_device`, every migrated INSERT would also fire the
+  platform's own `fn_audit` trigger and manufacture a brand-new "insert"
+  audit_log row (dated at migration time, not the device's real history)
+  *alongside* the real history `migrateAuditLog` copies verbatim —
   double-counting every device's trail and permanently breaking reconcile's
-  audit_log count check. This was caught by the local end-to-end run, not by
-  a written test (see below).
+  audit_log count check (caught by the local end-to-end run, not by a written
+  test). The first version of this fix used `ALTER TABLE ... DISABLE TRIGGER`
+  around the whole batch loop, re-enabling in a `finally` — a since-fixed
+  review finding: that DDL auto-commits and persists in the catalog, so a hard
+  crash (SIGKILL/OOM/power loss) between the DISABLE and the `finally`'s
+  ENABLE — or a failure of the ENABLE query itself — left `trg_audit_device`
+  disabled on the live `device` table with no verification, silently turning
+  off device auditing. `SET LOCAL` is a session GUC, not DDL: scoped to the
+  batch's own transaction, it is never a committed catalog change, so COMMIT,
+  ROLLBACK, or the process dying outright all leave the trigger exactly as it
+  was — there is no crash window and no `finally` to get wrong. Both
+  `migrate_demo.ts`'s `main()` (unconditionally, including on the error path)
+  and `reconcile.ts` independently re-verify `trg_audit_device`'s
+  `tgenabled` afterward regardless, as a residue check that would catch a
+  disabled trigger from any cause, not just this one. See the prerequisites
+  section above for the privilege this requires.
 - **Legacy `phase` values are proper-case English** (`Production`,
   `Validation`, `Rework`, `Pilot`, `EOL` — `dlms/supabase/seed.sql`); **the
   platform's ported vocabulary is snake_case** (`production`, ...,
@@ -135,6 +171,18 @@ mapping failures (fix `STATUS_MAP`, re-run `migrate:demo`, re-run
   only and has no UI consumer until week 3 (CLAUDE.md), so an unrecognized
   value degrades to `NULL` rather than blocking migration of the row's
   serial/status/audit history over non-load-bearing metadata.
+- **`deleted_at` is carried verbatim, never filtered out and never reset to
+  `NULL`.** A since-fixed review finding: the runner originally selected
+  `FROM device` with no `deleted_at` filter, and `LegacyDevice`/
+  `PlatformDevice`/`mapDeviceRow` didn't carry the column at all — so a
+  soft-deleted legacy device inserted on the platform as `deleted_at = NULL`
+  (live), while `migrateAuditLog` copied its history — including any
+  `soft_delete` action — unchanged. The result was a device whose audit trail
+  said "deleted" sitting live in every query and count, undetected by
+  `reconcile.ts` (which never compared `deleted_at`). Spec D21's continuity
+  requirement covers the soft-delete state itself, not just the row's other
+  fields: a deleted device's row and its trail must agree on the platform
+  side the same way they agreed on the legacy side.
 - **`migrateAuditLog` copies only `table_name = 'device'` rows.** Legacy
   `audit_log` also covers tables Task 14 never migrates (`warranty`,
   `extracted_device_draft`, `filter_presets`, ...); their `row_id` values
@@ -224,6 +272,16 @@ migration: the `trg_audit_device` double-counting issue and the legacy
 `phase` vocabulary drift (§ Design notes above) — neither is exercised by the
 brief's 11 provided test cases, which only cover `mapStatus`/`mapDeviceRow`
 in isolation from the schema's triggers and constraints.
+
+**A subsequent review pass (same day) found two more defects in this first
+version** — the trigger-disable crash-residue risk and the soft-deleted-row
+resurfacing issue, both described in the Design notes above — fixed the same
+way (local end-to-end proof against a throwaway schema in this same Docker
+container, plus new automated DB-backed tests). See
+`.superpowers/sdd/task-14-report.md`, section "Fix pass — trigger residue +
+soft-delete fidelity", for that proof in full, including a forced
+mid-transaction failure that confirms `trg_audit_device` cannot be left
+disabled by a crash.
 
 ## Rollback
 

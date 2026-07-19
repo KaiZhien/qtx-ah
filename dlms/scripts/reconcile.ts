@@ -8,7 +8,7 @@
 import { Pool } from 'pg'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { mapStatus } from '@/scripts/migrate_demo'
+import { mapStatus, DEVICE_AUDIT_TRIGGER } from '@/scripts/migrate_demo'
 
 /**
  * Prints one comparison line and returns whether it matched. Threaded through
@@ -127,6 +127,29 @@ async function reconcileAuditLog(legacyPool: Pool, platformPool: Pool): Promise<
   return countOk && maxAtOk
 }
 
+/**
+ * Defense in depth for Issue 1 (trg_audit_device residue). migrate_demo.ts's
+ * device-batch suppression is transaction-scoped (SET LOCAL
+ * session_replication_role) and so cannot itself leave this disabled — but
+ * reconcile runs as an independent process, potentially long after
+ * migrate_demo exited and by a different operator, so it re-checks from
+ * scratch rather than trusting that invariant held. 'O' (fires in the
+ * default/origin session mode) and 'A' (fires always) are the two enabled
+ * states; 'D' (disabled) or 'R' (replica-only, i.e. invisible in the origin
+ * mode the application runs in) both mean device writes are not being
+ * audited right now — either one fails reconcile.
+ */
+async function reconcileAuditTriggerEnabled(platformPool: Pool): Promise<boolean> {
+  const { rows } = await platformPool.query<{ tgenabled: string }>(
+    `SELECT tgenabled FROM pg_trigger WHERE tgname = $1 AND NOT tgisinternal`,
+    [DEVICE_AUDIT_TRIGGER],
+  )
+  const state = rows[0]?.tgenabled ?? 'MISSING'
+  const ok = state === 'O' || state === 'A'
+  console.log(`${ok ? 'OK      ' : 'MISMATCH'}  ${DEVICE_AUDIT_TRIGGER} tgenabled: expected=O-or-A actual=${state}`)
+  return ok
+}
+
 export async function reconcile(): Promise<void> {
   const legacyUrl = process.env.LEGACY_DATABASE_URL
   const platformUrl = process.env.DATABASE_URL
@@ -143,7 +166,8 @@ export async function reconcile(): Promise<void> {
     const serialHashOk = await reconcileSerialHash(legacyPool, platformPool)
     await reportNeedsReviewCount(platformPool)
     const auditLogOk = await reconcileAuditLog(legacyPool, platformPool)
-    ok = deviceCountOk && statusCountOk && serialHashOk && auditLogOk
+    const auditTriggerOk = await reconcileAuditTriggerEnabled(platformPool)
+    ok = deviceCountOk && statusCountOk && serialHashOk && auditLogOk && auditTriggerOk
   } finally {
     await legacyPool.end()
     await platformPool.end()
