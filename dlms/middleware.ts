@@ -1,7 +1,24 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
+const PUBLIC_PATHS = ['/login', '/auth', '/unauthorized', '/api/health']
+
+/**
+ * Refreshes the Supabase session on every route, then coarse-gates the
+ * unauthenticated ones.
+ *
+ * The refresh runs unconditionally — including on public paths — so a signed-in
+ * user browsing to /login still gets its cookies renewed; scoping the refresh
+ * to protected routes only would silently break continuity for everyone else.
+ *
+ * The gate deliberately does NOT check permissions. Middleware runs on the edge
+ * without database access, and a permission decision made here would be a second
+ * source of truth competing with authorize(). Pages and services do the real
+ * check; this just keeps anonymous traffic off authenticated routes.
+ */
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -24,7 +41,15 @@ export async function middleware(request: NextRequest) {
   )
 
   // Refresh the session so it doesn't expire mid-visit
-  await supabase.auth.getUser()
+  const { data } = await supabase.auth.getUser()
+
+  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p))
+  if (!isPublic && !data.user) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/login'
+    url.searchParams.set('next', pathname)
+    return NextResponse.redirect(url)
+  }
 
   return supabaseResponse
 }
