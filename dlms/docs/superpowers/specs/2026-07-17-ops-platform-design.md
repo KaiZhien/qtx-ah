@@ -800,6 +800,11 @@ Parallel-work pattern each week: AI agents implement module CRUD + tests from th
 
 D1–D38 recorded 2026-07-17 (discovery interview): see §2 and the tracker; the load-bearing ones — D9/D10 lean 6-role DB-driven RBAC (revisit: >150 users or per-team confidentiality) · D12 no field-level masking beyond Finance (revisit: external users, or salary-like data arrives) · D14 no doc generation (revisit: accounting software adopted) · D18 Finance = sales invoices only · D20/D21 freeze-cutover with total fidelity · D23 10-status lifecycle · D24/D25 mixed serialization + unit-level inventory · D26 images+PDF only · D31 99.5%/RTO 4 h/RPO 24 h · D32 **Supabase stays; AWS around it** (revisit: Supabase pricing/regional issues, or compliance demands VPC-interior DB — exit = pg_dump→RDS ≈ 1 day) · D33 Fargate+ALB · D35 MFA for privileged · D36 export ceremony · D37 keep everything · D38 Sep-30/Jul-31 deadlines, tasks+admin+sections in week 2.
 
+- **D39 (2026-07-20): pg transaction write-path VALIDATED.** withTransaction proves
+  atomic rollback across statements and GUC-based audit attribution with no actor
+  leakage across pooled connections (`__tests__/integration/transaction.test.ts`).
+  Risk R-4 closed; the RPC fallback is not needed.
+
 ## 20. Open questions
 
 1. Domain name for the platform (needed week 1 for ACM/Route 53).
