@@ -96,7 +96,7 @@ export function TaskForm({
         <div>
           <Label className="mb-1.5 block">Priority</Label>
           <Select value={priority} onValueChange={(v) => setPriority(v as TaskFormValues['priority'])}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Priority"><SelectValue /></SelectTrigger>
             <SelectContent>
               {PRIORITIES.map((p) => (
                 <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>
@@ -116,7 +116,7 @@ export function TaskForm({
         <div>
           <Label className="mb-1.5 block">Assignee</Label>
           <Select value={assigneeId || UNASSIGNED} onValueChange={(v) => setAssigneeId(v === UNASSIGNED ? '' : v)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Assignee"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
               {assignableUsers.map((u) => (
