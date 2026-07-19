@@ -15,7 +15,7 @@ export function WarrantyBanner({ count }: WarrantyBannerProps) {
       <AlertDescription>
         {count} device{count !== 1 ? 's' : ''} {count !== 1 ? 'have' : 'has'} warranty expiring within the next 7 days.{' '}
         <Link
-          href="/devices?sort=warranty_expiry&dir=asc"
+          href="/legacy/devices?sort=warranty_expiry&dir=asc"
           className="underline font-medium hover:opacity-80"
         >
           Sort by expiry date

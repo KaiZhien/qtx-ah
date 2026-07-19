@@ -55,7 +55,7 @@ import {
   assignDeviceAction,
   unassignDeviceAction,
   addServiceEventAction,
-} from '@/app/devices/actions'
+} from '@/app/legacy/devices/actions'
 import type { DeviceInput } from '@/lib/types'
 
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
@@ -99,7 +99,7 @@ describe('createDeviceBatchAction', () => {
     createDevice.mockResolvedValue({ id: 'dev-single' })
     await expect(
       createDeviceBatchAction(baseInput({ pcba_a_sn: 'dev100', pcba_b_sn: null })),
-    ).rejects.toThrow('NEXT_REDIRECT:/devices/dev-single')
+    ).rejects.toThrow('NEXT_REDIRECT:/legacy/devices/dev-single')
 
     expect(createDevice).toHaveBeenCalledTimes(1)
     expect(createDevice).toHaveBeenCalledWith(
@@ -107,8 +107,8 @@ describe('createDeviceBatchAction', () => {
       'eng-1',
       'engineer',
     )
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
-    expect(redirect).toHaveBeenCalledWith('/devices/dev-single')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
+    expect(redirect).toHaveBeenCalledWith('/legacy/devices/dev-single')
   })
 
   it('range: expands "DEV100 to 102" into 3 devices then redirects with count', async () => {
@@ -116,7 +116,7 @@ describe('createDeviceBatchAction', () => {
     createDevice.mockResolvedValue({ id: 'ignored' })
     await expect(
       createDeviceBatchAction(baseInput({ pcba_a_sn: 'DEV100 to 102', pcba_b_sn: null })),
-    ).rejects.toThrow('NEXT_REDIRECT:/devices?batchCreated=3')
+    ).rejects.toThrow('NEXT_REDIRECT:/legacy/devices?batchCreated=3')
 
     expect(createDevice).toHaveBeenCalledTimes(3)
     const serials = createDevice.mock.calls.map((c) => c[0].pcba_a_sn)
@@ -128,8 +128,8 @@ describe('createDeviceBatchAction', () => {
       expect(call[1]).toBe('eng-1')
       expect(call[2]).toBe('engineer')
     }
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
-    expect(redirect).toHaveBeenCalledWith('/devices?batchCreated=3')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
+    expect(redirect).toHaveBeenCalledWith('/legacy/devices?batchCreated=3')
   })
 
   it('propagates pairSerialRanges error for ambiguous notation (no create)', async () => {
@@ -168,7 +168,7 @@ describe('updateDeviceAction', () => {
     updateDevice.mockResolvedValue({ id: 'd1', version: 4 })
     const out = await updateDeviceAction('d1', { status: 'shipped' }, 3)
     expect(updateDevice).toHaveBeenCalledWith('d1', { status: 'shipped' }, 3, 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/d1')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/d1')
     expect(out).toEqual({ id: 'd1', version: 4 })
   })
 })
@@ -191,10 +191,10 @@ describe('softDeleteAction', () => {
   it('admin: soft-deletes, revalidates, redirects to /devices', async () => {
     currentUser = ADMIN
     softDeleteDevice.mockResolvedValue(undefined)
-    await expect(softDeleteAction('d1')).rejects.toThrow('NEXT_REDIRECT:/devices')
+    await expect(softDeleteAction('d1')).rejects.toThrow('NEXT_REDIRECT:/legacy/devices')
     expect(softDeleteDevice).toHaveBeenCalledWith('d1', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
-    expect(redirect).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
+    expect(redirect).toHaveBeenCalledWith('/legacy/devices')
   })
 })
 
@@ -218,7 +218,7 @@ describe('restoreDeviceAction', () => {
     restoreDevice.mockResolvedValue(undefined)
     const out = await restoreDeviceAction('d1', 2)
     expect(restoreDevice).toHaveBeenCalledWith('d1', 2, 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ ok: true })
   })
 
@@ -264,7 +264,7 @@ describe('createDeviceRowAction', () => {
     const input = baseInput()
     const out = await createDeviceRowAction(input)
     expect(createDevice).toHaveBeenCalledWith(input, 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ id: 'new-1' })
   })
 
@@ -290,7 +290,7 @@ describe('updateDeviceRowAction', () => {
     updateDevice.mockResolvedValue({ id: 'd1' })
     const out = await updateDeviceRowAction('d1', { status: 'shipped' }, 2)
     expect(updateDevice).toHaveBeenCalledWith('d1', { status: 'shipped' }, 2, 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ ok: true })
   })
 
@@ -335,7 +335,7 @@ describe('bulkChangeStatusAction', () => {
     expect(changeStatus).toHaveBeenCalledWith('a', 'shipped', 'p_old', 1, 'eng-1', 'engineer')
     // 'b' never reaches changeStatus (getDevice returned null)
     expect(changeStatus).not.toHaveBeenCalledWith('b', expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything())
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
   })
 
   it('null status falls back to current.status per device', async () => {
@@ -365,7 +365,7 @@ describe('bulkSoftDeleteAction', () => {
     const out = await bulkSoftDeleteAction([{ id: 'a', version: 1 }, { id: 'b', version: 2 }])
     expect(out).toEqual({ ok: true, deleted: 1, conflicts: ['b'] })
     expect(softDeleteDevice).toHaveBeenCalledWith('a', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
   })
 })
 
@@ -383,7 +383,7 @@ describe('assignDeviceAction / unassignDeviceAction', () => {
     assignDevice.mockResolvedValue(undefined)
     const out = await assignDeviceAction('d1', 'u2')
     expect(assignDevice).toHaveBeenCalledWith('d1', 'u2', 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/d1')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/d1')
     expect(out).toEqual({ ok: true })
   })
 
@@ -398,7 +398,7 @@ describe('assignDeviceAction / unassignDeviceAction', () => {
     unassignDevice.mockResolvedValue(undefined)
     const out = await unassignDeviceAction('d1', 'u2')
     expect(unassignDevice).toHaveBeenCalledWith('d1', 'u2', 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/d1')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/d1')
     expect(out).toEqual({ ok: true })
   })
 })
@@ -421,7 +421,7 @@ describe('addServiceEventAction', () => {
       'eng-1',
       'engineer',
     )
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/d1')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/d1')
     expect(out).toEqual({ ok: true })
   })
 

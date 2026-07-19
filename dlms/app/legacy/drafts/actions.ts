@@ -1,0 +1,22 @@
+'use server'
+import { promoteDraft, rejectDraft } from '@/lib/services/draftService'
+import { getCurrentUser } from '@/lib/auth/session'
+import { can, ACTIONS } from '@/lib/auth/permissions'
+import type { Role } from '@/lib/types'
+import { revalidatePath } from 'next/cache'
+
+export async function promoteDraftAction(id: string): Promise<string> {
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.CONFIRM_DRAFT)) throw new Error('Unauthorized')
+  const device = await promoteDraft(id, user.id, user.role as Role)
+  revalidatePath('/legacy/drafts')
+  revalidatePath('/legacy/devices')
+  return device.id
+}
+
+export async function rejectDraftAction(id: string): Promise<void> {
+  const user = await getCurrentUser()
+  if (!user || !can(user.role as Role, ACTIONS.CONFIRM_DRAFT)) throw new Error('Unauthorized')
+  await rejectDraft(id, user.id, user.role as Role)
+  revalidatePath('/legacy/drafts')
+}

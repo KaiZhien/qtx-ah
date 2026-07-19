@@ -11,8 +11,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { StatusBadge, PhaseBadge } from './DeviceStatusBadge'
 import { Search, Download, ChevronLeft, ChevronRight, Plus, Pencil, SlidersHorizontal, ChevronUp, ChevronDown, ChevronsUpDown, X, Bookmark, BookmarkPlus, Trash2, RotateCcw } from 'lucide-react'
-import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction, restoreDeviceAction } from '@/app/devices/actions'
-import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/devices/presets/actions'
+import { createDeviceRowAction, updateDeviceRowAction, bulkChangeStatusAction, bulkSoftDeleteAction, restoreDeviceAction } from '@/app/legacy/devices/actions'
+import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/legacy/devices/presets/actions'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { toast } from 'sonner'
 import type { DeviceRow, StatusOption, PhaseOption, DeviceInput } from '@/lib/types'
@@ -528,7 +528,7 @@ export function DeviceTable({
 
   function handleBulkExport() {
     const ids = Array.from(selectedIds).join(',')
-    window.location.href = `/devices/export?ids=${encodeURIComponent(ids)}`
+    window.location.href = `/legacy/devices/export?ids=${encodeURIComponent(ids)}`
     toast.success('Export started')
   }
 
@@ -539,7 +539,7 @@ export function DeviceTable({
     if (searchParams.get('phase')) params.set('phase', searchParams.get('phase')!)
     if (searchParams.get('customer')) params.set('customer', searchParams.get('customer')!)
     params.set('format', 'xlsx')
-    window.open(`/devices/export?${params.toString()}`, '_blank')
+    window.open(`/legacy/devices/export?${params.toString()}`, '_blank')
     toast.success('Excel export started')
   }
 
@@ -835,7 +835,7 @@ export function DeviceTable({
             </DropdownMenuContent>
           </DropdownMenu>
           <div className="ml-auto flex gap-2">
-            <Link href={`/devices/export?${searchParams.toString()}`}>
+            <Link href={`/legacy/devices/export?${searchParams.toString()}`}>
               <Button variant="outline" size="sm">
                 <Download className="h-4 w-4 mr-1" />Export CSV
               </Button>
@@ -1048,7 +1048,7 @@ export function DeviceTable({
                     />
                   </td>
                   <Td>
-                    <Link href={`/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
+                    <Link href={`/legacy/devices/${device.id}`} className="font-mono hover:underline text-blue-700">
                       {inlineCell?.id === device.id && inlineCell.field === 'device_sn' ? (
                         <Input
                           className="h-6 text-xs px-1 py-0 w-full"

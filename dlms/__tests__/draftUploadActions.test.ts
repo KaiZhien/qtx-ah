@@ -42,7 +42,7 @@ import {
   extractInvoiceAction,
   confirmInvoiceDeviceAction,
   saveDraftForReviewAction,
-} from '@/app/drafts/upload/actions'
+} from '@/app/legacy/drafts/upload/actions'
 import type { DeviceInput } from '@/lib/types'
 
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
@@ -156,7 +156,7 @@ describe('confirmInvoiceDeviceAction', () => {
       promoted_device_id: 'dev-9',
       reviewed_by: 'eng-1',
     })
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ id: 'dev-9' })
   })
 
@@ -189,7 +189,7 @@ describe('saveDraftForReviewAction', () => {
     })
     // save must NOT create a device
     expect(createDevice).not.toHaveBeenCalled()
-    expect(revalidatePath).toHaveBeenCalledWith('/drafts')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/drafts')
     expect(out).toEqual({ id: 'draft-77' })
   })
 

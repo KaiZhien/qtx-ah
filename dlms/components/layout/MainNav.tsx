@@ -32,19 +32,19 @@ function buildNav(role: Role): NavEntry[] {
   return [
     {
       type: 'link',
-      item: { label: 'Dashboard', href: '/' },
+      item: { label: 'Dashboard', href: '/legacy' },
     },
     {
       type: 'link',
-      item: { label: 'Devices', href: '/devices' },
+      item: { label: 'Devices', href: '/legacy/devices' },
     },
     {
       type: 'group',
       group: {
         label: 'Insights',
         items: [
-          { label: 'Analytics', href: '/analytics', gate: () => can(role, ACTIONS.VIEW_ANALYTICS) },
-          { label: 'Traceability', href: '/traceability', gate: () => can(role, ACTIONS.VIEW_ANALYTICS) },
+          { label: 'Analytics', href: '/legacy/analytics', gate: () => can(role, ACTIONS.VIEW_ANALYTICS) },
+          { label: 'Traceability', href: '/legacy/traceability', gate: () => can(role, ACTIONS.VIEW_ANALYTICS) },
         ],
       },
     },
@@ -53,9 +53,9 @@ function buildNav(role: Role): NavEntry[] {
       group: {
         label: 'Data',
         items: [
-          { label: 'New device', href: '/devices/new', gate: () => can(role, ACTIONS.CREATE_DEVICE) },
-          { label: 'Import', href: '/import', gate: () => can(role, ACTIONS.IMPORT_DATA) },
-          { label: 'Drafts', href: '/drafts', gate: () => can(role, ACTIONS.CONFIRM_DRAFT) },
+          { label: 'New device', href: '/legacy/devices/new', gate: () => can(role, ACTIONS.CREATE_DEVICE) },
+          { label: 'Import', href: '/legacy/import', gate: () => can(role, ACTIONS.IMPORT_DATA) },
+          { label: 'Drafts', href: '/legacy/drafts', gate: () => can(role, ACTIONS.CONFIRM_DRAFT) },
         ],
       },
     },
@@ -64,10 +64,10 @@ function buildNav(role: Role): NavEntry[] {
       group: {
         label: 'Admin',
         items: [
-          { label: 'Audit Log', href: '/admin/audit', gate: () => can(role, ACTIONS.VIEW_FULL_AUDIT_LOG) },
-          { label: 'Users', href: '/admin/users', gate: () => can(role, ACTIONS.MANAGE_USERS) },
-          { label: 'Subscribers', href: '/admin/subscribers', gate: () => can(role, ACTIONS.MANAGE_USERS) },
-          { label: 'Vocabularies', href: '/admin/vocabularies', gate: () => can(role, ACTIONS.MANAGE_VOCABULARIES) },
+          { label: 'Audit Log', href: '/legacy/admin/audit', gate: () => can(role, ACTIONS.VIEW_FULL_AUDIT_LOG) },
+          { label: 'Users', href: '/legacy/admin/users', gate: () => can(role, ACTIONS.MANAGE_USERS) },
+          { label: 'Subscribers', href: '/legacy/admin/subscribers', gate: () => can(role, ACTIONS.MANAGE_USERS) },
+          { label: 'Vocabularies', href: '/legacy/admin/vocabularies', gate: () => can(role, ACTIONS.MANAGE_VOCABULARIES) },
         ],
       },
     },

@@ -15,7 +15,7 @@ export function ServiceOverdueBanner({ count }: ServiceOverdueBannerProps) {
       <AlertDescription>
         {count} device{count !== 1 ? 's are' : ' is'} overdue for a service event.{' '}
         <Link
-          href="/devices?serviceOverdue=1"
+          href="/legacy/devices?serviceOverdue=1"
           className="underline font-medium hover:opacity-80"
         >
           View overdue devices

@@ -17,7 +17,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { previewImportAction, importAction, previewExcelAction } from '@/app/import/actions'
+import { previewImportAction, importAction, previewExcelAction } from '@/app/legacy/import/actions'
 
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
 const VIEWER = { id: 'vwr-1', role: 'viewer', email: 'v@quantumtx.com' }
@@ -66,7 +66,7 @@ describe('importAction', () => {
     importValidRows.mockResolvedValue(result)
     const out = await importAction(rows)
     expect(importValidRows).toHaveBeenCalledWith(rows, 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toBe(result)
   })
 })

@@ -61,7 +61,7 @@ describe('loginAction', () => {
     expect(redirect).not.toHaveBeenCalled()
   })
 
-  it('redirects to / when the app_user row is active', async () => {
+  it('redirects to /legacy when the app_user row is active', async () => {
     signInWithPassword.mockResolvedValue({
       data: { user: { id: 'user-1' }, session: {} },
       error: null,
@@ -69,8 +69,8 @@ describe('loginAction', () => {
     fromImpl = () => buildChain(appUserRow({ id: 'user-1', role: 'engineer', active: true }))
     await expect(
       loginAction(form({ email: 'a@quantumtx.com', password: 'right' })),
-    ).rejects.toThrow('NEXT_REDIRECT:/')
-    expect(redirect).toHaveBeenCalledWith('/')
+    ).rejects.toThrow('NEXT_REDIRECT:/legacy')
+    expect(redirect).toHaveBeenCalledWith('/legacy')
     expect(signOut).not.toHaveBeenCalled()
   })
 })

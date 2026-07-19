@@ -17,7 +17,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AlertCircle, AlertTriangle } from 'lucide-react'
 import { GROUP_LABELS, FIELD_LABELS } from '@/lib/i18n/fields'
 import { deviceSchema } from '@/lib/domain/validation'
-import { confirmInvoiceDeviceAction, saveDraftForReviewAction } from '@/app/drafts/upload/actions'
+import { confirmInvoiceDeviceAction, saveDraftForReviewAction } from '@/app/legacy/drafts/upload/actions'
 import { toast } from 'sonner'
 import type { DeviceInput, StatusOption, PhaseOption } from '@/lib/types'
 import type { ExtractedFields } from '@/lib/services/invoiceExtractionService'
@@ -143,7 +143,7 @@ export function ExtractedDeviceConfirmModal({
           onSuccess(result.id)
         } else {
           onClose()
-          router.push(`/devices/${result.id}`)
+          router.push(`/legacy/devices/${result.id}`)
         }
       }
     } catch (err) {
@@ -174,7 +174,7 @@ export function ExtractedDeviceConfirmModal({
           onSaved()
         } else {
           onClose()
-          router.push('/drafts')
+          router.push('/legacy/drafts')
         }
       }
     } catch (err) {
@@ -220,7 +220,7 @@ export function ExtractedDeviceConfirmModal({
               {existingDeviceId ? (
                 <>
                   A device with this PCBA-A S/N already exists.{' '}
-                  <Link href={`/devices/${existingDeviceId}`} className="underline font-medium">
+                  <Link href={`/legacy/devices/${existingDeviceId}`} className="underline font-medium">
                     View existing device
                   </Link>
                 </>

@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
-import { addServiceEventAction } from '@/app/devices/actions'
+import { addServiceEventAction } from '@/app/legacy/devices/actions'
 import {
   groupServiceEventsByDate,
   formatOccurredOn,

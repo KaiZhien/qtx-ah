@@ -18,7 +18,7 @@ import {
   addPhaseAction,
   toggleStatusActiveAction,
   togglePhaseActiveAction,
-} from '@/app/admin/vocabularies/actions'
+} from '@/app/legacy/admin/vocabularies/actions'
 
 const ADMIN = { id: 'adm-1', role: 'admin', email: 'a@quantumtx.com' }
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
@@ -50,7 +50,7 @@ describe('addStatusAction', () => {
     expect(addStatusOption).toHaveBeenCalledWith(
       'shipped', 'Shipped', '已发货', 'adm-1', 'admin', { isTerminal: true, isInitial: false },
     )
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/vocabularies')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/vocabularies')
   })
 
   it('admin: forwards undefined flags when the argument is omitted', async () => {
@@ -72,7 +72,7 @@ describe('addPhaseAction', () => {
     addPhaseOption.mockResolvedValue(undefined)
     await addPhaseAction('assembly', 'Assembly', '组装')
     expect(addPhaseOption).toHaveBeenCalledWith('assembly', 'Assembly', '组装', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/vocabularies')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/vocabularies')
   })
 })
 
@@ -82,7 +82,7 @@ describe('toggleStatusActiveAction / togglePhaseActiveAction', () => {
     toggleOptionActive.mockResolvedValue(undefined)
     await toggleStatusActiveAction('shipped', false)
     expect(toggleOptionActive).toHaveBeenCalledWith('status_option', 'shipped', false, 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/vocabularies')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/vocabularies')
   })
 
   it('phase toggle delegates with the phase_option table tag', async () => {

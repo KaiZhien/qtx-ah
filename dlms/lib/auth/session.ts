@@ -67,7 +67,7 @@ export async function requireAuth(): Promise<AppUser> {
 export async function requirePermission(action: Action): Promise<AppUser> {
   const user = await requireAuth()
   if (!can(user.role as import('@/lib/types').Role, action)) {
-    redirect('/unauthorized')
+    redirect('/legacy/unauthorized')
   }
   return user
 }

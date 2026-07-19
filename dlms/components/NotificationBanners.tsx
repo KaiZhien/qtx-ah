@@ -22,7 +22,7 @@ export async function NotificationBanners() {
           <AlertDescription>
             <strong>{warrantyCount}</strong> device{warrantyCount !== 1 ? 's have' : ' has'} warranty
             expiring within 7 days.{' '}
-            <Link href="/devices?sort=ship_date&dir=asc" className="underline font-medium">
+            <Link href="/legacy/devices?sort=ship_date&dir=asc" className="underline font-medium">
               View devices →
             </Link>
           </AlertDescription>
@@ -34,7 +34,7 @@ export async function NotificationBanners() {
           <AlertDescription>
             <strong>{serviceCount}</strong> device{serviceCount !== 1 ? 's are' : ' is'} due for
             service within 7 days.{' '}
-            <Link href="/devices" className="underline font-medium">
+            <Link href="/legacy/devices" className="underline font-medium">
               View devices →
             </Link>
           </AlertDescription>
@@ -45,7 +45,7 @@ export async function NotificationBanners() {
           <FileSearch className="h-4 w-4" />
           <AlertDescription>
             <strong>{draftCount}</strong> draft{draftCount !== 1 ? 's are' : ' is'} pending review.{' '}
-            <Link href="/drafts" className="underline font-medium">
+            <Link href="/legacy/drafts" className="underline font-medium">
               Review drafts →
             </Link>
           </AlertDescription>

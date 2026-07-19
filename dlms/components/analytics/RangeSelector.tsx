@@ -10,7 +10,7 @@ export function RangeSelector({ currentRange }: { currentRange: AnalyticsRange }
   function onChange(value: string) {
     const params = new URLSearchParams(searchParams.toString())
     params.set('range', value)
-    router.push(`/analytics?${params.toString()}`)
+    router.push(`/legacy/analytics?${params.toString()}`)
   }
 
   return (

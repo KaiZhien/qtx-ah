@@ -9,7 +9,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { linkReplacementAction } from '@/app/devices/[id]/succession/actions'
+import { linkReplacementAction } from '@/app/legacy/devices/[id]/succession/actions'
 
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
 const VIEWER = { id: 'vwr-1', role: 'viewer', email: 'v@quantumtx.com' }
@@ -42,8 +42,8 @@ describe('linkReplacementAction', () => {
     linkReplacement.mockResolvedValue(undefined)
     const out = await linkReplacementAction('old-7', 'new-8', 3)
     expect(linkReplacement).toHaveBeenCalledWith('old-7', 'new-8', 3, 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/old-7')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices/new-8')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/old-7')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices/new-8')
     expect(out).toEqual({ ok: true })
   })
 

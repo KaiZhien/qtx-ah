@@ -13,7 +13,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/devices/presets/actions'
+import { listPresetsAction, savePresetAction, deletePresetAction } from '@/app/legacy/devices/presets/actions'
 
 const VIEWER = { id: 'vwr-1', role: 'viewer', email: 'v@quantumtx.com' }
 // system role has an EMPTY permission set — used to prove the gate is can()-based,
@@ -60,7 +60,7 @@ describe('savePresetAction', () => {
     savePreset.mockResolvedValue({ id: 'p9', name: 'n' })
     const out = await savePresetAction('n', 'status=x')
     expect(savePreset).toHaveBeenCalledWith('vwr-1', 'n', 'status=x', 'viewer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ preset: { id: 'p9', name: 'n' } })
   })
 
@@ -82,7 +82,7 @@ describe('deletePresetAction', () => {
     deletePreset.mockResolvedValue(undefined)
     const out = await deletePresetAction('p1')
     expect(deletePreset).toHaveBeenCalledWith('p1', 'vwr-1', 'viewer')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toEqual({ ok: true })
   })
 

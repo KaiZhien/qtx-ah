@@ -68,7 +68,7 @@ export default function LoginPage() {
       setError(result.error)
       setLoading(false)
     }
-    // On success, loginAction calls redirect('/') server-side — no client code needed
+    // On success, loginAction calls redirect('/legacy') server-side — no client code needed
   }
 
   return (

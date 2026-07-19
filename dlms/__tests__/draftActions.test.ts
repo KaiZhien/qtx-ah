@@ -12,7 +12,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { promoteDraftAction, rejectDraftAction } from '@/app/drafts/actions'
+import { promoteDraftAction, rejectDraftAction } from '@/app/legacy/drafts/actions'
 
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
 const VIEWER = { id: 'vwr-1', role: 'viewer', email: 'v@quantumtx.com' }
@@ -42,8 +42,8 @@ describe('promoteDraftAction', () => {
     promoteDraft.mockResolvedValue({ id: 'dev-77' })
     const out = await promoteDraftAction('dr1')
     expect(promoteDraft).toHaveBeenCalledWith('dr1', 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/drafts')
-    expect(revalidatePath).toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/drafts')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/devices')
     expect(out).toBe('dev-77')
   })
 
@@ -66,7 +66,7 @@ describe('rejectDraftAction', () => {
     rejectDraft.mockResolvedValue(undefined)
     await rejectDraftAction('dr1')
     expect(rejectDraft).toHaveBeenCalledWith('dr1', 'eng-1', 'engineer')
-    expect(revalidatePath).toHaveBeenCalledWith('/drafts')
-    expect(revalidatePath).not.toHaveBeenCalledWith('/devices')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/drafts')
+    expect(revalidatePath).not.toHaveBeenCalledWith('/legacy/devices')
   })
 })

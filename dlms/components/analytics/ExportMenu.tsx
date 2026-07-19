@@ -4,7 +4,7 @@ import type { AnalyticsRange } from '@/lib/types'
 
 export function ExportMenu({ range }: { range: AnalyticsRange }) {
   function download(format: 'xlsx' | 'pdf') {
-    window.location.href = `/analytics/export?format=${format}&range=${range}`
+    window.location.href = `/legacy/analytics/export?format=${format}&range=${range}`
   }
 
   return (

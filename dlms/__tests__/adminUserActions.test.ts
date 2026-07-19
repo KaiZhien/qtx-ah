@@ -14,7 +14,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { updateRoleAction, deactivateUserAction, reactivateUserAction } from '@/app/admin/users/actions'
+import { updateRoleAction, deactivateUserAction, reactivateUserAction } from '@/app/legacy/admin/users/actions'
 
 const ADMIN = { id: 'adm-1', role: 'admin', email: 'a@quantumtx.com' }
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
@@ -45,7 +45,7 @@ describe('updateRoleAction', () => {
     updateUserRole.mockResolvedValue(undefined)
     const out = await updateRoleAction('u2', 'engineer')
     expect(updateUserRole).toHaveBeenCalledWith('u2', 'engineer', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/users')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/users')
     expect(out).toEqual({})
   })
 
@@ -76,7 +76,7 @@ describe('deactivateUserAction', () => {
     deactivateUser.mockResolvedValue(undefined)
     const out = await deactivateUserAction('u2')
     expect(deactivateUser).toHaveBeenCalledWith('u2', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/users')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/users')
     expect(out).toEqual({})
   })
 
@@ -100,7 +100,7 @@ describe('reactivateUserAction', () => {
     reactivateUser.mockResolvedValue(undefined)
     const out = await reactivateUserAction('u2')
     expect(reactivateUser).toHaveBeenCalledWith('u2', 'adm-1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/users')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/users')
     expect(out).toEqual({})
   })
 

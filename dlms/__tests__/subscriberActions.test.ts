@@ -13,7 +13,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: () => Promise.resolve(cur
 const revalidatePath = vi.fn()
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => revalidatePath(p) }))
 
-import { addSubscriberAction, toggleSubscriberAction, deleteSubscriberAction } from '@/app/admin/subscribers/actions'
+import { addSubscriberAction, toggleSubscriberAction, deleteSubscriberAction } from '@/app/legacy/admin/subscribers/actions'
 
 const ADMIN = { id: 'adm-1', role: 'admin', email: 'a@quantumtx.com' }
 const ENGINEER = { id: 'eng-1', role: 'engineer', email: 'e@quantumtx.com' }
@@ -43,7 +43,7 @@ describe('addSubscriberAction', () => {
     addSubscriber.mockResolvedValue(undefined)
     await addSubscriberAction('x@quantumtx.com')
     expect(addSubscriber).toHaveBeenCalledWith('x@quantumtx.com', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/subscribers')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/subscribers')
   })
 })
 
@@ -58,7 +58,7 @@ describe('toggleSubscriberAction', () => {
     setSubscriberActive.mockResolvedValue(undefined)
     await toggleSubscriberAction('s1', false)
     expect(setSubscriberActive).toHaveBeenCalledWith('s1', false, 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/subscribers')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/subscribers')
   })
 })
 
@@ -73,6 +73,6 @@ describe('deleteSubscriberAction', () => {
     deleteSubscriber.mockResolvedValue(undefined)
     await deleteSubscriberAction('s1')
     expect(deleteSubscriber).toHaveBeenCalledWith('s1', 'admin')
-    expect(revalidatePath).toHaveBeenCalledWith('/admin/subscribers')
+    expect(revalidatePath).toHaveBeenCalledWith('/legacy/admin/subscribers')
   })
 })

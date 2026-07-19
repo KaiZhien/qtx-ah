@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { assignDeviceAction, unassignDeviceAction } from '@/app/devices/actions'
+import { assignDeviceAction, unassignDeviceAction } from '@/app/legacy/devices/actions'
 import type { AppUser } from '@/lib/types'
 
 interface AssignmentCardProps {

@@ -91,7 +91,7 @@ export function TraceabilityView({ dimension, groups }: TraceabilityViewProps) {
                 const isUnspecified = group.value === null
                 const filterUrl = isUnspecified
                   ? null
-                  : `/devices?${dimension}=${encodeURIComponent(group.value!)}`
+                  : `/legacy/devices?${dimension}=${encodeURIComponent(group.value!)}`
 
                 return (
                   <TableRow key={group.value ?? '__unspecified__'} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/30'}>
