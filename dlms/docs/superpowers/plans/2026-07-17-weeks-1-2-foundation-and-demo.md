@@ -1038,7 +1038,7 @@ export async function loadActor(authUserId: string): Promise<Actor | null> {
 - [ ] **Step 10: Add the resolver function migration**
 
 ```sql
--- supabase/migrations/20260718000002_resolve_actor.sql
+-- supabase/migrations/20260718000002_platform_resolve_actor.sql
 -- One round trip for the full authorization state. Expired overrides are filtered
 -- here so a lapsed grant stops working the moment it expires, without waiting for
 -- the hourly sweep job.
@@ -1130,7 +1130,7 @@ Expected: PASS (3 new tests).
 cd /Users/reetmitra/Desktop/QTX/quantumtx-ah
 git add dlms/modules/shared/authz dlms/__tests__/platform/authz \
         dlms/__tests__/integration/seedMatrix.test.ts dlms/__tests__/integration/resolveActor.test.ts \
-        dlms/supabase/migrations/20260718000002_resolve_actor.sql
+        dlms/supabase/migrations/20260718000002_platform_resolve_actor.sql
 git commit -m "feat(authz): single authorize() choke point with generated matrix suite
 
 Pure can() rule (active → module → permission), a throwing authorize() wrapper,
