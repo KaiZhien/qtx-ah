@@ -2478,9 +2478,19 @@ export async function inviteUser(actor: Actor, input: InviteUserInput): Promise<
 /**
  * Activates or deactivates an account.
  *
- * The Super Admin count is read INSIDE the transaction with FOR UPDATE on the
- * target so two concurrent deactivations cannot both pass the last-admin check
- * and leave the system with zero administrators.
+ * The Super Admin count is read INSIDE the transaction, serialized by a
+ * transaction-scoped advisory lock (pg_advisory_xact_lock(SUPER_ADMIN_SET_LOCK))
+ * acquired FIRST, before the target lock and the count read.
+ *
+ * DESIGN CORRECTION (2026-07-20, post-review): FOR UPDATE on the target row alone
+ * is INSUFFICIENT. Two concurrent deactivations of DISTINCT super-admin rows each
+ * lock only their own row, each see the other as still active under READ
+ * COMMITTED, both pass the last-admin guard, and commit → zero administrators.
+ * The single shared advisory lock (same key in setUserActive AND updateUserAccess)
+ * makes the count-read + write atomic across different targets. Keep FOR UPDATE OF
+ * u + the version check too — it covers same-target optimistic concurrency.
+ * Implemented code adds `await tx.query('SELECT pg_advisory_xact_lock($1)',
+ * [SUPER_ADMIN_SET_LOCK])` at the top of both transactions.
  */
 export async function setUserActive(
   actor: Actor, userId: string, active: boolean, version: number,
