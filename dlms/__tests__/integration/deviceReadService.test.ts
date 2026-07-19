@@ -74,6 +74,21 @@ describe('listDevices', () => {
     expect(items[0].needsDataReview).toBe(true)
   })
 
+  it('finds a legacy device by a non-hyphenated fragment of pcba_a_sn_legacy', async () => {
+    const { items } = await listDevices(op(), { q: '0001' })
+    expect(items.some((d) => d.legacySn === 'EE-02A-2603-0001 to 0015')).toBe(true)
+  })
+
+  it('finds a legacy device by a HYPHENATED fragment of pcba_a_sn_legacy', async () => {
+    const { items } = await listDevices(op(), { q: '2603-0001' })
+    expect(items.some((d) => d.legacySn === 'EE-02A-2603-0001 to 0015')).toBe(true)
+  })
+
+  it('finds a legacy device by pcba_a_sn_legacy case-insensitively', async () => {
+    const { items } = await listDevices(op(), { q: 'ee-02a' })
+    expect(items.some((d) => d.legacySn === 'EE-02A-2603-0001 to 0015')).toBe(true)
+  })
+
   it('paginates by keyset and does not repeat a row across pages', async () => {
     const page1 = await listDevices(op(), { limit: 2 })
     expect(page1.items).toHaveLength(2)

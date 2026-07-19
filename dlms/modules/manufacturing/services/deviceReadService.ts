@@ -64,9 +64,14 @@ export async function listDevices(
     const p = (v: unknown) => { params.push(v); return `$${params.length}` }
 
     if (f.q) {
-      const needle = p(`%${f.q.toLowerCase().replace(/[\s-]/g, '')}%`)
-      conditions.push(`(d.device_sn_normalized LIKE ${needle}
-                     OR lower(replace(coalesce(d.pcba_a_sn_legacy, ''), ' ', '')) LIKE ${needle})`)
+      // Strip whitespace/hyphens (matches device_sn_normalized's trigger-side
+      // normalization) then escape LIKE metacharacters (%, _, and the escape
+      // char itself) so a serial containing them can't act as a wildcard.
+      const stripped = f.q.toLowerCase().replace(/[\s-]/g, '')
+      const escaped = stripped.replace(/[\\%_]/g, (c) => `\\${c}`)
+      const needle = p(`%${escaped}%`)
+      conditions.push(`(d.device_sn_normalized LIKE ${needle} ESCAPE '\\'
+                     OR lower(translate(coalesce(d.pcba_a_sn_legacy, ''), ' -', '')) LIKE ${needle} ESCAPE '\\')`)
     }
     if (f.status?.length) conditions.push(`d.status = ANY(${p(f.status)})`)
     if (f.variant?.length) conditions.push(`v.code = ANY(${p(f.variant)})`)
