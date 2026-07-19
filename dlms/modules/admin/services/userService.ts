@@ -16,6 +16,25 @@ const inviteSchema = z.object({
 export type InviteUserInput = z.infer<typeof inviteSchema>
 
 /**
+ * Namespaces the transaction-scoped advisory lock that serializes every
+ * mutation able to change the active-Super-Admin set (deactivation in
+ * setUserActive, role change away from super_admin in updateUserAccess).
+ *
+ * Locking only the target row (FOR UPDATE OF u) cannot prevent a race across
+ * DISTINCT targets: two concurrent transactions deactivating/demoting two
+ * different super admins never contend on that row lock, so under READ
+ * COMMITTED each one's unlocked count-of-active-super-admins read is blind to
+ * the other's uncommitted change, and both can pass the last-admin guard and
+ * commit, leaving zero. Taking this lock first, in both functions, before the
+ * target SELECT and the count read, forces those operations to run one at a
+ * time so the count read and the write are atomic across targets.
+ * pg_advisory_xact_lock auto-releases at COMMIT/ROLLBACK — no manual unlock,
+ * and since it is always acquired first and is the only lock taken, there is
+ * no deadlock risk.
+ */
+export const SUPER_ADMIN_SET_LOCK = 0x5341_444d
+
+/**
  * Creates the app_user row for an invited employee.
  *
  * The Supabase Auth invite is sent by the caller (server action) AFTER this
@@ -106,17 +125,28 @@ export async function listUsers(actor: Actor): Promise<UserListRow[]> {
  * Activates or deactivates an account.
  *
  * The Super Admin count is read INSIDE the transaction with FOR UPDATE on the
- * target so two concurrent deactivations cannot both pass the last-admin check
- * and leave the system with zero administrators.
+ * target, behind the SUPER_ADMIN_SET_LOCK advisory lock, so two concurrent
+ * deactivations of DIFFERENT super admins cannot both pass the last-admin
+ * check and leave the system with zero administrators (same-target
+ * concurrency was already covered by the row lock + version check).
+ *
+ * Returns the target's auth_user_id so callers can revoke the live Supabase
+ * session without trusting a client-supplied id for someone else's account.
  */
 export async function setUserActive(
   actor: Actor, userId: string, active: boolean, version: number,
-): Promise<void> {
+): Promise<{ authUserId: string | null }> {
   authorize(actor, 'manage_users', 'admin')
 
-  await withTransaction(actor.id, async (tx) => {
-    const target = await tx.query<{ version: number; role_key: RoleKey }>(
-      `SELECT u.version, r.key AS role_key FROM app_user u JOIN role r ON r.id = u.role_id
+  return withTransaction(actor.id, async (tx) => {
+    // Serialize every mutation that can change the active-super-admin set, so the
+    // count read and the write are atomic across DIFFERENT targets. Locking only the
+    // target row cannot prevent two concurrent deactivations of distinct super admins
+    // from each seeing the other as still active and both passing the last-admin guard.
+    await tx.query('SELECT pg_advisory_xact_lock($1)', [SUPER_ADMIN_SET_LOCK])
+
+    const target = await tx.query<{ version: number; role_key: RoleKey; auth_user_id: string | null }>(
+      `SELECT u.version, r.key AS role_key, u.auth_user_id FROM app_user u JOIN role r ON r.id = u.role_id
         WHERE u.id = $1 AND u.deleted_at IS NULL FOR UPDATE OF u`, [userId])
     if (target.rows.length === 0) throw new Error(`User ${userId} not found`)
     if (target.rows[0].version !== version) throw new OptimisticLockError('app_user', userId)
@@ -135,6 +165,8 @@ export async function setUserActive(
     await tx.query(
       `UPDATE app_user SET active = $1, updated_at = now(), updated_by = $2, version = version + 1
         WHERE id = $3`, [active, actor.id, userId])
+
+    return { authUserId: target.rows[0].auth_user_id }
   })
 }
 
@@ -154,6 +186,12 @@ export async function updateUserAccess(
   const data = accessSchema.parse(input)
 
   await withTransaction(actor.id, async (tx) => {
+    // Serialize every mutation that can change the active-super-admin set, so the
+    // count read and the write are atomic across DIFFERENT targets. Locking only the
+    // target row cannot prevent two concurrent deactivations of distinct super admins
+    // from each seeing the other as still active and both passing the last-admin guard.
+    await tx.query('SELECT pg_advisory_xact_lock($1)', [SUPER_ADMIN_SET_LOCK])
+
     const target = await tx.query<{ version: number; role_key: RoleKey }>(
       `SELECT u.version, r.key AS role_key FROM app_user u JOIN role r ON r.id = u.role_id
         WHERE u.id = $1 AND u.deleted_at IS NULL FOR UPDATE OF u`, [userId])

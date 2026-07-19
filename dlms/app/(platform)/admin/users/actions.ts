@@ -79,13 +79,19 @@ export async function resendInviteAction(email: string): Promise<ActionResult> {
  * Activates or deactivates an account. On deactivation, live Supabase
  * sessions are revoked immediately (rather than waiting for token expiry)
  * and the security trail records a session_revoked event.
+ *
+ * auth_user_id for the signOut call comes back from setUserActive (read
+ * server-side, inside the transaction, from the row the version check just
+ * validated) rather than from a client-supplied argument — a caller could
+ * pass any auth_user_id, and signing that account out globally is a
+ * denial-of-service against a user unrelated to the one actually deactivated.
  */
 export async function setUserActiveAction(
-  userId: string, active: boolean, version: number, authUserId: string | null,
+  userId: string, active: boolean, version: number,
 ): Promise<ActionResult> {
   const actor = await requireActor()
   try {
-    await setUserActive(actor, userId, active, version)
+    const { authUserId } = await setUserActive(actor, userId, active, version)
 
     if (!active && authUserId) {
       const supabase = createAdminClient()

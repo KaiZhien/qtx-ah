@@ -103,7 +103,7 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
     try {
       const nextActive = !toggleTarget.active
       const res = await setUserActiveAction(
-        toggleTarget.id, nextActive, toggleTarget.version, toggleTarget.authUserId,
+        toggleTarget.id, nextActive, toggleTarget.version,
       )
       if ('error' in res) {
         toast.error(res.error)
