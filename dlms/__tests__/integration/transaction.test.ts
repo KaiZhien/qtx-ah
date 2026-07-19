@@ -1,5 +1,23 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { Client } from 'pg'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { Client, type PoolConfig } from 'pg'
+
+// getPool() (lib/db/pool.ts) is a max:10 pool sized for production traffic. Two
+// sequential connect() calls against it are NOT guaranteed to return the same
+// physical connection, so the no-leak test's "same pooled connection" precondition
+// would never actually be established. Forcing every Pool built in this file down
+// to max:1 makes reuse deterministic: with only one physical connection possible,
+// connect() can only ever hand back that one — which is exactly what the test
+// below needs to prove a leak would be observable if `tx.ts` ever regressed.
+vi.mock('pg', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('pg')>()
+  class SingleConnectionPool extends actual.Pool {
+    constructor(config?: PoolConfig) {
+      super({ ...config, max: 1 })
+    }
+  }
+  return { ...actual, Pool: SingleConnectionPool }
+})
+
 import { withTransaction } from '@/lib/db/tx'
 import { getPool } from '@/lib/db/pool'
 
@@ -69,21 +87,28 @@ describe('withTransaction', () => {
     expect(rows[0].actor_id).toBe(actorId)
   })
 
-  it('does not leak the GUC into the next transaction on the same pooled connection', async () => {
+  it('does not leak the GUC onto the reused pooled connection after COMMIT', async () => {
     await withTransaction(actorId, async (tx) => {
       await tx.query(`INSERT INTO tx_probe (label) VALUES ('leak-1')`)
     })
-    const other = (await db.query(
-      `INSERT INTO app_user (email, full_name, role_id, active)
-       SELECT 'leak@test.local', 'Leak Probe', r.id, true FROM role r WHERE r.key = 'viewer'
-       RETURNING id`)).rows[0].id
-    await withTransaction(other, async (tx) => {
-      await tx.query(`INSERT INTO tx_probe (label) VALUES ('leak-2')`)
-    })
-    const { rows } = await db.query(
-      `SELECT actor_id FROM audit_log WHERE table_name = 'tx_probe'
-        AND new_values->>'label' = 'leak-2'`)
-    expect(rows[0].actor_id).toBe(other)   // NOT the previous actor
+
+    // getPool() is backed by the max:1 pool mocked at the top of this file, so this
+    // connect() is guaranteed to return the exact physical connection withTransaction
+    // just released above — there is no second connection it could be instead.
+    const client = await getPool().connect()
+    try {
+      // Deliberately NO set_config here: the only way to observe whether actorId
+      // survived past COMMIT on the shared connection is to read the GUC without
+      // ever setting it ourselves. A transaction-LOCAL set_config (tx.ts's `true`
+      // third argument) is discarded at COMMIT, so this reads back '' — a
+      // session-level set_config (the `false` regression) would instead still
+      // read back actorId here.
+      const { rows } = await client.query<{ actor: string }>(
+        `SELECT current_setting('app.actor_id', true) AS actor`)
+      expect(rows[0].actor).toBe('')
+    } finally {
+      client.release()
+    }
   })
 
   it('returns the callback value', async () => {
