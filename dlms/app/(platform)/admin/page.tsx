@@ -14,15 +14,14 @@ type AdminSection = {
   note?: string
 }
 
-// Users is the only subsection Task 8 builds; the rest land in later tasks
-// (Task 9 adds roles/overrides to this same console) — listed here as visible
-// scaffolding rather than left as a dead nav link, same rationale as
-// ModuleLanding for the business modules.
+// Users and Roles & permissions are the subsections Task 8/9 build; the rest
+// land in later tasks — listed here as visible scaffolding rather than left
+// as a dead nav link, same rationale as ModuleLanding for the business modules.
 const SECTIONS: readonly AdminSection[] = [
   { key: 'users', label: 'Users', href: '/admin/users', icon: Users,
     description: 'Invite, activate/deactivate, and change role or module access.' },
-  { key: 'roles', label: 'Roles & permissions', href: null, icon: ShieldCheck,
-    description: 'Edit the role → permission matrix and per-user overrides.', note: 'Coming in Task 9' },
+  { key: 'roles', label: 'Roles & permissions', href: '/admin/roles', icon: ShieldCheck,
+    description: 'Edit the role → permission matrix and per-user overrides.' },
   { key: 'vocabularies', label: 'Vocabularies', href: null, icon: ListTree,
     description: 'Manage shared status, phase, and category lists.', note: 'Coming soon' },
   { key: 'audit', label: 'Audit', href: null, icon: ScrollText,

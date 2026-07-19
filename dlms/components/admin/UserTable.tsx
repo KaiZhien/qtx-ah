@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -16,7 +17,7 @@ import {
   inviteUserAction, setUserActiveAction, updateUserAccessAction, resendInviteAction,
 } from '@/app/(platform)/admin/users/actions'
 import type { UserListRow } from '@/modules/admin/services/userService'
-import { Mail, Pencil, Power, PowerOff, UserPlus } from 'lucide-react'
+import { Mail, Pencil, Power, PowerOff, ShieldCheck, UserPlus } from 'lucide-react'
 
 type UserTableProps = {
   users: UserListRow[]
@@ -202,6 +203,14 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
                             <Mail className="h-4 w-4" />
                           </Button>
                         )}
+                        <Button
+                          size="sm" variant="ghost" asChild
+                          title="Permission exceptions"
+                        >
+                          <Link href={`/admin/users/${user.id}/overrides`}>
+                            <ShieldCheck className="h-4 w-4" />
+                          </Link>
+                        </Button>
                         <Button
                           size="sm" variant="ghost"
                           title={isSelf ? 'You cannot change your own access' : 'Edit access'}
