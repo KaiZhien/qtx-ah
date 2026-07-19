@@ -70,6 +70,17 @@ describe('task schema constraints', () => {
       .resolves.toBeTruthy()
   })
 
+  it('refuses a rewrite of created_at — a comment\'s creation time is immutable', async () => {
+    const taskId = await newTask()
+    const { rows } = await db.query(
+      `INSERT INTO task_comment (task_id, body, created_by) VALUES ($1, 'hi', $2) RETURNING id`,
+      [taskId, userId])
+    const commentId = rows[0].id
+    await expect(db.query(
+      `UPDATE task_comment SET created_at = '2020-01-01T00:00:00Z' WHERE id = $1`, [commentId]))
+      .rejects.toThrow(/immutable/)
+  })
+
   it('refuses a task_link to an unknown module', async () => {
     const taskId = await newTask()
     await expect(db.query(

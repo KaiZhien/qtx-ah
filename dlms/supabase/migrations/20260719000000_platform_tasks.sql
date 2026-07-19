@@ -86,8 +86,10 @@ BEGIN
   IF OLD.body IS DISTINCT FROM NEW.body AND NEW.edited_at IS NULL THEN
     RAISE EXCEPTION 'editing a comment must stamp edited_at' USING ERRCODE = '23514';
   END IF;
-  IF OLD.task_id <> NEW.task_id OR OLD.created_by <> NEW.created_by THEN
-    RAISE EXCEPTION 'a comment cannot change task or author' USING ERRCODE = '23514';
+  IF OLD.task_id <> NEW.task_id OR OLD.created_by <> NEW.created_by
+     OR OLD.created_at <> NEW.created_at THEN
+    RAISE EXCEPTION 'a comment''s task, author, and creation time are immutable'
+      USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END $$;
