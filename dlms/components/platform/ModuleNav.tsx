@@ -2,19 +2,10 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings, LayoutGrid,
-} from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { LayoutGrid } from 'lucide-react'
 import type { ModuleDef } from '@/modules/shared/navigation/moduleRegistry'
 import { cn } from '@/lib/utils'
-
-// Keyed to the exact icon names used in MODULE_REGISTRY — a lookup, not a
-// generic dynamic-import map, so an unregistered name fails safe to LayoutGrid
-// instead of crashing the sidebar.
-const ICONS: Record<string, LucideIcon> = {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings,
-}
+import { iconFor } from '@/components/platform/moduleIcons'
 
 type ModuleNavProps = {
   modules: ModuleDef[]
@@ -32,7 +23,7 @@ export function ModuleNav({ modules }: ModuleNavProps) {
         QTX Ops
       </Link>
       {modules.map((m) => {
-        const Icon = ICONS[m.icon] ?? LayoutGrid
+        const Icon = iconFor(m.icon)
         const isActive = pathname === m.href || pathname.startsWith(`${m.href}/`)
         return (
           <Link

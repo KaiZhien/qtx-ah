@@ -1,12 +1,5 @@
-import {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings, LayoutGrid,
-} from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
 import type { ModuleDef } from '@/modules/shared/navigation/moduleRegistry'
-
-const ICONS: Record<string, LucideIcon> = {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings,
-}
+import { iconFor } from '@/components/platform/moduleIcons'
 
 type ModuleLandingProps = {
   module: ModuleDef
@@ -17,7 +10,7 @@ type ModuleLandingProps = {
  * States the section's purpose and when to expect it — visible scaffolding
  * beats a section that silently pretends to be finished. */
 export function ModuleLanding({ module, buildWeek }: ModuleLandingProps) {
-  const Icon = ICONS[module.icon] ?? LayoutGrid
+  const Icon = iconFor(module.icon)
 
   return (
     <div className="max-w-2xl">

@@ -1,15 +1,8 @@
 import Link from 'next/link'
-import {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings, LayoutGrid,
-} from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { visibleModules } from '@/modules/shared/navigation/moduleRegistry'
 import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-
-const ICONS: Record<string, LucideIcon> = {
-  Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings,
-}
+import { iconFor } from '@/components/platform/moduleIcons'
 
 /**
  * Platform home (`/`). The plan's sketch for this page shows a "My Tasks"
@@ -29,7 +22,7 @@ export default async function PlatformHomePage() {
 
       <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {modules.map((m) => {
-          const Icon = ICONS[m.icon] ?? LayoutGrid
+          const Icon = iconFor(m.icon)
           return (
             <Link key={m.key} href={m.href}>
               <Card className="h-full transition-shadow hover:shadow-md">
