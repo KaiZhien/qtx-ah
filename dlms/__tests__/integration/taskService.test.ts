@@ -3,6 +3,7 @@ import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
 import {
   createTask, changeTaskStatus, assignTask, addComment, listTasksFor, getTask,
+  TaskNotFoundError,
 } from '@/modules/shared/tasks/services/taskService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -83,6 +84,47 @@ describe('createTask', () => {
     expect(rows[0].n).toBe(0)
   })
 
+  // The test above is satisfied by Zod (`entityId: z.string().uuid()` rejects
+  // 'not-a-uuid' in createSchema.parse — BEFORE withTransaction is ever entered),
+  // not by transaction rollback: no row is ever inserted, so it would pass even if
+  // the task insert and the link inserts ran in two separate, non-atomic
+  // transactions. It does not prove the property this task is built around.
+  //
+  // This test instead uses an input that PASSES Zod entirely (two links, each with
+  // a real uuid and a real module) but fails at the DATABASE, on the SECOND link
+  // insert — after the task row and the first link have already been written
+  // inside the same transaction. Both links share identical entityType + entityId
+  // + module, so the second insert collides with task_link's
+  // `UNIQUE (task_id, entity_type, entity_id)` constraint. Because the task row
+  // demonstrably existed (mid-transaction) before the failure, a zero count
+  // afterward can only be explained by the transaction having rolled it back — if
+  // createTask instead committed the task in its own transaction before inserting
+  // links, this row would survive and the count would be 1, not 0.
+  it('rolls back the already-inserted task when a later link violates a DB constraint', async () => {
+    const dupId = crypto.randomUUID()
+    let caught: unknown
+    try {
+      await createTask(op(), {
+        title: 'Duplicate link rollback probe',
+        links: [
+          { entityType: 'device', entityId: dupId, module: 'manufacturing' },
+          { entityType: 'device', entityId: dupId, module: 'manufacturing' },
+        ],
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    // It rejected, and it rejected for a DB reason — not a Zod validation reason.
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).name).not.toBe('ZodError')
+    expect((caught as Error).message).toMatch(/duplicate key|unique constraint/i)
+
+    const { rows } = await db.query(
+      `SELECT count(*)::int AS n FROM task WHERE title = 'Duplicate link rollback probe'`)
+    expect(rows[0].n).toBe(0)
+  })
+
   it('refuses to link into a module the actor cannot access', async () => {
     await expect(createTask(op(), {
       title: 'Sneaky finance link',
@@ -160,6 +202,15 @@ describe('assignTask + addComment', () => {
       .rejects.toThrow(PermissionError)
   })
 
+  it('refuses assignTask on a task the actor cannot see — 404 semantics, not 403', async () => {
+    const { taskId } = await createTask(op(), { title: 'Private assign', confidential: true })
+    // fin() has assign_tasks and is not the creator/assignee/admin of this
+    // confidential task, so it must read as invisible (404), never as a
+    // permission refusal (403) that would leak the task's existence.
+    await expect(assignTask(fin(), taskId, finId, await versionOf(taskId)))
+      .rejects.toThrow(TaskNotFoundError)
+  })
+
   it('adds a comment attributed to its author', async () => {
     const { taskId } = await createTask(op(), { title: 'Discuss' })
     const { commentId } = await addComment(op(), taskId, 'Checked the shelf — none left')
@@ -173,6 +224,14 @@ describe('assignTask + addComment', () => {
     const { commentId } = await addComment(op(), taskId, '电源板没有输出 — 需要更换')
     const { rows } = await db.query(`SELECT body FROM task_comment WHERE id = $1`, [commentId])
     expect(rows[0].body).toBe('电源板没有输出 — 需要更换')
+  })
+
+  it('refuses addComment on a task the actor cannot see — 404 semantics, not 403', async () => {
+    const { taskId } = await createTask(op(), { title: 'Private comment', confidential: true })
+    // Same gate as changeTaskStatus/getTask/assignTask: an actor who cannot see
+    // the task must get TaskNotFoundError, not PermissionError.
+    await expect(addComment(fin(), taskId, 'Should never be persisted'))
+      .rejects.toThrow(TaskNotFoundError)
   })
 })
 
