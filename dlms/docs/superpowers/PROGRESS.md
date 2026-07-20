@@ -41,7 +41,7 @@ Every item below is implemented, individually code-reviewed (7 with the stronges
 | Step | Status | Owner / blocker |
 |---|---|---|
 | Apply platform migrations + seed to cloud `qtx-ops-platform` | ✅ | Done 2026-07-20 (Singapore region) |
-| **Enable RLS on platform tables (close anon-key exposure)** | 🔄 | **In progress — Task R1 (next)** |
+| **Enable RLS on platform tables (close anon-key exposure)** | ✅ | Done 2026-07-20 — advisor `rls_disabled` ERROR cleared; deny-via-REST verified |
 | Configure cloud Auth: enable TOTP MFA, disable public signups, password min-12, redirect URLs | ⏳ | Dashboard config — I can guide or do via API |
 | Bootstrap Super Admin sets password / accepts invite | ⏳ | You (`reetmitra8@gmail.com` app_user row exists, awaits first login) |
 | Run demo migration against real DLMS data | ⏳ | Needs read-only `LEGACY_DATABASE_URL` + this cloud schema (now ready) |
@@ -55,7 +55,8 @@ Ordered by dependency and priority. **RLS hardening is first** because the schem
 
 | # | Feature | Status | Priority rationale |
 |---|---|---|---|
-| R1 | **RLS defense-in-depth** on all platform tables | 🔄 **NEXT** | Spec §11.1; now-urgent (cloud-exposed). Closes the anon-key hole; app paths unaffected (owner-pool + admin-client bypass RLS) |
+| R1 | **RLS defense-in-depth** on all platform tables | ✅ | Spec §11.1. Applied to cloud + verified (advisor ERROR cleared). 130 integration tests; deny-via-REST, app paths unaffected |
+| C1 | **Component catalogue + append-only device-component installation history** (§10–11) | 🔄 **NEXT** | Critical-path prerequisite for both Engineering and Maintenance |
 | — | Manufacturing **write path** (create/edit devices, status changes with the fail-closed transition graph, imports) | ⏳ | Completes the Manufacturing module beyond read-only |
 | — | Status-driven cross-department handoffs (transactional outbox → auto-tasks) | ⏳ | Depends on device write path + a worker |
 | — | Component catalogue + append-only installation history (§11) | ⏳ | Precedes Engineering + Maintenance per critical path |
