@@ -32,8 +32,8 @@ function toUserMessage(err: unknown): string {
 }
 
 export async function setRolePermissionAction(input: SetRolePermissionInput): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     await setRolePermission(actor, input)
     revalidatePath('/admin/roles')
     return { ok: true }
@@ -43,8 +43,8 @@ export async function setRolePermissionAction(input: SetRolePermissionInput): Pr
 }
 
 export async function addOverrideAction(input: AddOverrideInput): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     await addOverride(actor, input)
     revalidatePath(`/admin/users/${input.userId}/overrides`)
     return { ok: true }

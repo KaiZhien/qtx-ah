@@ -44,8 +44,8 @@ function toUserMessage(err: unknown): string {
  * thrown.
  */
 export async function inviteUserAction(input: InviteUserInput): Promise<InviteResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     const { userId } = await inviteUser(actor, input)
 
     const supabase = createAdminClient()
@@ -65,8 +65,8 @@ export async function inviteUserAction(input: InviteUserInput): Promise<InviteRe
 
 /** Re-sends the Supabase Auth invite for a user still awaiting first sign-in. */
 export async function resendInviteAction(email: string): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     authorize(actor, 'manage_users', 'admin')
     const supabase = createAdminClient()
     const { error } = await supabase.auth.admin.inviteUserByEmail(email)
@@ -92,8 +92,8 @@ export async function resendInviteAction(email: string): Promise<ActionResult> {
 export async function setUserActiveAction(
   userId: string, active: boolean, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     const { authUserId } = await setUserActive(actor, userId, active, version)
 
     if (!active && authUserId) {
@@ -117,8 +117,8 @@ export async function setUserActiveAction(
 export async function updateUserAccessAction(
   userId: string, input: UpdateAccessInput, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     await updateUserAccess(actor, userId, input, version)
     revalidatePath('/admin/users')
     return { ok: true }
@@ -129,8 +129,8 @@ export async function updateUserAccessAction(
 
 /** Resets a user's MFA factor (admin recovery). They re-enroll on next login. */
 export async function resetUserMfaAction(userId: string): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     await resetUserMfa(actor, userId)
     revalidatePath('/admin/users')
     return { ok: true }

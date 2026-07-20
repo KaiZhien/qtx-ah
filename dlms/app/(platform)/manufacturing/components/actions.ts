@@ -33,8 +33,8 @@ function toUserMessage(err: unknown): string {
 }
 
 export async function createTypeAction(input: CreateInput): Promise<CreateResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     const { id } = await createComponentType(actor, input)
     revalidatePath('/manufacturing/components')
     return { ok: true, id }
@@ -47,8 +47,8 @@ export async function createTypeAction(input: CreateInput): Promise<CreateResult
 export async function updateTypeAction(
   id: string, input: UpdateInput, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireAal2Actor()
   try {
+    const actor = await requireAal2Actor()
     await updateComponentType(actor, id, input, version)
     revalidatePath('/manufacturing/components')
     return { ok: true }
