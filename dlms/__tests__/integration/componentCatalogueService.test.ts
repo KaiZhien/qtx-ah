@@ -11,6 +11,7 @@ vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 
 let db: Client
 let adminId: string
+const createdTypeIds: string[] = []
 const admin = (): Actor => ({
   id: adminId, roleKey: 'super_admin',
   permissions: new Set(['manage_vocabularies', 'view_records']),
@@ -27,7 +28,13 @@ beforeAll(async () => {
   await db.connect()
   adminId = (await db.query(`SELECT id FROM app_user WHERE email='reetmitra8@gmail.com'`)).rows[0].id
 })
-afterAll(async () => { await db.end(); await getPool().end() })
+afterAll(async () => {
+  if (createdTypeIds.length > 0) {
+    await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [createdTypeIds])
+  }
+  await db.end()
+  await getPool().end()
+})
 
 describe('componentCatalogueService', () => {
   it('lists active types by default, incl. the three seeded', async () => {
@@ -46,6 +53,7 @@ describe('componentCatalogueService', () => {
     const { id } = await createComponentType(admin(), {
       code: 'cable', name: 'Cable', trackingMode: 'batch',
     })
+    createdTypeIds.push(id)
     const { rows } = await db.query(`SELECT tracking_mode FROM component_type WHERE id=$1`, [id])
     expect(rows[0].tracking_mode).toBe('batch')
     const audit = await db.query(
@@ -64,6 +72,7 @@ describe('componentCatalogueService', () => {
     const { id } = await createComponentType(admin(), {
       code: 'enclosure', name: 'Enclosure', trackingMode: 'batch',
     })
+    createdTypeIds.push(id)
     const v = (await db.query(`SELECT version FROM component_type WHERE id=$1`, [id])).rows[0].version
     await updateComponentType(admin(), id, { name: 'Enclosure v2', active: false }, v)
     const { rows } = await db.query(
@@ -75,6 +84,7 @@ describe('componentCatalogueService', () => {
     const { id } = await createComponentType(admin(), {
       code: 'gasket', name: 'Gasket', trackingMode: 'batch',
     })
+    createdTypeIds.push(id)
     await expect(updateComponentType(admin(), id, { name: 'X' }, 999))
       .rejects.toThrow(/modified by someone else/i)
   })

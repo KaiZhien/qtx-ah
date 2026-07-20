@@ -34,7 +34,8 @@ const install = async (over: Record<string, unknown> = {}) => {
 describe('component schema', () => {
   it('seeds the three existing component types with tracking_mode', async () => {
     const { rows } = await db.query(
-      `SELECT code, tracking_mode FROM component_type ORDER BY sort`)
+      `SELECT code, tracking_mode FROM component_type
+       WHERE code IN ('pcba_a','pcba_b','hmi_screen') ORDER BY sort`)
     expect(rows.map((r) => r.code)).toEqual(['pcba_a', 'pcba_b', 'hmi_screen'])
     expect(rows.every((r) => r.tracking_mode === 'serialized')).toBe(true)
   })
