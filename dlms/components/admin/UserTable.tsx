@@ -15,9 +15,10 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { UserForm, type UserFormValues } from '@/components/admin/UserForm'
 import {
   inviteUserAction, setUserActiveAction, updateUserAccessAction, resendInviteAction,
+  resetUserMfaAction,
 } from '@/app/(platform)/admin/users/actions'
 import type { UserListRow } from '@/modules/admin/services/userService'
-import { Mail, Pencil, Power, PowerOff, ShieldCheck, UserPlus } from 'lucide-react'
+import { KeyRound, Mail, Pencil, Power, PowerOff, ShieldCheck, UserPlus } from 'lucide-react'
 
 type UserTableProps = {
   users: UserListRow[]
@@ -47,6 +48,7 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<UserListRow | null>(null)
   const [toggleTarget, setToggleTarget] = useState<UserListRow | null>(null)
+  const [mfaResetTarget, setMfaResetTarget] = useState<UserListRow | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [resendingId, setResendingId] = useState<string | null>(null)
@@ -112,6 +114,23 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
       }
       toast.success(nextActive ? 'User activated' : 'User deactivated')
       setToggleTarget(null)
+      router.refresh()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleConfirmResetMfa() {
+    if (!mfaResetTarget) return
+    setSubmitting(true)
+    try {
+      const res = await resetUserMfaAction(mfaResetTarget.id)
+      if ('error' in res) {
+        toast.error(res.error)
+        return
+      }
+      toast.success(`MFA reset for ${mfaResetTarget.fullName}`)
+      setMfaResetTarget(null)
       router.refresh()
     } finally {
       setSubmitting(false)
@@ -219,6 +238,15 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
+                        {user.mfaEnrolled && (
+                          <Button
+                            size="sm" variant="ghost"
+                            title="Reset MFA"
+                            onClick={() => setMfaResetTarget(user)}
+                          >
+                            <KeyRound className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           size="sm" variant="ghost"
                           title={user.active ? 'Deactivate' : 'Activate'}
@@ -300,6 +328,27 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
               onClick={(e) => { e.preventDefault(); handleConfirmToggle() }}
             >
               {submitting ? 'Working…' : toggleTarget?.active ? 'Deactivate' : 'Activate'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset MFA confirm */}
+      <AlertDialog open={mfaResetTarget !== null} onOpenChange={(open) => { if (!open) setMfaResetTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset MFA?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This signs them out of MFA — they&apos;ll set it up again on next login.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={submitting}
+              onClick={(e) => { e.preventDefault(); handleConfirmResetMfa() }}
+            >
+              {submitting ? 'Working…' : 'Reset MFA'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
