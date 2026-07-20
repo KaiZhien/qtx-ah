@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createRepair, updateRepair, changeRepairStatus, signOffRepair,
   RepairNotFoundError, RepairDeviceNotFoundError,
@@ -23,6 +23,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
  * Postgres/internal error can never reach the browser.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof InvalidRepairTransitionError) return err.message
   if (err instanceof RepairSignOffError) return err.message
   if (err instanceof RepairDeviceNotFoundError) {
@@ -43,7 +46,7 @@ export async function createRepairAction(
   input: CreateRepairInput,
 ): Promise<ActionResult<{ repairId: string; deviceMoved: boolean }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const { repairId, deviceMoved } = await createRepair(actor, input)
     revalidatePath('/maintenance')
     revalidatePath('/maintenance/repairs')
@@ -57,7 +60,7 @@ export async function updateRepairAction(
   input: UpdateRepairInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateRepair(actor, input)
     revalidatePath(`/maintenance/repairs/${input.repairId}`)
     return { ok: true, data: res }
@@ -70,7 +73,7 @@ export async function changeRepairStatusAction(
   input: ChangeRepairStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeRepairStatus(actor, input)
     revalidatePath('/maintenance')
     revalidatePath(`/maintenance/repairs/${input.repairId}`)
@@ -84,7 +87,7 @@ export async function signOffRepairAction(
   input: SignOffRepairInput,
 ): Promise<ActionResult<{ deviceReturned: boolean }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await signOffRepair(actor, input)
     revalidatePath('/maintenance')
     revalidatePath(`/maintenance/repairs/${input.repairId}`)
