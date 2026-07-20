@@ -1,13 +1,73 @@
 import { notFound } from 'next/navigation'
+import Link from 'next/link'
+import { Banknote, Users } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
-import { MODULE_REGISTRY } from '@/modules/shared/navigation/moduleRegistry'
-import { ModuleLanding } from '@/components/platform/ModuleLanding'
+import { getInvoiceStatusCounts } from '@/modules/finance/services/invoiceService'
+import { InvoiceStatusPill } from '@/components/finance/InvoiceStatusPill'
 
+const STATUS_LABEL: Record<string, string> = { draft: 'Draft', issued: 'Issued', paid: 'Paid', void: 'Void' }
+
+/**
+ * The Finance landing page (spec §4.1: Finance = Sales invoices · Buyers ·
+ * Approval queue — this basic build has no approval queue, the D18/threshold-
+ * approval engine is out of scope). Gated on view_finance, not the coarser
+ * module-registry gate (view_records) — spec §3.2: Viewer never holds
+ * view_finance even with Finance module access, and D12 makes this
+ * page-level gate the whole masking story for this basic build.
+ */
 export default async function FinancePage() {
   const actor = await requireActor()
-  const def = MODULE_REGISTRY.find((m) => m.key === 'finance')!
-  // 404 rather than 403: a denial must not confirm the section exists (spec §7.3).
-  if (!can(actor, def.gate, def.key)) notFound()
-  return <ModuleLanding module={def} buildWeek="Week 8" />
+  if (!can(actor, 'view_finance', 'finance')) notFound()
+
+  const counts = await getInvoiceStatusCounts(actor)
+
+  return (
+    <div className="max-w-3xl space-y-8">
+      <div className="flex items-center gap-3">
+        <Banknote className="h-8 w-8 text-slate-400" aria-hidden="true" />
+        <h1 className="text-2xl font-semibold text-slate-900">Finance</h1>
+      </div>
+      <p className="text-slate-600">Sales invoices and buyers (D18: sales invoices only — SGD).</p>
+
+      <div>
+        <h2 className="mb-3 text-sm font-medium text-muted-foreground">Invoices by status</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {counts.map((c) => (
+            <Link
+              key={c.status}
+              href={`/finance/invoices?status=${c.status}`}
+              className="rounded-md border p-4 hover:bg-slate-50"
+            >
+              <div className="mb-1"><InvoiceStatusPill status={c.status} /></div>
+              <p className="text-2xl font-semibold text-slate-900">{c.count}</p>
+              <p className="text-xs text-muted-foreground">{STATUS_LABEL[c.status]}</p>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <Link
+          href="/finance/invoices"
+          className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
+        >
+          <Banknote className="h-4 w-4" aria-hidden="true" />
+          Sales invoices
+        </Link>
+        <Link
+          href="/finance/buyers"
+          className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
+        >
+          <Users className="h-4 w-4" aria-hidden="true" />
+          Buyers
+        </Link>
+      </div>
+
+      <p className="inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
+        Approval queue (invoices ≥ threshold) lands with the platform-wide approvals engine — not part of this
+        basic build.
+      </p>
+    </div>
+  )
 }
