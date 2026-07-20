@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { InvalidTransitionError } from '@/modules/engineering/domain/transition'
@@ -19,6 +19,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
  * Postgres/internal error can never reach the browser.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof InvalidTransitionError) return err.message
   if (err instanceof RecordNotFoundError) return 'That change request no longer exists. Reload and try again.'
   if (err instanceof OptimisticLockError) return 'Someone else changed this request. Reload and try again.'
@@ -31,7 +34,7 @@ export async function createEcrAction(
   input: CreateEcrInput,
 ): Promise<ActionResult<{ id: string; ecrNo: string }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await createEcr(actor, input)
     revalidatePath('/engineering/ecr')
     return { ok: true, data: res }
@@ -44,7 +47,7 @@ export async function updateEcrAction(
   input: UpdateEcrInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateEcr(actor, input)
     revalidatePath(`/engineering/ecr/${input.id}`)
     return { ok: true, data: res }
@@ -57,7 +60,7 @@ export async function changeEcrStatusAction(
   input: ChangeEcrStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeEcrStatus(actor, input)
     revalidatePath(`/engineering/ecr/${input.id}`)
     return { ok: true, data: res }

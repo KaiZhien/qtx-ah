@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { InvalidTransitionError } from '@/modules/engineering/domain/transition'
@@ -14,6 +14,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
 
 /** Sanitization contract for ECO actions — see deviceWriteActions.toMessage. */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof InvalidTransitionError) return err.message
   if (err instanceof RecordNotFoundError) return 'That change order no longer exists. Reload and try again.'
   if (err instanceof OptimisticLockError) return 'Someone else changed this order. Reload and try again.'
@@ -26,7 +29,7 @@ export async function createEcoAction(
   input: CreateEcoInput,
 ): Promise<ActionResult<{ id: string; ecoNo: string }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await createEco(actor, input)
     revalidatePath('/engineering/eco')
     return { ok: true, data: res }
@@ -39,7 +42,7 @@ export async function updateEcoAction(
   input: UpdateEcoInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateEco(actor, input)
     revalidatePath(`/engineering/eco/${input.id}`)
     return { ok: true, data: res }
@@ -52,7 +55,7 @@ export async function changeEcoStatusAction(
   input: ChangeEcoStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeEcoStatus(actor, input)
     revalidatePath(`/engineering/eco/${input.id}`)
     return { ok: true, data: res }

@@ -231,8 +231,9 @@ export type ChangeEcoStatusInput = z.input<typeof changeEcoStatusSchema>
 /**
  * Move an ECO through its status flow. The submitted→approved step is the one
  * approval gate in basic scope: it demands approve_requests IN ADDITION to the
- * edit_records every move needs. Because that second authorize() runs inside
- * the transaction, a denied approval writes nothing.
+ * edit_records every move needs. That second authorize() runs BEFORE
+ * withTransaction opens, not inside it — which is fine, since it throws
+ * before the transaction starts, so a denied approval still writes nothing.
  */
 export async function changeEcoStatus(
   actor: Actor, input: ChangeEcoStatusInput,
