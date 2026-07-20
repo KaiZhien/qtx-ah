@@ -298,8 +298,13 @@ BEGIN
     RAISE EXCEPTION 'component_installation is append-only — rows cannot be deleted'
       USING ERRCODE = '23514';
   END IF;
+  -- batch_no is frozen too: for a batch-tracked installation it IS the "what was
+  -- installed" fact (the role component_unit_id plays for serialized parts), so
+  -- leaving it mutable would let a historical batch installation be silently
+  -- rewritten. Corrected 2026-07-20 after review.
   IF OLD.device_id <> NEW.device_id OR OLD.component_type_id <> NEW.component_type_id
      OR OLD.component_unit_id IS DISTINCT FROM NEW.component_unit_id
+     OR OLD.batch_no IS DISTINCT FROM NEW.batch_no
      OR OLD.slot_no <> NEW.slot_no OR OLD.installed_at <> NEW.installed_at
      OR OLD.installed_by <> NEW.installed_by OR OLD.created_at <> NEW.created_at THEN
     RAISE EXCEPTION 'component_installation is append-only — identity and install facts are immutable'
