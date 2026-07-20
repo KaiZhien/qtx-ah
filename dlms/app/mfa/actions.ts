@@ -18,13 +18,16 @@ export async function markMfaEnrolledAction(): Promise<{ ok: true } | { error: s
     const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (data?.currentLevel !== 'aal2') return { ok: true } // not actually elevated → nothing to stamp
 
-    await withTransaction(actor.id, async (tx) => {
-      await tx.query(
+    const updated = await withTransaction(actor.id, async (tx) => {
+      const res = await tx.query(
         `UPDATE app_user
             SET mfa_enrolled = true, updated_at = now(), updated_by = $1, version = version + 1
           WHERE id = $1 AND mfa_enrolled = false`, [actor.id])
+      return res.rowCount ?? 0
     })
-    await recordAuthEvent({ userId: actor.id, eventType: 'mfa_enrolled' })
+    if (updated > 0) {
+      await recordAuthEvent({ userId: actor.id, eventType: 'mfa_enrolled' })
+    }
     return { ok: true }
   } catch (err) {
     console.error(JSON.stringify({ level: 'error', msg: 'markMfaEnrolled failed', err: String(err) }))
