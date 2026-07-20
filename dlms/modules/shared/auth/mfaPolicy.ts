@@ -13,3 +13,31 @@ const MFA_REQUIRED: ReadonlySet<RoleKey> = new Set<RoleKey>(['super_admin', 'adm
 export function requiresMfa(roleKey: RoleKey): boolean {
   return MFA_REQUIRED.has(roleKey)
 }
+
+/** Supabase authenticator assurance level. aal1 = password; aal2 = password + verified TOTP. */
+export type AalLevel = 'aal1' | 'aal2'
+
+/**
+ * The gate (spec §5.1): does this actor still owe a second factor to enter the
+ * platform? Non-MFA roles are always satisfied. For an MFA role, only a live
+ * aal2 session satisfies it — a null level (AAL read failed / absent) fails
+ * closed to 'required'.
+ */
+export function mfaGateStatus(
+  input: { roleKey: RoleKey; currentLevel: AalLevel | null },
+): 'satisfied' | 'required' {
+  if (!requiresMfa(input.roleKey)) return 'satisfied'
+  return input.currentLevel === 'aal2' ? 'satisfied' : 'required'
+}
+
+/**
+ * What the /mfa screen should do given the user's factor + session state.
+ * 'done' once aal2 (the page redirects away); otherwise enroll a first factor
+ * or challenge an existing one. A null level fails closed toward enrolling.
+ */
+export function mfaStepFor(
+  input: { hasVerifiedFactor: boolean; currentLevel: AalLevel | null },
+): 'enroll' | 'challenge' | 'done' {
+  if (input.currentLevel === 'aal2') return 'done'
+  return input.hasVerifiedFactor ? 'challenge' : 'enroll'
+}
