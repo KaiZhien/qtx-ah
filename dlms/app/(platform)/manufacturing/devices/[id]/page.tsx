@@ -1,12 +1,15 @@
 import { notFound } from 'next/navigation'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
-import { getDevice } from '@/modules/manufacturing/services/deviceReadService'
+import { getDevice, listVariantOptions, listPhaseOptions } from '@/modules/manufacturing/services/deviceReadService'
+import { listAllowedTransitions } from '@/modules/manufacturing/services/deviceWriteService'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { DeviceStatusPill } from '@/components/manufacturing/StatusPill'
 import { DeviceComponentsTab } from '@/components/manufacturing/DeviceComponentsTab'
+import { DeviceEditDialog } from '@/components/manufacturing/DeviceEditDialog'
+import { StatusChangeControl } from '@/components/manufacturing/StatusChangeControl'
 
 type PageProps = { params: { id: string } }
 
@@ -57,6 +60,14 @@ export default async function DeviceDetailPage({ params }: PageProps) {
   const device = await getDevice(actor, params.id)
   if (!device) notFound()
 
+  const canEditDevice = can(actor, 'edit_records', 'manufacturing')
+  const canChangeStatus = can(actor, 'change_device_status', 'manufacturing')
+  const [transitions, variantOptions, phaseOptions] = await Promise.all([
+    canChangeStatus ? listAllowedTransitions(actor, device.status) : Promise.resolve([]),
+    canEditDevice ? listVariantOptions(actor) : Promise.resolve([]),
+    canEditDevice ? listPhaseOptions(actor) : Promise.resolve([]),
+  ])
+
   return (
     <div className="space-y-6">
       <div>
@@ -67,7 +78,22 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <Badge variant="outline">{device.variantName}</Badge>
           <DeviceStatusPill status={device.status} label={device.statusLabel} />
           {device.needsDataReview && <Badge variant="warning">Needs review</Badge>}
+          {canEditDevice && (
+            <div className="ml-auto">
+              <DeviceEditDialog device={device} variantOptions={variantOptions} phaseOptions={phaseOptions} />
+            </div>
+          )}
         </div>
+        {canChangeStatus && (
+          <div className="mt-3">
+            <StatusChangeControl
+              deviceId={device.id}
+              version={device.version}
+              currentLabel={device.statusLabel}
+              transitions={transitions}
+            />
+          </div>
+        )}
         {device.deviceSn && device.legacySn && (
           <p className="mt-1 text-sm text-muted-foreground">Legacy serial: {device.legacySn}</p>
         )}
