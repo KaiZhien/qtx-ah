@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
 import { changeDeviceStatus, DeviceNotFoundError } from '@/modules/manufacturing/services/deviceWriteService'
+import { createDevice, updateDevice, listAllowedTransitions, DuplicateSerialError } from '@/modules/manufacturing/services/deviceWriteService'
 import { InvalidStatusChangeError } from '@/modules/manufacturing/domain/deviceStatus'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { PermissionError } from '@/modules/shared/authz/authorize'
@@ -120,5 +121,94 @@ describe('changeDeviceStatus', () => {
     await expect(changeDeviceStatus(op(), {
       deviceId: '00000000-0000-0000-0000-000000000000', toStatus: 'quality_check', version: 1,
     })).rejects.toThrow(DeviceNotFoundError)
+  })
+})
+
+describe('createDevice', () => {
+  it('refuses an actor without create_records', async () => {
+    await expect(createDevice(viewer(), { variantCode: 'pro' })).rejects.toThrow(PermissionError)
+  })
+
+  it('creates a device at the initial status with a "Created" history row', async () => {
+    const res = await createDevice(op(), {
+      variantCode: 'pro', deviceSn: `QTX-W-${runTag}`, productName: 'Widget', customer: 'ACME',
+    })
+    createdDeviceIds.push(res.deviceId)
+    expect(res.status).toBe('in_production') // the seeded is_initial status
+    const dev = await db.query(`SELECT status, device_sn, product_name, created_by, version FROM device WHERE id=$1`, [res.deviceId])
+    expect(dev.rows[0]).toMatchObject({
+      status: 'in_production', device_sn: `QTX-W-${runTag}`, product_name: 'Widget', created_by: userId, version: 1,
+    })
+    const hist = await db.query(`SELECT from_status, to_status FROM device_status_history WHERE device_id=$1`, [res.deviceId])
+    expect(hist.rows).toEqual([{ from_status: null, to_status: 'in_production' }])
+  })
+
+  it('rejects an unknown variant', async () => {
+    await expect(createDevice(op(), { variantCode: 'nope' })).rejects.toThrow(/variant/i)
+  })
+
+  it('rejects a duplicate serial with DuplicateSerialError', async () => {
+    const sn = `QTX-DUP-${runTag}`
+    const a = await createDevice(op(), { variantCode: 'pro', deviceSn: sn })
+    createdDeviceIds.push(a.deviceId)
+    await expect(createDevice(op(), { variantCode: 'pro', deviceSn: sn })).rejects.toThrow(DuplicateSerialError)
+  })
+})
+
+describe('updateDevice', () => {
+  it('edits non-status fields, bumps version, leaves status untouched', async () => {
+    const c = await createDevice(op(), { variantCode: 'pro', productName: 'Before' })
+    createdDeviceIds.push(c.deviceId)
+    const dev0 = await db.query(`SELECT version, status FROM device WHERE id=$1`, [c.deviceId])
+    const res = await updateDevice(op(), {
+      deviceId: c.deviceId, version: dev0.rows[0].version, productName: 'After', remarks: 'note',
+    })
+    expect(res.version).toBe(dev0.rows[0].version + 1)
+    const dev1 = await db.query(`SELECT product_name, remarks, status, updated_by FROM device WHERE id=$1`, [c.deviceId])
+    expect(dev1.rows[0]).toMatchObject({
+      product_name: 'After', remarks: 'note', status: dev0.rows[0].status, updated_by: userId,
+    })
+  })
+
+  it('rejects a stale version', async () => {
+    const c = await createDevice(op(), { variantCode: 'pro' })
+    createdDeviceIds.push(c.deviceId)
+    await expect(updateDevice(op(), { deviceId: c.deviceId, version: 999, productName: 'x' }))
+      .rejects.toThrow(OptimisticLockError)
+  })
+
+  it('rejects renaming to an existing serial (DuplicateSerialError)', async () => {
+    const taken = `QTX-TAKEN-${runTag}`
+    const a = await createDevice(op(), { variantCode: 'pro', deviceSn: taken })
+    const b = await createDevice(op(), { variantCode: 'pro' })
+    createdDeviceIds.push(a.deviceId, b.deviceId)
+    const bv = (await db.query(`SELECT version FROM device WHERE id=$1`, [b.deviceId])).rows[0].version
+    await expect(updateDevice(op(), { deviceId: b.deviceId, version: bv, deviceSn: taken }))
+      .rejects.toThrow(DuplicateSerialError)
+  })
+
+  it('does NOT expose a status field (status is change-only)', async () => {
+    const c = await createDevice(op(), { variantCode: 'pro' })
+    createdDeviceIds.push(c.deviceId)
+    const bv = (await db.query(`SELECT version FROM device WHERE id=$1`, [c.deviceId])).rows[0].version
+    // @ts-expect-error status is intentionally not part of UpdateDeviceInput
+    await updateDevice(op(), { deviceId: c.deviceId, version: bv, status: 'shipped' })
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [c.deviceId])
+    expect(dev.rows[0].status).toBe('in_production') // ignored
+  })
+})
+
+describe('listAllowedTransitions', () => {
+  it('returns only the edges out of the given status, with metadata', async () => {
+    const rows = await listAllowedTransitions(op(), 'quality_check')
+    const codes = rows.map((r) => r.toStatus).sort()
+    expect(codes).toEqual(['in_production', 'in_stock']) // the two edges from quality_check
+    const rework = rows.find((r) => r.toStatus === 'in_production')!
+    expect(rework.requiresReason).toBe(true)
+    expect(rework.isTerminal).toBe(false)
+  })
+
+  it('returns [] for a terminal status', async () => {
+    expect(await listAllowedTransitions(op(), 'retired')).toEqual([])
   })
 })

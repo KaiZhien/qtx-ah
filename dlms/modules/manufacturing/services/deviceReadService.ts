@@ -204,3 +204,13 @@ export async function listVariantOptions(actor: Actor): Promise<VocabOption[]> {
     return rows.map((r) => ({ code: r.code, label: r.name }))
   })
 }
+
+/** Active phase codes for the create/edit forms (legacy manufacturing phase). */
+export async function listPhaseOptions(actor: Actor): Promise<VocabOption[]> {
+  authorize(actor, 'view_records', 'manufacturing')
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ code: string; label_en: string }>(
+      `SELECT code, label_en FROM phase_option WHERE active ORDER BY sort_order`)
+    return rows.map((r) => ({ code: r.code, label: r.label_en }))
+  })
+}

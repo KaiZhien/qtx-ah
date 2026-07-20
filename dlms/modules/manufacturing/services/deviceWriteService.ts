@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
+import { withTransaction, OptimisticLockError } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import {
@@ -95,5 +95,188 @@ export async function changeDeviceStatus(
       [data.deviceId, current.status, data.toStatus, data.reason ?? null, actor.id])
 
     return { status: data.toStatus, version: updated[0].version }
+  })
+}
+
+export class DuplicateSerialError extends Error {
+  constructor(sn: string) {
+    super(`A device with serial "${sn}" already exists`)
+    this.name = 'DuplicateSerialError'
+  }
+}
+
+// device_sn_unique is a partial unique index (device_sn IS NOT NULL AND
+// deleted_at IS NULL) → Postgres error 23505. Map it to the friendly error;
+// re-throw anything else.
+function rethrowDbError(err: unknown, deviceSn: string | null | undefined): never {
+  if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '23505'
+      && deviceSn) throw new DuplicateSerialError(deviceSn)
+  throw err
+}
+
+const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+
+const createSchema = z.object({
+  variantCode: z.string().min(1),
+  deviceSn: z.string().max(100).optional(),
+  phase: z.string().max(50).optional(),
+  productName: z.string().max(200).optional(),
+  modelNo: z.string().max(100).optional(),
+  customer: z.string().max(200).optional(),
+  destination: z.string().max(200).optional(),
+  remarks: z.string().max(5000).optional(),
+  buildDate: DATE.optional(),
+  shipDate: DATE.optional(),
+  deliveredDate: DATE.optional(),
+})
+export type CreateDeviceInput = z.input<typeof createSchema>
+
+/**
+ * Create a device at the vocabulary's initial status (spec §5.2: is_initial =
+ * creation-only). One transaction: resolve the variant, insert the device at
+ * the initial status, and write the "Created → initial" history row so the
+ * profile's Status-history tab reads correctly from the first moment.
+ */
+export async function createDevice(
+  actor: Actor, input: CreateDeviceInput,
+): Promise<{ deviceId: string; status: string }> {
+  authorize(actor, 'create_records', 'manufacturing')
+  const data = createSchema.parse(input)
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows: vRows } = await tx.query<{ id: string }>(
+      `SELECT id FROM device_variant WHERE code = $1 AND active`, [data.variantCode])
+    if (vRows.length === 0) throw new Error(`Unknown or inactive variant: ${data.variantCode}`)
+
+    const { rows: sRows } = await tx.query<{ code: string }>(
+      `SELECT code FROM status_option WHERE is_initial AND active ORDER BY sort_order LIMIT 1`)
+    if (sRows.length === 0) throw new Error('No initial device status is configured')
+    const initialStatus = sRows[0].code
+
+    let deviceId: string
+    try {
+      const { rows } = await tx.query<{ id: string }>(
+        `INSERT INTO device
+           (device_sn, variant_id, status, phase, product_name, model_no, customer,
+            destination, remarks, build_date, ship_date, delivered_date, created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+         RETURNING id`,
+        [data.deviceSn ?? null, vRows[0].id, initialStatus, data.phase ?? null,
+         data.productName ?? null, data.modelNo ?? null, data.customer ?? null,
+         data.destination ?? null, data.remarks ?? null, data.buildDate ?? null,
+         data.shipDate ?? null, data.deliveredDate ?? null, actor.id])
+      deviceId = rows[0].id
+    } catch (err) {
+      rethrowDbError(err, data.deviceSn)
+    }
+
+    await tx.query(
+      `INSERT INTO device_status_history (device_id, from_status, to_status, changed_by)
+       VALUES ($1, NULL, $2, $3)`, [deviceId!, initialStatus, actor.id])
+
+    return { deviceId: deviceId!, status: initialStatus }
+  })
+}
+
+const updateSchema = z.object({
+  deviceId: z.string().uuid(),
+  version: z.number().int().nonnegative(),
+  deviceSn: z.string().max(100).nullish(),
+  variantCode: z.string().min(1).optional(),
+  phase: z.string().max(50).nullish(),
+  productName: z.string().max(200).nullish(),
+  modelNo: z.string().max(100).nullish(),
+  customer: z.string().max(200).nullish(),
+  destination: z.string().max(200).nullish(),
+  remarks: z.string().max(5000).nullish(),
+  buildDate: DATE.nullish(),
+  shipDate: DATE.nullish(),
+  deliveredDate: DATE.nullish(),
+})
+export type UpdateDeviceInput = z.input<typeof updateSchema>
+
+// The editable columns, mapping camelCase input keys → device columns. status is
+// deliberately absent: it is changed ONLY through changeDeviceStatus so the
+// transition graph and history log can never be bypassed (Global Constraints).
+const UPDATE_COLUMNS: Record<string, string> = {
+  deviceSn: 'device_sn', phase: 'phase', productName: 'product_name', modelNo: 'model_no',
+  customer: 'customer', destination: 'destination', remarks: 'remarks',
+  buildDate: 'build_date', shipDate: 'ship_date', deliveredDate: 'delivered_date',
+}
+
+/**
+ * Edit a device's non-status fields under optimistic concurrency. Only the keys
+ * actually present in the input are written (a partial update), so omitting a
+ * field leaves it untouched while explicitly passing null clears it. Status is
+ * not editable here by construction.
+ */
+export async function updateDevice(
+  actor: Actor, input: UpdateDeviceInput,
+): Promise<{ version: number }> {
+  authorize(actor, 'edit_records', 'manufacturing')
+  const data = updateSchema.parse(input)
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows: devRows } = await tx.query<{ version: number }>(
+      `SELECT version FROM device WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.deviceId])
+    if (devRows.length === 0) throw new DeviceNotFoundError(data.deviceId)
+    if (devRows[0].version !== data.version) throw new OptimisticLockError('device', data.deviceId)
+
+    const sets: string[] = []
+    const params: unknown[] = []
+    const p = (v: unknown) => { params.push(v); return `$${params.length}` }
+
+    if (data.variantCode !== undefined) {
+      const { rows } = await tx.query<{ id: string }>(
+        `SELECT id FROM device_variant WHERE code = $1 AND active`, [data.variantCode])
+      if (rows.length === 0) throw new Error(`Unknown or inactive variant: ${data.variantCode}`)
+      sets.push(`variant_id = ${p(rows[0].id)}`)
+    }
+    for (const [key, col] of Object.entries(UPDATE_COLUMNS)) {
+      if (key in data && (data as Record<string, unknown>)[key] !== undefined) {
+        sets.push(`${col} = ${p((data as Record<string, unknown>)[key])}`)
+      }
+    }
+
+    const setSql = [...sets, `updated_at = now()`, `updated_by = ${p(actor.id)}`,
+                    `version = version + 1`].join(', ')
+    try {
+      const { rows } = await tx.query<{ version: number }>(
+        `UPDATE device SET ${setSql} WHERE id = ${p(data.deviceId)} AND version = ${p(data.version)}
+          RETURNING version`, params)
+      if (rows.length === 0) throw new OptimisticLockError('device', data.deviceId)
+      return { version: rows[0].version }
+    } catch (err) {
+      rethrowDbError(err, data.deviceSn)
+    }
+  })
+}
+
+export type AllowedTransition = {
+  toStatus: string; toLabel: string; requiresReason: boolean; isTerminal: boolean
+}
+
+/**
+ * The edges out of `fromStatus`, for the status-change UI. Ordered by the
+ * target's sort_order so the dropdown reads in lifecycle order. Returns [] for
+ * a terminal or unknown status (the graph simply has no rows). Read-only.
+ */
+export async function listAllowedTransitions(
+  actor: Actor, fromStatus: string,
+): Promise<AllowedTransition[]> {
+  authorize(actor, 'view_records', 'manufacturing')
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{
+      to_status: string; to_label: string; requires_reason: boolean; is_terminal: boolean
+    }>(
+      `SELECT st.to_status, so.label_en AS to_label, st.requires_reason, so.is_terminal
+         FROM status_transition st
+         JOIN status_option so ON so.code = st.to_status
+        WHERE st.from_status = $1 AND so.active
+        ORDER BY so.sort_order`, [fromStatus])
+    return rows.map((r) => ({
+      toStatus: r.to_status, toLabel: r.to_label,
+      requiresReason: r.requires_reason, isTerminal: r.is_terminal,
+    }))
   })
 }
