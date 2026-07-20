@@ -25,12 +25,15 @@ let userId: string
 const createdRepairIds: string[] = []
 const createdDeviceIds: string[] = []
 
-// operator: view/create/edit on maintenance — can open, edit, and walk repairs,
-// but cannot sign off and cannot change device status.
+// operator: mirrors the SEEDED operator role (catalog.ts), which holds
+// change_device_status, with the manufacturing+maintenance module access a
+// real operator carries — so the cross-module device move in createRepair/
+// sign-off actually runs (it calls Manufacturing's changeDeviceStatus with
+// this actor). Cannot sign off (no sign_off_repairs).
 const op = (): Actor => ({
   id: userId, roleKey: 'operator',
-  permissions: new Set(['view_records', 'create_records', 'edit_records']),
-  moduleAccess: new Set(['maintenance']), active: true,
+  permissions: new Set(['view_records', 'create_records', 'edit_records', 'change_device_status']),
+  moduleAccess: new Set(['maintenance', 'manufacturing']), active: true,
 })
 // signer: adds sign_off_repairs (maintenance) AND change_device_status +
 // manufacturing module access, so sign-off can also return the device to service.
