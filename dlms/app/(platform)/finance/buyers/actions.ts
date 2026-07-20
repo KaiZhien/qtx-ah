@@ -1,6 +1,6 @@
 'use server'
 
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { listBuyers } from '@/modules/finance/services/buyerService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { BuyerFilter, BuyerListItem } from '@/modules/finance/services/buyerService'
@@ -14,9 +14,12 @@ type LoadMoreResult = { items: BuyerListItem[]; nextCursor: string | null } | { 
  */
 export async function loadMoreBuyersAction(filter: BuyerFilter): Promise<LoadMoreResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     return await listBuyers(actor, filter)
   } catch (err) {
+    if (err instanceof MfaRequiredError) {
+      return { error: 'Two-factor authentication required — reload the page to finish signing in.' }
+    }
     if (err instanceof PermissionError) {
       return { error: "You don't have permission to view these buyers." }
     }

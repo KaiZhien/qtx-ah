@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createInvoice, updateInvoice, changeInvoiceStatus,
   InvoiceNotFoundError, DuplicateInvoiceNoError,
@@ -21,6 +21,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
  * with a generic line so a raw Postgres/internal error can never reach the browser.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof DuplicateInvoiceNoError) return err.message
   if (err instanceof InvalidInvoiceStatusChangeError) return err.message
   if (err instanceof BuyerNotFoundError) return 'That buyer no longer exists. Reload and try again.'
@@ -35,7 +38,7 @@ export async function createInvoiceAction(
   input: CreateInvoiceInput,
 ): Promise<ActionResult<{ invoiceId: string }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const { invoiceId } = await createInvoice(actor, input)
     revalidatePath('/finance/invoices')
     return { ok: true, data: { invoiceId } }
@@ -48,7 +51,7 @@ export async function updateInvoiceAction(
   input: UpdateInvoiceInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateInvoice(actor, input)
     revalidatePath(`/finance/invoices/${input.invoiceId}`)
     return { ok: true, data: res }
@@ -61,7 +64,7 @@ export async function changeInvoiceStatusAction(
   input: ChangeInvoiceStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeInvoiceStatus(actor, input)
     revalidatePath(`/finance/invoices/${input.invoiceId}`)
     revalidatePath('/finance')
