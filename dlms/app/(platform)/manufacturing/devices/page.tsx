@@ -1,4 +1,6 @@
 import { notFound } from 'next/navigation'
+import Link from 'next/link'
+import { Plus } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import {
@@ -6,6 +8,7 @@ import {
 } from '@/modules/manufacturing/services/deviceReadService'
 import { DeviceFilters } from '@/components/manufacturing/DeviceFilters'
 import { DeviceTable } from '@/components/manufacturing/DeviceTable'
+import { Button } from '@/components/ui/button'
 
 const PAGE_SIZE = 25
 
@@ -46,11 +49,21 @@ export default async function DevicesPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Devices</h1>
-        <p className="mt-1 text-slate-600">
-          The full device registry — search by serial, filter, and open a record.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Devices</h1>
+          <p className="mt-1 text-slate-600">
+            The full device registry — search by serial, filter, and open a record.
+          </p>
+        </div>
+        {can(actor, 'create_records', 'manufacturing') && (
+          <Button asChild>
+            <Link href="/manufacturing/devices/new">
+              <Plus className="mr-1.5 h-4 w-4" />
+              New device
+            </Link>
+          </Button>
+        )}
       </div>
       <DeviceFilters statusOptions={statusOptions} variantOptions={variantOptions} />
       <DeviceTable key={filterKey} initialItems={items} initialCursor={nextCursor} filter={filter} />
