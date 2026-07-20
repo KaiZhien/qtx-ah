@@ -446,7 +446,15 @@ function UnitOrBatchField({
     let cancelled = false
     setLoading(true)
     listAvailableUnitsAction(componentTypeId)
-      .then((rows) => { if (!cancelled) setUnits(rows) })
+      .then((res) => {
+        if (cancelled) return
+        if (res.ok) {
+          setUnits(res.units)
+        } else {
+          setUnits([])
+          toast.error(res.error)
+        }
+      })
       .catch(() => { if (!cancelled) toast.error('Could not load available units') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }

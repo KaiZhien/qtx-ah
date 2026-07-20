@@ -2,22 +2,39 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockRequireActor = vi.fn()
 const mockReplace = vi.fn()
+const mockInstall = vi.fn()
+const mockAuthorize = vi.fn()
+const mockWithTransaction = vi.fn()
 vi.mock('@/modules/shared/auth/session', () => ({ requireActor: mockRequireActor }))
 vi.mock('@/modules/manufacturing/services/componentService', () => ({
-  replaceComponentInstallation: mockReplace, installComponent: vi.fn(),
+  replaceComponentInstallation: mockReplace, installComponent: mockInstall,
 }))
 vi.mock('@/modules/manufacturing/domain/componentInstallation', () => ({
   InvalidReplacementError: class InvalidReplacementError extends Error {},
 }))
+vi.mock('@/modules/shared/authz/authorize', () => ({
+  authorize: mockAuthorize,
+  PermissionError: class PermissionError extends Error {},
+}))
+vi.mock('@/lib/db/tx', () => ({
+  OptimisticLockError: class OptimisticLockError extends Error {},
+  withTransaction: mockWithTransaction,
+}))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
-const { replaceComponentAction } = await import(
+const { replaceComponentAction, installComponentAction, listAvailableUnitsAction } = await import(
   '@/app/(platform)/manufacturing/devices/[id]/componentActions')
 
 const ACTOR = { id: 'u1', roleKey: 'operator' as const, permissions: new Set(['edit_records' as const]),
   moduleAccess: new Set(['manufacturing' as const]), active: true }
 
-beforeEach(() => { mockRequireActor.mockReset().mockResolvedValue(ACTOR); mockReplace.mockReset() })
+beforeEach(() => {
+  mockRequireActor.mockReset().mockResolvedValue(ACTOR)
+  mockReplace.mockReset()
+  mockInstall.mockReset()
+  mockAuthorize.mockReset()
+  mockWithTransaction.mockReset()
+})
 
 describe('replaceComponentAction', () => {
   it('reports success', async () => {
@@ -39,5 +56,25 @@ describe('replaceComponentAction', () => {
       replacementUnitId: 'u2' })
     expect(res.ok).toBe(false)
     expect((res as { error: string }).error).not.toContain('constraint')
+  })
+})
+
+describe('installComponentAction', () => {
+  it('never leaks an internal DB error', async () => {
+    mockInstall.mockRejectedValue(new Error('duplicate key value violates unique constraint "component_unit_serial_no_key"'))
+    const res = await installComponentAction('dev1', { componentTypeId: 't1', slotNo: 1, unitId: 'u1' })
+    expect(res.ok).toBe(false)
+    expect((res as { error: string }).error).not.toContain('constraint')
+  })
+})
+
+describe('listAvailableUnitsAction', () => {
+  it('never leaks a raw DB error thrown by the query', async () => {
+    mockWithTransaction.mockImplementation(async (_actorId: string, fn: (tx: unknown) => unknown) => fn({
+      query: vi.fn().mockRejectedValue(new Error('invalid input syntax for type uuid: "nope"')),
+    }))
+    const res = await listAvailableUnitsAction('nope')
+    expect(res).toEqual({ ok: false, error: 'Something went wrong. Try again, and tell Reet if it keeps happening.' })
+    expect(JSON.stringify(res)).not.toContain('invalid input syntax')
   })
 })

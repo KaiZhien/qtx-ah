@@ -54,6 +54,10 @@ export async function installComponentAction(
 
 export type AvailableUnit = { id: string; serialNo: string }
 
+export type ListUnitsResult =
+  | { ok: true; units: AvailableUnit[] }
+  | { ok: false; error: string }
+
 /**
  * Backs the serialized-type unit picker in the Replace/Add dialogs. Not part
  * of Task 4's service surface (componentService) — a plain, read-only,
@@ -61,17 +65,27 @@ export type AvailableUnit = { id: string; serialNo: string }
  * style getDeviceComponents already uses rather than adding a new service
  * export. There is no unit-creation flow in this task's scope, so this only
  * offers units already sitting in stock.
+ *
+ * Same error contract as the write actions above: any thrown error (bad
+ * componentTypeId, transient DB failure) is caught and mapped through
+ * toMessage rather than allowed to propagate — a raw Postgres error must
+ * never reach the browser here either.
  */
-export async function listAvailableUnitsAction(componentTypeId: string): Promise<AvailableUnit[]> {
-  const actor = await requireActor()
-  authorize(actor, 'view_records', 'manufacturing')
-  return withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{ id: string; serial_no: string }>(
-      `SELECT id, serial_no FROM component_unit
-        WHERE component_type_id = $1 AND disposition = 'in_stock' AND deleted_at IS NULL
-        ORDER BY serial_no`,
-      [componentTypeId],
-    )
-    return rows.map((r) => ({ id: r.id, serialNo: r.serial_no }))
-  })
+export async function listAvailableUnitsAction(componentTypeId: string): Promise<ListUnitsResult> {
+  try {
+    const actor = await requireActor()
+    authorize(actor, 'view_records', 'manufacturing')
+    const units = await withTransaction(actor.id, async (tx) => {
+      const { rows } = await tx.query<{ id: string; serial_no: string }>(
+        `SELECT id, serial_no FROM component_unit
+          WHERE component_type_id = $1 AND disposition = 'in_stock' AND deleted_at IS NULL
+          ORDER BY serial_no`,
+        [componentTypeId],
+      )
+      return rows.map((r) => ({ id: r.id, serialNo: r.serial_no }))
+    })
+    return { ok: true, units }
+  } catch (err) {
+    return { ok: false, error: toMessage(err) }
+  }
 }
