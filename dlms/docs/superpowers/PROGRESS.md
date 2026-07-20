@@ -56,8 +56,9 @@ Ordered by dependency and priority. **RLS hardening is first** because the schem
 | # | Feature | Status | Priority rationale |
 |---|---|---|---|
 | R1 | **RLS defense-in-depth** on all platform tables | ✅ | Spec §11.1. Applied to cloud + verified (advisor ERROR cleared). 130 integration tests; deny-via-REST, app paths unaffected |
-| C1 | **Component catalogue + append-only device-component installation history** (§10–11) | 🔄 **NEXT** | Critical-path prerequisite for both Engineering and Maintenance |
-| — | Manufacturing **write path** (create/edit devices, status changes with the fail-closed transition graph, imports) | ⏳ | Completes the Manufacturing module beyond read-only |
+| C1 | **Component model** — catalogue, serialized units, append-only installation history, per-variant BOM, the §14 atomic replacement primitive, admin catalogue screen, device-profile Components tab | ✅ | 5 tasks merged; migration applied to cloud (RLS verified, advisor clean). 866 unit + 155 integration tests. Critical-path prerequisite for Engineering + Maintenance — now unblocked |
+| — | Manufacturing **write path** (create/edit devices, status changes with the fail-closed transition graph, imports) | 🔄 **NEXT candidate** | Completes the Manufacturing module beyond read-only |
+| — | Legacy component-data migration (DLMS PCBA/screen columns → component_unit/installation rows) | ⏳ | Follow-up now that the component schema is live |
 | — | Status-driven cross-department handoffs (transactional outbox → auto-tasks) | ⏳ | Depends on device write path + a worker |
 | — | Component catalogue + append-only installation history (§11) | ⏳ | Precedes Engineering + Maintenance per critical path |
 | — | Engineering module (ECR/ECO + approvals, failure/RCA, doc library, firmware, BOM) | ⏳ | The chosen first cross-dept module (interview) |
