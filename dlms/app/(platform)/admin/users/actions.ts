@@ -8,7 +8,7 @@ import { authorize, PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { LastSuperAdminError, SelfEscalationError } from '@/modules/admin/domain/userGuards'
 import {
-  inviteUser, setUserActive, updateUserAccess,
+  inviteUser, setUserActive, updateUserAccess, resetUserMfa,
   type InviteUserInput, type UpdateAccessInput,
 } from '@/modules/admin/services/userService'
 
@@ -117,6 +117,18 @@ export async function updateUserAccessAction(
   const actor = await requireActor()
   try {
     await updateUserAccess(actor, userId, input, version)
+    revalidatePath('/admin/users')
+    return { ok: true }
+  } catch (err) {
+    return { error: toUserMessage(err) }
+  }
+}
+
+/** Resets a user's MFA factor (admin recovery). They re-enroll on next login. */
+export async function resetUserMfaAction(userId: string): Promise<ActionResult> {
+  const actor = await requireActor()
+  try {
+    await resetUserMfa(actor, userId)
     revalidatePath('/admin/users')
     return { ok: true }
   } catch (err) {

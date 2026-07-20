@@ -5,6 +5,8 @@ import { authorize } from '@/modules/shared/authz/authorize'
 import { assertNotLastSuperAdmin, assertNotSelfEscalation } from '@/modules/admin/domain/userGuards'
 import { MODULES, ROLES } from '@/modules/shared/authz/catalog'
 import type { Actor, ModuleKey, RoleKey } from '@/modules/shared/authz/catalog'
+import { createAdminClient } from '@/lib/supabase/server'
+import { recordAuthEvent } from '@/modules/shared/auth/authEvents'
 
 const inviteSchema = z.object({
   email: z.string().email().max(255),
@@ -219,4 +221,39 @@ export async function updateUserAccess(
        WHERE id = $5`,
       [data.roleKey ?? null, data.department ?? null, data.moduleAccess ?? null, actor.id, userId])
   })
+}
+
+/**
+ * Resets a user's MFA (spec §5.6, the recovery path). Reads the target's linked
+ * auth id, deletes every Supabase TOTP factor via the admin API, clears the
+ * display flag, and trails an mfa_reset event — so the user must re-enroll on
+ * next login. The whole thing runs inside one withTransaction so a factor-delete
+ * failure rolls back the flag write (the external GoTrue calls are awaited
+ * inside the tx deliberately — a rare admin action, kept atomic with the flag).
+ */
+export async function resetUserMfa(actor: Actor, targetUserId: string): Promise<void> {
+  authorize(actor, 'manage_users', 'admin')
+
+  await withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ auth_user_id: string | null }>(
+      `SELECT auth_user_id FROM app_user WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [targetUserId])
+    if (rows.length === 0) throw new Error(`User ${targetUserId} not found`)
+    const authUserId = rows[0].auth_user_id
+    if (!authUserId) throw new Error('That user has no linked login yet — nothing to reset')
+
+    const supabase = createAdminClient()
+    const { data, error } = await supabase.auth.admin.mfa.listFactors({ userId: authUserId })
+    if (error) throw new Error(error.message)
+    for (const f of data?.factors ?? []) {
+      const { error: de } = await supabase.auth.admin.mfa.deleteFactor({ id: f.id, userId: authUserId })
+      if (de) throw new Error(de.message)
+    }
+
+    await tx.query(
+      `UPDATE app_user
+          SET mfa_enrolled = false, updated_at = now(), updated_by = $1, version = version + 1
+        WHERE id = $2`, [actor.id, targetUserId])
+  })
+
+  await recordAuthEvent({ userId: targetUserId, eventType: 'mfa_reset', detail: { by: actor.id } })
 }
