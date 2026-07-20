@@ -28,7 +28,8 @@ export default async function LocationsPage() {
       </div>
       <LocationCatalogue
         locations={locations}
-        canManage={can(actor, 'edit_records', 'logistics') || can(actor, 'create_records', 'logistics')}
+        canCreate={can(actor, 'create_records', 'logistics')}
+        canEdit={can(actor, 'edit_records', 'logistics')}
       />
     </div>
   )

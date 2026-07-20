@@ -16,7 +16,8 @@ import { Pencil, Plus } from 'lucide-react'
 
 type LocationCatalogueProps = {
   locations: StockLocationRow[]
-  canManage: boolean
+  canCreate: boolean
+  canEdit: boolean
 }
 
 type FormValues = {
@@ -37,7 +38,7 @@ const EMPTY: FormValues = { code: '', name: '', country: '', address: '', notes:
  * add/edit dialog shape — the simplest house pattern for a small admin-
  * managed catalogue table.
  */
-export function LocationCatalogue({ locations, canManage }: LocationCatalogueProps) {
+export function LocationCatalogue({ locations, canCreate, canEdit }: LocationCatalogueProps) {
   const router = useRouter()
   const [addOpen, setAddOpen] = useState(false)
   const [editing, setEditing] = useState<StockLocationRow | null>(null)
@@ -92,7 +93,7 @@ export function LocationCatalogue({ locations, canManage }: LocationCataloguePro
 
   return (
     <div className="space-y-4">
-      {canManage && (
+      {canCreate && (
         <div className="flex justify-end">
           <Button size="sm" onClick={() => { setFormError(null); setAddOpen(true) }}>
             <Plus className="mr-1.5 h-4 w-4" />
@@ -134,8 +135,8 @@ export function LocationCatalogue({ locations, canManage }: LocationCataloguePro
                     <div className="flex justify-end">
                       <Button
                         size="sm" variant="ghost"
-                        title={canManage ? 'Edit' : "You don't have permission to edit locations"}
-                        disabled={!canManage}
+                        title={canEdit ? 'Edit' : "You don't have permission to edit locations"}
+                        disabled={!canEdit}
                         onClick={() => { setFormError(null); setEditing(l) }}
                       >
                         <Pencil className="h-4 w-4" />

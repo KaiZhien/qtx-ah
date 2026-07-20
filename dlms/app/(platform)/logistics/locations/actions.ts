@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import {
@@ -20,6 +20,9 @@ type ActionResult = { ok: true } | { ok: false; error: string }
  * never reach the browser.
  */
 function toUserMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof DuplicateLocationCodeError) return err.message
   if (err instanceof LocationNotFoundError) return 'That location no longer exists. Reload and try again.'
   if (err instanceof PermissionError) return "You don't have permission to do that."
@@ -32,8 +35,8 @@ function toUserMessage(err: unknown): string {
 }
 
 export async function createLocationAction(input: CreateInput): Promise<CreateResult> {
-  const actor = await requireActor()
   try {
+    const actor = await requireAal2Actor()
     const { id } = await createLocation(actor, input)
     revalidatePath('/logistics/locations')
     return { ok: true, id }
@@ -45,8 +48,8 @@ export async function createLocationAction(input: CreateInput): Promise<CreateRe
 export async function updateLocationAction(
   id: string, input: UpdateInput, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireActor()
   try {
+    const actor = await requireAal2Actor()
     await updateLocation(actor, id, input, version)
     revalidatePath('/logistics/locations')
     return { ok: true }

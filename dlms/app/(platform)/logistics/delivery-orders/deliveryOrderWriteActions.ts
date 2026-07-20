@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createDeliveryOrder, updateDeliveryOrder, changeDoStatus,
   DeliveryOrderNotFoundError, DuplicateDoNumberError,
@@ -21,6 +21,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
  * reach the browser.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof DuplicateDoNumberError) return err.message
   if (err instanceof InvalidDoStatusChangeError) return err.message
   if (err instanceof DeliveryOrderNotFoundError) {
@@ -38,7 +41,7 @@ export async function createDeliveryOrderAction(
   input: CreateDeliveryOrderInput,
 ): Promise<ActionResult<{ id: string }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const { id } = await createDeliveryOrder(actor, input)
     revalidatePath('/logistics/delivery-orders')
     revalidatePath('/logistics')
@@ -52,7 +55,7 @@ export async function updateDeliveryOrderAction(
   input: UpdateDeliveryOrderInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateDeliveryOrder(actor, input)
     revalidatePath(`/logistics/delivery-orders/${input.deliveryOrderId}`)
     return { ok: true, data: res }
@@ -65,7 +68,7 @@ export async function changeDoStatusAction(
   input: ChangeDoStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeDoStatus(actor, input)
     revalidatePath(`/logistics/delivery-orders/${input.deliveryOrderId}`)
     revalidatePath('/logistics')
