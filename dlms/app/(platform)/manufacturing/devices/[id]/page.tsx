@@ -80,7 +80,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           {device.needsDataReview && <Badge variant="warning">Needs review</Badge>}
           {canEditDevice && (
             <div className="ml-auto">
-              <DeviceEditDialog device={device} variantOptions={variantOptions} phaseOptions={phaseOptions} />
+              <DeviceEditDialog key={device.version} device={device} variantOptions={variantOptions} phaseOptions={phaseOptions} />
             </div>
           )}
         </div>

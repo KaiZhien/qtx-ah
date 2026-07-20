@@ -13,7 +13,12 @@ vi.mock('@/modules/manufacturing/services/deviceWriteService', () => ({
   updateDevice: vi.fn(),
   changeDeviceStatus: vi.fn(),
   DeviceNotFoundError: class DeviceNotFoundError extends Error {},
-  DuplicateSerialError: class DuplicateSerialError extends Error {},
+  DuplicateSerialError: class DuplicateSerialError extends Error {
+    constructor(sn: string) {
+      super(`A device with serial "${sn}" already exists`)
+      this.name = 'DuplicateSerialError'
+    }
+  },
 }))
 
 import { createDeviceAction, updateDeviceAction, changeDeviceStatusAction } from '@/app/(platform)/manufacturing/devices/deviceWriteActions'
@@ -32,7 +37,7 @@ describe('createDeviceAction', () => {
   it('maps DuplicateSerialError to its own message', async () => {
     vi.mocked(svc.createDevice).mockRejectedValue(new svc.DuplicateSerialError('dup'))
     const res = await createDeviceAction({ variantCode: 'pro', deviceSn: 'dup' })
-    expect(res).toEqual({ ok: false, error: expect.stringContaining('dup') })
+    expect(res).toEqual({ ok: false, error: 'A device with serial "dup" already exists' })
   })
   it('maps PermissionError to a generic denial (no internals)', async () => {
     vi.mocked(svc.createDevice).mockRejectedValue(new PermissionError('create_records', 'manufacturing'))
@@ -58,6 +63,11 @@ describe('changeDeviceStatusAction', () => {
     vi.mocked(svc.changeDeviceStatus).mockRejectedValue(new OptimisticLockError('device', 'd1'))
     const res = await changeDeviceStatusAction({ deviceId: 'd1', toStatus: 'quality_check', version: 1 })
     expect(res).toEqual({ ok: false, error: 'Someone else changed this device. Reload and try again.' })
+  })
+  it('maps DeviceNotFoundError to the reload message', async () => {
+    vi.mocked(svc.changeDeviceStatus).mockRejectedValue(new svc.DeviceNotFoundError('d1'))
+    const res = await changeDeviceStatusAction({ deviceId: 'd1', toStatus: 'quality_check', version: 1 })
+    expect(res).toEqual({ ok: false, error: 'That device no longer exists. Reload and try again.' })
   })
   it('returns ok with the new status/version', async () => {
     vi.mocked(svc.changeDeviceStatus).mockResolvedValue({ status: 'quality_check', version: 2 })

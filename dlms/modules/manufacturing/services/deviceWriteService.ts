@@ -92,7 +92,7 @@ export async function changeDeviceStatus(
     await tx.query(
       `INSERT INTO device_status_history (device_id, from_status, to_status, reason, changed_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [data.deviceId, current.status, data.toStatus, data.reason ?? null, actor.id])
+      [data.deviceId, current.status, data.toStatus, data.reason?.trim() || null, actor.id])
 
     return { status: data.toStatus, version: updated[0].version }
   })
