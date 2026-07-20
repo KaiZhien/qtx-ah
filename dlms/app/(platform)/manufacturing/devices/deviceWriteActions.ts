@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createDevice, updateDevice, changeDeviceStatus,
   DeviceNotFoundError, DuplicateSerialError,
@@ -20,6 +20,9 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
  * raw Postgres/internal error can never reach the browser.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof DuplicateSerialError) return err.message
   if (err instanceof InvalidStatusChangeError) return err.message
   if (err instanceof DeviceNotFoundError) return 'That device no longer exists. Reload and try again.'
@@ -33,7 +36,7 @@ export async function createDeviceAction(
   input: CreateDeviceInput,
 ): Promise<ActionResult<{ deviceId: string }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const { deviceId } = await createDevice(actor, input)
     revalidatePath('/manufacturing/devices')
     return { ok: true, data: { deviceId } }
@@ -46,7 +49,7 @@ export async function updateDeviceAction(
   input: UpdateDeviceInput,
 ): Promise<ActionResult<{ version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await updateDevice(actor, input)
     revalidatePath(`/manufacturing/devices/${input.deviceId}`)
     return { ok: true, data: res }
@@ -59,7 +62,7 @@ export async function changeDeviceStatusAction(
   input: ChangeStatusInput,
 ): Promise<ActionResult<{ status: string; version: number }>> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const res = await changeDeviceStatus(actor, input)
     revalidatePath(`/manufacturing/devices/${input.deviceId}`)
     return { ok: true, data: res }

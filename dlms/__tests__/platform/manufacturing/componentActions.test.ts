@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockRequireActor = vi.fn()
+const mockRequireAal2Actor = vi.fn()
 const mockReplace = vi.fn()
 const mockInstall = vi.fn()
 const mockAuthorize = vi.fn()
 const mockWithTransaction = vi.fn()
-vi.mock('@/modules/shared/auth/session', () => ({ requireActor: mockRequireActor }))
+vi.mock('@/modules/shared/auth/session', () => ({
+  requireAal2Actor: mockRequireAal2Actor,
+  MfaRequiredError: class MfaRequiredError extends Error {},
+}))
 vi.mock('@/modules/manufacturing/services/componentService', () => ({
   replaceComponentInstallation: mockReplace, installComponent: mockInstall,
 }))
@@ -29,7 +32,7 @@ const ACTOR = { id: 'u1', roleKey: 'operator' as const, permissions: new Set(['e
   moduleAccess: new Set(['manufacturing' as const]), active: true }
 
 beforeEach(() => {
-  mockRequireActor.mockReset().mockResolvedValue(ACTOR)
+  mockRequireAal2Actor.mockReset().mockResolvedValue(ACTOR)
   mockReplace.mockReset()
   mockInstall.mockReset()
   mockAuthorize.mockReset()

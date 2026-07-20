@@ -1,6 +1,6 @@
 'use server'
 
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { listDevices } from '@/modules/manufacturing/services/deviceReadService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { DeviceFilter, DeviceListItem } from '@/modules/manufacturing/services/deviceReadService'
@@ -14,9 +14,12 @@ type LoadMoreResult = { items: DeviceListItem[]; nextCursor: string | null } | {
  */
 export async function loadMoreDevicesAction(filter: DeviceFilter): Promise<LoadMoreResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     return await listDevices(actor, filter)
   } catch (err) {
+    if (err instanceof MfaRequiredError) {
+      return { error: 'Two-factor authentication required — reload the page to finish signing in.' }
+    }
     if (err instanceof PermissionError) {
       return { error: "You don't have permission to view these devices." }
     }

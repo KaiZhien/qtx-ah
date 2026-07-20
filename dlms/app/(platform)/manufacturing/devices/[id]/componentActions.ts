@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   replaceComponentInstallation, installComponent, type ReplaceInput,
 } from '@/modules/manufacturing/services/componentService'
@@ -18,6 +18,9 @@ export type ActionResult = { ok: true } | { ok: false; error: string }
  * replaced with a generic message.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof InvalidReplacementError) return err.message
   if (err instanceof OptimisticLockError) return 'Someone else changed this device. Reload and try again.'
   if (err instanceof PermissionError) return "You don't have permission to do that."
@@ -29,7 +32,7 @@ export async function replaceComponentAction(
   deviceId: string, input: ReplaceInput,
 ): Promise<ActionResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     await replaceComponentInstallation(actor, input)
     revalidatePath(`/manufacturing/devices/${deviceId}`)
     return { ok: true }
@@ -43,7 +46,7 @@ export async function installComponentAction(
   input: { componentTypeId: string; slotNo?: number; unitId?: string; batchNo?: string; notes?: string },
 ): Promise<ActionResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     await installComponent(actor, { deviceId, ...input })
     revalidatePath(`/manufacturing/devices/${deviceId}`)
     return { ok: true }
@@ -73,7 +76,7 @@ export type ListUnitsResult =
  */
 export async function listAvailableUnitsAction(componentTypeId: string): Promise<ListUnitsResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     authorize(actor, 'view_records', 'manufacturing')
     const units = await withTransaction(actor.id, async (tx) => {
       const { rows } = await tx.query<{ id: string; serial_no: string }>(

@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import {
@@ -20,6 +20,9 @@ type ActionResult = { ok: true } | { ok: false; error: string }
  * never reach the browser.
  */
 function toUserMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof PermissionError) return "You don't have permission to do that"
   if (err instanceof OptimisticLockError) return 'Someone else changed this — reload and try again'
   console.error(JSON.stringify({
@@ -30,7 +33,7 @@ function toUserMessage(err: unknown): string {
 }
 
 export async function createTypeAction(input: CreateInput): Promise<CreateResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     const { id } = await createComponentType(actor, input)
     revalidatePath('/manufacturing/components')
@@ -44,7 +47,7 @@ export async function createTypeAction(input: CreateInput): Promise<CreateResult
 export async function updateTypeAction(
   id: string, input: UpdateInput, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     await updateComponentType(actor, id, input, version)
     revalidatePath('/manufacturing/components')

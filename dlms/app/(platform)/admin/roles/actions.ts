@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { ZodError } from 'zod'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import {
   setRolePermission, addOverride, FabricLockoutError,
@@ -18,6 +18,9 @@ type ActionResult = { ok: true } | { error: string }
  * written for an operator to read, so it passes through unchanged.
  */
 function toUserMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof PermissionError) return "You don't have permission to do that"
   if (err instanceof FabricLockoutError) return err.message
   if (err instanceof ZodError) return err.issues[0]?.message ?? 'Please check the form and try again'
@@ -29,7 +32,7 @@ function toUserMessage(err: unknown): string {
 }
 
 export async function setRolePermissionAction(input: SetRolePermissionInput): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     await setRolePermission(actor, input)
     revalidatePath('/admin/roles')
@@ -40,7 +43,7 @@ export async function setRolePermissionAction(input: SetRolePermissionInput): Pr
 }
 
 export async function addOverrideAction(input: AddOverrideInput): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     await addOverride(actor, input)
     revalidatePath(`/admin/users/${input.userId}/overrides`)

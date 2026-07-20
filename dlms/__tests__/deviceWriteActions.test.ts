@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/modules/shared/auth/session', () => ({
-  requireActor: vi.fn(async () => ({
+  requireAal2Actor: vi.fn(async () => ({
     id: 'u1', roleKey: 'operator',
     permissions: new Set(['create_records', 'edit_records', 'change_device_status']),
     moduleAccess: new Set(['manufacturing']), active: true,
   })),
+  MfaRequiredError: class MfaRequiredError extends Error {},
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/modules/manufacturing/services/deviceWriteService', () => ({

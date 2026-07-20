@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createTask, changeTaskStatus, assignTask, addComment,
   TaskNotFoundError, InvalidTransitionError,
@@ -20,6 +20,9 @@ export type ActionResult = { ok: true } | { ok: false; error: string }
  * not for the person trying to do their job.
  */
 function toMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof OptimisticLockError) {
     return 'Someone else changed this task. Reload the page and try again.'
   }
@@ -34,7 +37,7 @@ export async function changeStatusAction(
   taskId: string, to: TaskStatus, version: number, blockedReason?: string,
 ): Promise<ActionResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     await changeTaskStatus(actor, taskId, to, version, { blockedReason })
     revalidatePath('/tasks')
     revalidatePath(`/tasks/${taskId}`)
@@ -48,7 +51,7 @@ export async function assignAction(
   taskId: string, assigneeId: string | null, version: number,
 ): Promise<ActionResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     await assignTask(actor, taskId, assigneeId, version)
     revalidatePath('/tasks')
     revalidatePath(`/tasks/${taskId}`)
@@ -60,7 +63,7 @@ export async function assignAction(
 
 export async function commentAction(taskId: string, body: string): Promise<ActionResult> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     await addComment(actor, taskId, body)
     revalidatePath(`/tasks/${taskId}`)
     return { ok: true }
@@ -71,7 +74,7 @@ export async function commentAction(taskId: string, body: string): Promise<Actio
 
 export async function createTaskAction(formData: FormData): Promise<ActionResult & { taskId?: string }> {
   try {
-    const actor = await requireActor()
+    const actor = await requireAal2Actor()
     const dueRaw = formData.get('dueDate') as string | null
     const linksRaw = formData.get('links') as string | null
     const { taskId } = await createTask(actor, {

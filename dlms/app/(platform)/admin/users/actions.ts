@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireActor } from '@/modules/shared/auth/session'
+import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { recordAuthEvent } from '@/modules/shared/auth/authEvents'
 import { createAdminClient } from '@/lib/supabase/server'
 import { authorize, PermissionError } from '@/modules/shared/authz/authorize'
@@ -22,6 +22,9 @@ type InviteResult = { ok: true; userId: string } | { error: string }
  * meant to be read by the operator, so those pass through unchanged.
  */
 function toUserMessage(err: unknown): string {
+  if (err instanceof MfaRequiredError) {
+    return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
   if (err instanceof PermissionError) return "You don't have permission to do that"
   if (err instanceof OptimisticLockError) return 'Someone else changed this user — reload and try again'
   if (err instanceof LastSuperAdminError || err instanceof SelfEscalationError) return err.message
@@ -41,7 +44,7 @@ function toUserMessage(err: unknown): string {
  * thrown.
  */
 export async function inviteUserAction(input: InviteUserInput): Promise<InviteResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     const { userId } = await inviteUser(actor, input)
 
@@ -62,7 +65,7 @@ export async function inviteUserAction(input: InviteUserInput): Promise<InviteRe
 
 /** Re-sends the Supabase Auth invite for a user still awaiting first sign-in. */
 export async function resendInviteAction(email: string): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     authorize(actor, 'manage_users', 'admin')
     const supabase = createAdminClient()
@@ -89,7 +92,7 @@ export async function resendInviteAction(email: string): Promise<ActionResult> {
 export async function setUserActiveAction(
   userId: string, active: boolean, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     const { authUserId } = await setUserActive(actor, userId, active, version)
 
@@ -114,7 +117,7 @@ export async function setUserActiveAction(
 export async function updateUserAccessAction(
   userId: string, input: UpdateAccessInput, version: number,
 ): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     await updateUserAccess(actor, userId, input, version)
     revalidatePath('/admin/users')
@@ -126,7 +129,7 @@ export async function updateUserAccessAction(
 
 /** Resets a user's MFA factor (admin recovery). They re-enroll on next login. */
 export async function resetUserMfaAction(userId: string): Promise<ActionResult> {
-  const actor = await requireActor()
+  const actor = await requireAal2Actor()
   try {
     await resetUserMfa(actor, userId)
     revalidatePath('/admin/users')

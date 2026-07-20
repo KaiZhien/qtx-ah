@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockRequireActor = vi.fn()
+const mockRequireAal2Actor = vi.fn()
 const mockChangeTaskStatus = vi.fn()
 
-vi.mock('@/modules/shared/auth/session', () => ({ requireActor: mockRequireActor }))
+vi.mock('@/modules/shared/auth/session', () => ({
+  requireAal2Actor: mockRequireAal2Actor,
+  MfaRequiredError: class MfaRequiredError extends Error {},
+}))
 vi.mock('@/modules/shared/tasks/services/taskService', () => ({
   changeTaskStatus: mockChangeTaskStatus,
   TaskNotFoundError: class TaskNotFoundError extends Error {},
@@ -20,7 +23,7 @@ const ACTOR = {
 }
 
 beforeEach(() => {
-  mockRequireActor.mockReset().mockResolvedValue(ACTOR)
+  mockRequireAal2Actor.mockReset().mockResolvedValue(ACTOR)
   mockChangeTaskStatus.mockReset()
 })
 
