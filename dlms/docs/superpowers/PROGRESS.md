@@ -57,9 +57,10 @@ Ordered by dependency and priority. **RLS hardening is first** because the schem
 |---|---|---|---|
 | R1 | **RLS defense-in-depth** on all platform tables | ✅ | Spec §11.1. Applied to cloud + verified (advisor ERROR cleared). 130 integration tests; deny-via-REST, app paths unaffected |
 | C1 | **Component model** — catalogue, serialized units, append-only installation history, per-variant BOM, the §14 atomic replacement primitive, admin catalogue screen, device-profile Components tab | ✅ | 5 tasks merged; migration applied to cloud (RLS verified, advisor clean). 866 unit + 155 integration tests. Critical-path prerequisite for Engineering + Maintenance — now unblocked |
-| — | Manufacturing **write path** (create/edit devices, status changes with the fail-closed transition graph, imports) | 🔄 **NEXT candidate** | Completes the Manufacturing module beyond read-only |
+| W1 | Manufacturing **write path** — create/edit devices, status changes through the fail-closed `status_transition` graph (create/edit dialog + status-change control on the profile, gated create route) | ✅ | 6 tasks merged (code-only, **no migration** — tables already on cloud). 883 unit + 173 integration; per-task reviews (3 opus) + opus whole-branch review. Fail-closed graph, terminal-needs-`delete_records`, optimistic-locked, audited, no error leak. Completes Manufacturing beyond read-only |
+| — | Manufacturing **bulk import** (Excel/draft → devices, column mapping, dedupe, ranged-serial review queue) | ⏳ | Split out of the write path (own subsystem); pairs with the legacy component-data migration |
 | — | Legacy component-data migration (DLMS PCBA/screen columns → component_unit/installation rows) | ⏳ | Follow-up now that the component schema is live |
-| — | Status-driven cross-department handoffs (transactional outbox → auto-tasks) | ⏳ | Depends on device write path + a worker |
+| — | Status-driven cross-department handoffs (transactional outbox → auto-tasks; reads `status_transition.task_template_key`) | ⏳ | Depends on the write path (now done) + a worker |
 | — | Component catalogue + append-only installation history (§11) | ⏳ | Precedes Engineering + Maintenance per critical path |
 | — | Engineering module (ECR/ECO + approvals, failure/RCA, doc library, firmware, BOM) | ⏳ | The chosen first cross-dept module (interview) |
 | — | Maintenance module (6-state repairs + files, §14 component-replacement workflow, usage, modifications) | ⏳ | Depends on component model |
@@ -80,3 +81,6 @@ Tracked for cleanup during the relevant Phase-2 task:
 - `UserTable` "Permission exceptions" link shows for non-fabric admins (dead-ends at 404)
 - CI (when Task 6 lands) **must** run `npm run test:integration` — the permission-matrix drift guard lives there
 - Advisor hygiene: revoke `fn_audit` EXECUTE from anon/authenticated (folded into R1); `pg_trgm` in `public` schema (accepted)
+- (Write path W1) `DeviceEditDialog.dateInput` renders the seeded date via `toISOString().slice(0,10)` — correct under a UTC deployment (prod is UTC); latent one-day shift on a non-UTC host
+- (Write path W1) `changeDeviceStatus` history reason is now trimmed; `listAllowedTransitions` filters targets by `active` while the service doesn't (theoretical — no inactive status seeded)
+- (Write path W1) action `toMessage` duplicates `componentActions.toMessage` — candidate for a shared helper as known-error types grow; `DeviceNotFoundError`/exact-`DuplicateSerialError` action-unit assertions added in the final fix
