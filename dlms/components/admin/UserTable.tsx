@@ -238,15 +238,13 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        {user.mfaEnrolled && (
-                          <Button
-                            size="sm" variant="ghost"
-                            title="Reset MFA"
-                            onClick={() => setMfaResetTarget(user)}
-                          >
-                            <KeyRound className="h-4 w-4" />
-                          </Button>
-                        )}
+                        <Button
+                          size="sm" variant="ghost"
+                          title="Reset MFA"
+                          onClick={() => setMfaResetTarget(user)}
+                        >
+                          <KeyRound className="h-4 w-4" />
+                        </Button>
                         <Button
                           size="sm" variant="ghost"
                           title={user.active ? 'Deactivate' : 'Activate'}
