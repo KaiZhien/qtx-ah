@@ -2,10 +2,22 @@ import { redirect } from 'next/navigation'
 import { getCurrentActor } from '@/modules/shared/auth/session'
 import { visibleModules } from '@/modules/shared/navigation/moduleRegistry'
 import { ModuleNav } from '@/components/platform/ModuleNav'
+import { createClient } from '@/lib/supabase/server'
+import { requiresMfa, mfaGateStatus, type AalLevel } from '@/modules/shared/auth/mfaPolicy'
 
 export default async function PlatformLayout({ children }: { children: React.ReactNode }) {
   const actor = await getCurrentActor()
   if (!actor) redirect('/login')
+
+  // Mandatory MFA (spec §5.2): an MFA-required role must reach AAL2 before any
+  // module. The AAL read is skipped entirely for roles that don't need it, so
+  // non-MFA users pay nothing. Fail closed — a null level routes to /mfa.
+  if (requiresMfa(actor.roleKey)) {
+    const supabase = createClient()
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    const currentLevel = (aal?.currentLevel ?? null) as AalLevel | null
+    if (mfaGateStatus({ roleKey: actor.roleKey, currentLevel }) === 'required') redirect('/mfa')
+  }
 
   const modules = visibleModules(actor)
 
