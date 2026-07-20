@@ -323,8 +323,11 @@ describe('deliveryOrderService', () => {
       const d = await makeDeliveryOrder('status-delivered-preset', 'dispatched')
       await db.query(`UPDATE delivery_order SET delivered_date = '2026-01-01' WHERE id = $1`, [d.id])
       await changeDoStatus(op(), { deliveryOrderId: d.id, toStatus: 'delivered', version: d.version })
-      const row = await db.query(`SELECT delivered_date FROM delivery_order WHERE id=$1`, [d.id])
-      expect(new Date(row.rows[0].delivered_date).toISOString().slice(0, 10)).toBe('2026-01-01')
+      // ::text sidesteps node-postgres parsing the DATE to a local-midnight JS
+      // Date, whose toISOString() shifts a day on any UTC+ host (e.g. SGT).
+      const row = await db.query(
+        `SELECT delivered_date::text AS delivered_date FROM delivery_order WHERE id=$1`, [d.id])
+      expect(row.rows[0].delivered_date).toBe('2026-01-01')
     })
 
     it('rejects a stale version with OptimisticLockError', async () => {
