@@ -6,6 +6,7 @@ import { TaskPanel } from '@/components/tasks/TaskPanel'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { DeviceStatusPill } from '@/components/manufacturing/StatusPill'
+import { DeviceComponentsTab } from '@/components/manufacturing/DeviceComponentsTab'
 
 type PageProps = { params: { id: string } }
 
@@ -20,12 +21,10 @@ function formatDateTime(d: Date | string): string {
   })
 }
 
-// The remaining spec §8.2 tabs beyond Overview/Status history/Tasks, each
-// naming the roadmap week (§17) its real build lands — a visible stub beats a
-// tab that silently pretends to be finished (same principle as ModuleLanding).
+// The remaining spec §8.2 tabs beyond Overview/Status history/Tasks/Components,
+// each naming the roadmap week (§17) its real build lands — a visible stub beats
+// a tab that silently pretends to be finished (same principle as ModuleLanding).
 const STUB_TABS = [
-  { value: 'components', label: 'Components',
-    week: 'Week 4 (Aug 14) — component catalogue, units, and installation history' },
   { value: 'post_sales', label: 'Post-sales',
     week: 'Week 8 (Sep 11) — buyer, delivery orders, invoices, warranty' },
   { value: 'usage', label: 'Usage',
@@ -79,6 +78,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="status_history">Status history</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          <TabsTrigger value="components">Components</TabsTrigger>
           {STUB_TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>
           ))}
@@ -129,6 +129,13 @@ export default async function DeviceDetailPage({ params }: PageProps) {
 
         <TabsContent value="tasks">
           <TaskPanel entityType="device" entityId={device.id} module="manufacturing" />
+        </TabsContent>
+
+        <TabsContent value="components">
+          <DeviceComponentsTab
+            deviceId={device.id}
+            canEdit={can(actor, 'edit_records', 'manufacturing')}
+          />
         </TabsContent>
 
         {STUB_TABS.map((t) => (
