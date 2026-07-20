@@ -74,6 +74,21 @@ describe('component schema', () => {
       .rejects.toThrow(/append-only|immutable/)
   })
 
+  it('is append-only: cannot rewrite batch_no on a batch-tracked installation', async () => {
+    const id = await install({ slot_no: 7, batch_no: 'BATCH-ORIGINAL' })
+    await expect(db.query(
+      `UPDATE component_installation SET batch_no='BATCH-REWRITTEN' WHERE id=$1`, [id]))
+      .rejects.toThrow(/append-only|immutable/)
+    // the legitimate one-time removal stamp still succeeds on a batch row
+    await expect(db.query(
+      `UPDATE component_installation SET removed_at=now(), removed_by=$1 WHERE id=$2`,
+      [userId, id])).resolves.toBeTruthy()
+  })
+
+  it('rejects an installation with neither component_unit_id nor batch_no', async () => {
+    await expect(install({ slot_no: 8, batch_no: null })).rejects.toThrow(/unit_or_batch/)
+  })
+
   it('unique serial per type among live units', async () => {
     await db.query(`INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
       VALUES ($1,'SN-1',$2,$2)`, [pcbaTypeId, userId])
@@ -93,5 +108,25 @@ describe('component schema', () => {
       [['component_type', 'component_unit', 'component_installation', 'variant_bom_line']])
     expect(rows.map((r) => r.relname).sort()).toEqual(
       ['component_installation', 'component_type', 'component_unit', 'variant_bom_line'])
+  })
+
+  it('allows one BOM line per variant+component type, rejects a duplicate', async () => {
+    const variantId = (await db.query(`SELECT id FROM device_variant WHERE code='pro'`)).rows[0].id
+    await db.query(
+      `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
+       VALUES ($1,$2,1,$3)`, [variantId, pcbaTypeId, userId])
+    await expect(db.query(
+      `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
+       VALUES ($1,$2,2,$3)`, [variantId, pcbaTypeId, userId]))
+      .rejects.toThrow(/bom_line_unique/)
+  })
+
+  it('rejects a BOM line with quantity 0', async () => {
+    const variantId = (await db.query(`SELECT id FROM device_variant WHERE code='pro'`)).rows[0].id
+    const pcbaBTypeId = (await db.query(`SELECT id FROM component_type WHERE code='pcba_b'`)).rows[0].id
+    await expect(db.query(
+      `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
+       VALUES ($1,$2,0,$3)`, [variantId, pcbaBTypeId, userId]))
+      .rejects.toThrow()
   })
 })

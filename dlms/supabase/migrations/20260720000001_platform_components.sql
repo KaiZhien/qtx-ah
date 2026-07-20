@@ -103,6 +103,8 @@ COMMENT ON TABLE component_installation IS
   'APPEND-ONLY installation history (spec §11/§14). Current components = removed_at IS NULL. Never overwritten except the one-time removal stamp; guarded by fn_component_installation_guard.';
 COMMENT ON COLUMN component_installation.repair_id IS
   'Deferred FK → repair (Maintenance module, not built yet). The §14 replacement primitive accepts it now so the Repair workflow can attribute a swap once that table exists.';
+COMMENT ON COLUMN component_installation.modification_id IS
+  'Deferred FK → modification (Maintenance module, not built yet). Plain nullable uuid; FK added when that table lands.';
 CREATE UNIQUE INDEX one_open_install ON component_installation(device_id, component_type_id, slot_no)
   WHERE removed_at IS NULL;
 CREATE INDEX ci_device_idx ON component_installation(device_id, installed_at DESC);
@@ -112,7 +114,11 @@ CREATE INDEX ci_unit_history ON component_installation(component_unit_id, instal
 -- Append-only guard: no DELETE; the only permitted UPDATE is the one-time
 -- removal stamp (setting removed_at/removed_by/removal_reason/repair_id/
 -- modification_id on a still-open row). Everything else — device, type, unit,
--- slot, installed_at/by, and re-removing an already-removed row — is rejected.
+-- batch_no, slot, installed_at/by, and re-removing an already-removed row —
+-- is rejected. batch_no is frozen alongside component_unit_id because for a
+-- batch-tracked installation (component_unit_id IS NULL) batch_no IS the
+-- "what was installed" fact — the same role component_unit_id plays for a
+-- serialized part.
 CREATE OR REPLACE FUNCTION fn_component_installation_guard()
 RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
@@ -122,6 +128,7 @@ BEGIN
   END IF;
   IF OLD.device_id <> NEW.device_id OR OLD.component_type_id <> NEW.component_type_id
      OR OLD.component_unit_id IS DISTINCT FROM NEW.component_unit_id
+     OR OLD.batch_no IS DISTINCT FROM NEW.batch_no
      OR OLD.slot_no <> NEW.slot_no OR OLD.installed_at <> NEW.installed_at
      OR OLD.installed_by <> NEW.installed_by OR OLD.created_at <> NEW.created_at THEN
     RAISE EXCEPTION 'component_installation is append-only — identity and install facts are immutable'
