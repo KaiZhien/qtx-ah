@@ -19,7 +19,13 @@ export type AssigneeOption = { id: string; name: string }
 export async function listAssignableUsers(actor: Actor): Promise<AssigneeOption[]> {
   authorize(actor, 'assign_tasks', 'tasks')
   const { rows } = await getPool().query<{ id: string; full_name: string }>(
-    `SELECT id, full_name FROM app_user WHERE active AND deleted_at IS NULL ORDER BY full_name`,
+    // The outbox drain's automation principal (20260731000000_platform_outbox.sql) is an
+    // active app_user row like any other, but nobody logs in as it — a task assigned to it
+    // would sit in its queue forever — so it is never an assignee option.
+    `SELECT id, full_name FROM app_user
+      WHERE active AND deleted_at IS NULL
+        AND id <> '22222222-2222-2222-2222-222222222222'::uuid
+      ORDER BY full_name`,
   )
   return rows.map((r) => ({ id: r.id, name: r.full_name }))
 }

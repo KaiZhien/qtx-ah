@@ -39,7 +39,7 @@ CREATE TABLE outbox (
   created_by uuid NOT NULL REFERENCES app_user(id)
 );
 COMMENT ON TABLE outbox IS
-  'Transactional outbox (spec §5.5): one row per boundary-crossing device status change, written in the same transaction as the change itself and drained into tasks asynchronously. Deliberately exempt from the updated_*/deleted_at/version table shape: rows are append-then-mark-processed, never user-edited (so there is no optimistic-concurrency contention for `version` to arbitrate — the drain claims rows by lock, not by version) and never soft-deleted. The processing timeline that updated_at would carry is already recorded, with actor and before/after values, by the audit trigger attached below.';
+  'Transactional outbox (spec §5.5): one row per boundary-crossing device status change, written in the same transaction as the change itself and drained into tasks asynchronously. Deliberately exempt from the updated_*/deleted_at/version table shape: rows are append-then-mark-processed, never user-edited (so there is no optimistic-concurrency contention for `version` to arbitrate — the drain claims rows by lock, not by version) and never soft-deleted. The processing timeline that updated_at would carry is already recorded, with before/after values, by the audit trigger attached below — but the ACTOR on those rows is correct only if the drain wraps its writes in withTransaction(systemActorId), which sets the app.actor_id GUC fn_audit reads. With no GUC, fn_audit falls back to updated_by then created_by; this table has no updated_by, so every drain action would be attributed to the human who caused the event rather than to the automation. The drain owes that wrapper.';
 COMMENT ON COLUMN outbox.aggregate_type IS
   'Left unconstrained on purpose. A CHECK listing today''s single value (''device'') would make every future aggregate a schema migration, which defeats the point of a generic outbox; the drain dispatches on this value and ignores what it does not recognise.';
 COMMENT ON COLUMN outbox.event_type IS
@@ -105,9 +105,18 @@ $$;
 
 -- EXECUTE defaults to PUBLIC, so revoking from `anon` alone is a NO-OP — anon would
 -- still hold the privilege through PUBLIC. Revoke the PUBLIC default plus the explicit
--- grantees, then re-grant to exactly the role that needs it. service_role is granted
--- explicitly rather than relying on ALTER DEFAULT PRIVILEGES, which in this repo's
--- bootstrap covers TABLES, not FUNCTIONS.
+-- grantees, then re-grant to exactly the role that needs it.
+--
+-- anon and authenticated MUST stay in that REVOKE list. This repo's bootstrap
+-- (20250101000008_grants.sql) runs `ALTER DEFAULT PRIVILEGES ... GRANT EXECUTE ON
+-- FUNCTIONS TO anon, authenticated, service_role` — it covers FUNCTIONS as well as
+-- TABLES — so on a real Supabase project both roles receive an explicit EXECUTE grant
+-- on this function the moment it is created, independently of the PUBLIC default.
+-- Dropping them from the REVOKE because a test database shows no such grant would be a
+-- real hole: __tests__/integration/setup.ts reproduces only the TABLES half of that
+-- bootstrap, so the harness understates what cloud actually grants.
+-- service_role is then re-granted explicitly rather than left to that same default,
+-- so the one grantee that needs EXECUTE says so in this file.
 REVOKE EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) TO service_role;
 
@@ -134,6 +143,12 @@ GRANT EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) TO service_role;
 -- fail invisibly — the status change still commits, the task just never appears);
 -- dropping the seed's call breaks every from-scratch database, including CI.
 --
+-- (A third caller, trg_reconcile_system_actor below, invokes it on every
+-- role_permission write. That is enforcement, not seeding — but it is also why, on a
+-- from-scratch database, the principal is in fact created by the seed's FIRST
+-- role_permission INSERT rather than by the SELECT at the end of platform_seed.sql.
+-- Both still converge on the same state; neither call site becomes redundant.)
+--
 -- WHY IT IS NARROWED BY OVERRIDE RATHER THAN BY A NEW ROLE. A seventh role
 -- granting one permission would ripple through RoleKey in
 -- modules/shared/authz/catalog.ts, the generated permission-matrix suite, the
@@ -143,6 +158,18 @@ GRANT EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) TO service_role;
 -- the all-modules grant is an oversight: the principal needs every module because a
 -- handoff by definition crosses department boundaries, and the revocations are what
 -- keep that breadth from also being depth.
+--
+-- IT RECONCILES; IT DOES NOT MERELY INITIALIZE. Calling this once at seed time would
+-- leave the narrowness true only until someone edited the matrix — and the matrix is
+-- runtime data by design (20260718000000_platform_rbac.sql: "the Super Admin edits the
+-- matrix at runtime", via modules/admin/services/roleService.ts). A Super Admin ticking
+-- delete_records for `operator` would otherwise hand that authority to the one identity
+-- nobody logs in as. So: (a) the upsert below re-asserts the whole derived set on every
+-- call rather than skipping rows that already exist, which is what lets a re-run HEAL a
+-- revocation somebody flipped, soft-deleted or gave an expiry; and (b) trg_reconcile_system_actor
+-- below re-runs this function on every role_permission write, so the grant and its matching
+-- revocation land in the same transaction. This function stays the single definition of
+-- what the principal may do — the trigger calls into it rather than restating the derivation.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_seed_system_actor()
 RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -152,6 +179,8 @@ DECLARE
   -- platform's Manufacturing module and the two schemas finally share a database.
   v_id      uuid := '22222222-2222-2222-2222-222222222222';
   v_role_id uuid;
+  v_reason  text :=
+    'Automation principal: narrowed to the minimum the outbox drain needs (spec 5.5).';
 BEGIN
   SELECT id INTO v_role_id FROM role WHERE key = 'operator';
   IF v_role_id IS NULL THEN
@@ -170,28 +199,135 @@ BEGIN
 
   -- Revoke every operator permission EXCEPT the two the drain actually needs.
   -- Derived from role_permission rather than from a hand-written list, and using the
-  -- same predicate fn_resolve_actor uses to compute role_permissions, so the two can
-  -- never disagree: if the operator role gains a permission later, it is revoked here
-  -- automatically instead of silently widening the automation principal.
-  INSERT INTO user_permission_override (user_id, permission_id, granted, reason, created_by)
-  SELECT v_id, p.id, false,
-         'Automation principal: narrowed to the minimum the outbox drain needs (spec 5.5).',
-         v_id
+  -- same predicate fn_resolve_actor uses to compute role_permissions (no deleted_at
+  -- filter — deliberately identical), so the two can never disagree about what the
+  -- operator role holds.
+  --
+  -- UPSERT, not ON CONFLICT DO NOTHING. user_permission_override's UNIQUE constraint is
+  -- documented as "removal is a soft delete, never a hard delete; re-granting resurrects
+  -- the same row via UPSERT ... Writers MUST go through the upsert"
+  -- (20260718000000_platform_rbac.sql). DO NOTHING would honour the letter of that
+  -- constraint and break its purpose: a revocation an admin had flipped to granted,
+  -- soft-deleted, or given an expiry would conflict, be skipped, and survive every
+  -- re-run — leaving the principal permanently wider with no way back short of manual
+  -- SQL. Re-asserting granted=false / deleted_at=NULL / expires_at=NULL heals all three.
+  --
+  -- The DO UPDATE ... WHERE is what keeps this idempotent: a row already in the intended
+  -- state is not rewritten, so re-running bumps no `version` and writes no audit_log
+  -- noise. That property is load-bearing for the dual call site and for the reconcile
+  -- trigger below, which fires on EVERY role_permission write.
+  INSERT INTO user_permission_override (user_id, permission_id, granted, reason,
+                                        expires_at, created_by, updated_by)
+  SELECT v_id, p.id, false, v_reason, NULL, v_id, v_id
     FROM role_permission rp
     JOIN permission p ON p.id = rp.permission_id
    WHERE rp.role_id = v_role_id
      AND p.key NOT IN ('view_records', 'create_records')
-  ON CONFLICT DO NOTHING;
+  ON CONFLICT (user_id, permission_id) DO UPDATE SET
+        granted    = false,
+        reason     = EXCLUDED.reason,
+        expires_at = NULL,
+        deleted_at = NULL,
+        updated_at = now(),
+        updated_by = EXCLUDED.updated_by,
+        version    = user_permission_override.version + 1
+   WHERE user_permission_override.granted
+      OR user_permission_override.deleted_at IS NOT NULL
+      OR user_permission_override.expires_at IS NOT NULL
+      OR user_permission_override.reason IS DISTINCT FROM EXCLUDED.reason;
 
   RETURN v_id;
 END $$;
 COMMENT ON FUNCTION fn_seed_system_actor() IS
-  'Idempotent seed of the outbox drain''s automation principal (spec §5.5). Returns the actor id, or NULL when it did nothing because the `operator` role does not exist yet. Called from BOTH 20260731000000_platform_outbox.sql and supabase/seed/platform_seed.sql — see that migration''s header for why removing either call site breaks a real deployment path.';
+  'Idempotent RECONCILIATION of the outbox drain''s automation principal (spec §5.5): re-derives its revocations from the `operator` role''s current grants and heals any that were flipped, soft-deleted or given an expiry. Returns the actor id, or NULL when it did nothing because the `operator` role does not exist yet. Called from 20260731000000_platform_outbox.sql, from supabase/seed/platform_seed.sql (see that migration''s header for why removing either call site breaks a real deployment path), and from trg_reconcile_system_actor on every role_permission write.';
 
 -- Seed-time helper; no REST client should ever call it. Same PUBLIC-not-anon rule as
--- above, and no re-grant: the only callers are this migration and platform_seed.sql,
--- both applied as the owner.
+-- above, and no re-grant: the only callers are this migration, platform_seed.sql (both
+-- applied as the owner) and trg_reconcile_system_actor below, which is SECURITY DEFINER
+-- and so reaches this function as its owner regardless of who fired the trigger.
 REVOKE EXECUTE ON FUNCTION fn_seed_system_actor() FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- ENFORCEMENT 1 of 3 — the principal cannot widen when the role matrix moves.
+--
+-- role_permission is runtime data (see fn_seed_system_actor's header). Re-running the
+-- reconciliation on every write to it is what turns "narrow at seed time" into "narrow,
+-- full stop": a Super Admin granting `operator` a permission through
+-- roleService.setRolePermission commits the grant and its matching revocation in the SAME
+-- transaction, so there is no window in which the automation principal holds it.
+--
+-- Statement-level, not row-level: platform_seed.sql grants a whole role's column in one
+-- INSERT ... SELECT, and reconciling once per statement rather than once per granted row
+-- keeps seeding linear. The reconciliation reads the post-statement state either way.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_reconcile_system_actor()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+  -- Recursion guard. fn_seed_system_actor() writes app_user and user_permission_override
+  -- and never role_permission, so today it cannot re-enter this trigger; the depth check
+  -- keeps that true even if some future trigger on either of those tables writes back to
+  -- role_permission. pg_trigger_depth() is 1 for this trigger's own invocation.
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NULL;
+  END IF;
+  PERFORM fn_seed_system_actor();
+  RETURN NULL;   -- AFTER STATEMENT: return value is ignored
+END $$;
+
+CREATE TRIGGER trg_reconcile_system_actor
+  AFTER INSERT OR UPDATE OR DELETE ON role_permission
+  FOR EACH STATEMENT EXECUTE FUNCTION fn_reconcile_system_actor();
+COMMENT ON TRIGGER trg_reconcile_system_actor ON role_permission IS
+  'Re-derives the outbox automation principal''s revocations after any change to the role x permission matrix, so granting the `operator` role a permission never silently widens the principal (spec §5.5). Delegates to fn_seed_system_actor() — the single definition of what that principal may do.';
+
+-- ---------------------------------------------------------------------------
+-- ENFORCEMENT 2 of 3 — the principal's authority has no additive route at all.
+--
+-- Reconciliation above makes a widening self-healing; this makes it unreachable. The
+-- principal's effective set must be role-grants MINUS revocations, so a `granted` override
+-- row targeting it is refused outright rather than quietly waiting to be reconciled away.
+-- Closes the path through roleService.addOverride, whose upsert sets
+-- `granted = EXCLUDED.granted, deleted_at = NULL` and would otherwise flip a revocation
+-- into a grant from the admin console.
+--
+-- The WHEN clause keeps this off the hot path: the function body is only ever reached for
+-- a row that is both the system actor's and additive.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_forbid_system_actor_grant()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION
+    'Cannot grant permissions to the outbox automation principal (% / system@qtx.internal): its authority is the operator role MINUS revocations, by construction (spec 5.5). Widen fn_seed_system_actor()''s keep-list in a migration instead.',
+    NEW.user_id
+    USING ERRCODE = '23514';
+END $$;
+
+CREATE TRIGGER trg_forbid_system_actor_grant
+  BEFORE INSERT OR UPDATE ON user_permission_override
+  FOR EACH ROW
+  WHEN (NEW.user_id = '22222222-2222-2222-2222-222222222222'::uuid AND NEW.granted)
+  EXECUTE FUNCTION fn_forbid_system_actor_grant();
+COMMENT ON TRIGGER trg_forbid_system_actor_grant ON user_permission_override IS
+  'Refuses any additive (granted = true) override on the outbox automation principal. Its authority is role grants minus revocations with no route to add a grant (spec §5.5).';
+
+-- ---------------------------------------------------------------------------
+-- ENFORCEMENT 3 of 3 — the principal cannot acquire a login path.
+--
+-- The header above asserts "auth_user_id stays NULL: this principal must have NO login
+-- path", but asserting it in a comment left `UPDATE app_user SET auth_user_id = ...`
+-- succeeding. It is unreachable today — the only login path is fn_resolve_actor, which
+-- keys on auth_user_id, and no application code writes that column — but platform_seed.sql
+-- says "auth_user_id is linked on first login (Task 5)", so a linking path is planned.
+-- If that path ever matches on email, an auth.users row for system@qtx.internal would
+-- make the automation principal directly assumable by whoever created it.
+--
+-- A CHECK rather than a trigger: app_user already states its invariants this way
+-- (module_access_known), and a CHECK cannot be bypassed by disabling a trigger.
+-- ---------------------------------------------------------------------------
+ALTER TABLE app_user ADD CONSTRAINT app_user_system_actor_has_no_login
+  CHECK (auth_user_id IS NULL OR id <> '22222222-2222-2222-2222-222222222222'::uuid);
+COMMENT ON CONSTRAINT app_user_system_actor_has_no_login ON app_user IS
+  'The outbox drain''s automation principal (spec §5.5) must never be loggable-in-as. Its authority is deliberately un-human: every module, narrowed to two permissions, resolved only by fn_resolve_actor_by_user_id from the drain. Linking an auth.users row to it would turn that into an account.';
 
 -- Call site 1 of 2 (cloud path). A no-op returning NULL on a from-scratch database.
 SELECT fn_seed_system_actor();
