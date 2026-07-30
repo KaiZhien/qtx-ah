@@ -1799,13 +1799,22 @@ export async function listImportRows(
   })
 }
 
-export async function skipImportRow(actor: Actor, rowId: string): Promise<void> {
+/**
+ * Scoped by batch as well as row id: the caller always knows which batch it is
+ * looking at, and scoping means a row id from one batch can never be skipped
+ * through another batch's page.
+ */
+export async function skipImportRow(
+  actor: Actor, batchId: string, rowId: string,
+): Promise<void> {
   authorize(actor, 'import_data', 'manufacturing')
+  z.string().uuid().parse(batchId)
   z.string().uuid().parse(rowId)
   await withTransaction(actor.id, async (tx) => {
     await tx.query(
       `UPDATE import_row SET status='skipped', updated_at=now()
-        WHERE id=$1 AND status IN ('valid','invalid','needs_review','failed')`, [rowId])
+        WHERE id=$1 AND batch_id=$2
+          AND status IN ('valid','invalid','needs_review','failed')`, [rowId, batchId])
   })
 }
 
@@ -2028,8 +2037,12 @@ async function markRow(
   actor: Actor, rowId: string, status: ImportRowStatus, errors: string[],
 ): Promise<void> {
   await withTransaction(actor.id, async (tx) => {
+    // Scoped to a still-pending row. Both callers act on a row they just read as
+    // 'valid', but if a concurrent commit pass won the race and committed it,
+    // this must not stamp 'failed' over that row's success.
     await tx.query(
-      `UPDATE import_row SET status=$1, errors=$2, updated_at=now() WHERE id=$3`,
+      `UPDATE import_row SET status=$1, errors=$2, updated_at=now()
+        WHERE id=$3 AND status='valid'`,
       [status, JSON.stringify(errors), rowId])
   })
 }
@@ -2333,7 +2346,7 @@ export async function skipRowAction(
 ): Promise<ActionResult<null>> {
   try {
     const actor = await requireAal2Actor()
-    await skipImportRow(actor, input.rowId)
+    await skipImportRow(actor, input.batchId, input.rowId)
     revalidatePath(`/manufacturing/import/${input.batchId}`)
     return { ok: true, data: null }
   } catch (err) {
@@ -2467,15 +2480,30 @@ import { ImportCommitPanel } from '@/components/manufacturing/ImportCommitPanel'
 
 export const dynamic = 'force-dynamic'
 
+const ROW_STATUSES = [
+  'valid', 'needs_review', 'invalid', 'committed', 'skipped', 'failed',
+] as const
+
 export default async function ImportBatchPage(
-  { params }: { params: { batchId: string } },
+  { params, searchParams }: {
+    params: { batchId: string }
+    searchParams: { status?: string }
+  },
 ) {
   const actor = await requireActor()
   if (!can(actor, 'import_data', 'manufacturing')) notFound()
 
   const batch = await getImportBatch(actor, params.batchId)
   if (!batch) notFound()
-  const rows = await listImportRows(actor, params.batchId)
+
+  // One status at a time, filtered in SQL. listImportRows caps at 2000 rows, so
+  // loading the whole batch and filtering client-side would silently hide rows
+  // on a large file — and the counts the tabs show come from getImportBatch's
+  // GROUP BY, which is exact regardless of the cap.
+  const active = (ROW_STATUSES as readonly string[]).includes(searchParams.status ?? '')
+    ? (searchParams.status as (typeof ROW_STATUSES)[number])
+    : 'valid'
+  const rows = await listImportRows(actor, params.batchId, active)
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
@@ -2498,7 +2526,8 @@ export default async function ImportBatchPage(
         status={batch.status}
         pending={batch.counts.valid}
       />
-      <ImportReviewTable batchId={batch.batchId} rows={rows} />
+      <ImportReviewTable
+        batchId={batch.batchId} rows={rows} active={active} counts={batch.counts} />
     </div>
   )
 }
@@ -2572,7 +2601,7 @@ Create `components/manufacturing/ImportReviewTable.tsx`:
 ```tsx
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { skipRowAction } from '@/app/(platform)/manufacturing/import/actions'
@@ -2589,30 +2618,38 @@ const TABS = [
 ] as const
 
 export function ImportReviewTable(
-  { batchId, rows }: { batchId: string; rows: ImportRowView[] },
+  { batchId, rows, active, counts }: {
+    batchId: string
+    rows: ImportRowView[]
+    active: string
+    counts: Record<string, number>
+  },
 ) {
-  const [tab, setTab] = useState<(typeof TABS)[number]['key']>('valid')
   const [, startTransition] = useTransition()
   const router = useRouter()
-  const shown = rows.filter((r) => r.status === tab)
+  const shown = rows
 
   return (
     <div className="space-y-3">
+      {/* Tabs are links, not client state: each status is a separate SQL query,
+          so a 5000-row batch never has to reach the browser to be filtered. */}
       <div className="flex flex-wrap gap-2">
-        {TABS.map((t) => {
-          const n = rows.filter((r) => r.status === t.key).length
-          return (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`rounded-md border px-3 py-1 text-sm ${
-                tab === t.key ? 'bg-muted font-medium' : ''}`}
-            >
-              {t.label} ({n})
-            </button>
-          )
-        })}
+        {TABS.map((t) => (
+          <Link
+            key={t.key}
+            href={`/manufacturing/import/${batchId}?status=${t.key}`}
+            className={`rounded-md border px-3 py-1 text-sm ${
+              active === t.key ? 'bg-muted font-medium' : ''}`}
+          >
+            {t.label} ({counts[t.key] ?? 0})
+          </Link>
+        ))}
       </div>
+      {counts[active] > shown.length && (
+        <p className="text-muted-foreground text-sm">
+          Showing the first {shown.length} of {counts[active]} rows.
+        </p>
+      )}
 
       <div className="overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
