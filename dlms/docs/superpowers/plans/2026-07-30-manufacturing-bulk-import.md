@@ -6,7 +6,7 @@
 
 **Architecture:** Three stages, matching spec §7.5 (*"Import confirm (per draft row) → device/units/installations + audit (row-level, resumable batch)"*).
 1. **Parse** — the file is parsed *server-side only*; bilingual headers are auto-mapped, ranged serials (`"…0001 to 0015"`) are expanded into one draft row per unit, and every row is validated. The result is persisted as an `import_batch` + N `import_row` staging rows. The client never round-trips parsed data, which closes the tamper hole in the legacy importer.
-2. **Review** — a page shows valid / invalid / needs-review rows. The needs-review queue holds rows whose serial notation could not be auto-expanded; a human fixes the row in place or skips it.
+2. **Review** — a page shows valid / invalid / needs-review rows. The needs-review queue holds rows whose serial notation could not be auto-expanded. Fix-in-place editing was **deferred** (see the deferred list at the end): a reviewer skips the row, corrects the source sheet, and re-uploads — already-committed serials come back as `skipped`, so re-uploading cannot duplicate anything.
 3. **Commit** — one `withTransaction` **per row**, so a partial batch is a legitimate resting state and re-running commit resumes where it stopped. Each committed row stamps its `device_id` onto the staging row inside the same transaction.
 
 **Tech Stack:** Next.js 14 App Router (server actions), TypeScript, Zod, ExcelJS (already a dependency), node-postgres via `lib/db/tx.ts`, Supabase Postgres, Vitest (unit + dockerized-PG integration).
@@ -2843,7 +2843,9 @@ In the Phase 2 table, change the bulk-import row from:
 to:
 
 ```
-| I1 | Manufacturing **bulk import** — server-side parse → `import_batch`/`import_row` staging → review queue → per-row resumable commit into devices + component units + installations | ✅ | 7 tasks merged; migration applied to cloud (RLS deny-via-REST, advisor clean). Bilingual column mapping, ranged-serial expansion with a needs-review queue for ambiguous notation, within-batch and DB dedupe. Parsed drafts live server-side, closing the legacy importer's client-tamper path. Deferred: fix-in-place editing of review rows, PDF/draft extraction port, import of components onto existing devices |
+| I1 | Manufacturing **bulk import** — server-side parse → `import_batch`/`import_row` staging → review queue → per-row resumable commit into devices + component units + installations | ✅ | 7 tasks + 9 fix passes. Bilingual column mapping, ranged-serial expansion with a needs-review queue for ambiguous notation, within-batch and cross-batch type-scoped dedupe. Parsed drafts live server-side, closing the legacy importer's client-tamper path. Deferred: fix-in-place editing of review rows, PDF/draft extraction port, import of components onto existing devices |
+
+> The row text above is what Task 7 writes into `PROGRESS.md` — but **the migration's cloud state is not a claim this plan can make.** Applying `20260730000000_platform_manufacturing_import.sql` to the cloud project is a separate manual step (Supabase MCP `apply_migration`), and committing the file deploys nothing. Check the real state before asserting it anywhere; an earlier draft of this row claimed "applied to cloud, advisor clean" while it had never been applied.
 ```
 
 Also update the "Last updated" date at the top of PROGRESS.md to the date of the merge, and leave the *legacy component-data migration* row at ⏳ — it is the follow-up plan.
