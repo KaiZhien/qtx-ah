@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
-import { mapStatus, mapDeviceRow, main, DEVICE_AUDIT_TRIGGER } from '@/scripts/migrate_demo'
+import { mapStatus, mapDeviceRow, DEVICE_AUDIT_TRIGGER } from '@/scripts/migrate_demo'
 import { listDevices } from '@/modules/manufacturing/services/deviceReadService'
 import { getPool } from '@/lib/db/pool'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -130,6 +130,21 @@ describe('mapDeviceRow', () => {
 // not a one-off script.
 // ===========================================================================
 
+/**
+ * main() through a FRESH module instance, the way migrateComponents.test.ts
+ * does it. main() now closes the getPool() singleton on its way out — that is
+ * the fix for the ~30s idle-timeout hang after the summary prints, and it makes
+ * RB-07 and RB-08 behave the same way when run back to back — but pg rejects a
+ * second end() on the same pool, and this file calls main() three times. A fresh
+ * module registry gives each invocation its own singleton and leaves the one
+ * this file's own top-level getPool() owns untouched.
+ */
+async function runMainFresh(): Promise<void> {
+  vi.resetModules()
+  const mod = await import('@/scripts/migrate_demo')
+  await mod.main()
+}
+
 /** Builds a connection string pointed at `schema` within the same test database. */
 function legacyUrlForSchema(schema: string): string {
   const url = new URL(process.env.TEST_DATABASE_URL!)
@@ -189,7 +204,7 @@ describe('main() end-to-end — soft-deleted legacy device (Issue 2, Docker Post
       `SELECT id FROM app_user WHERE email = 'reetmitra8@gmail.com'`)).rows[0].id
 
     process.env.LEGACY_DATABASE_URL = legacyUrlForSchema(SCHEMA)
-    await main()
+    await runMainFresh()
   })
 
   afterAll(async () => {
@@ -238,7 +253,7 @@ describe('trg_audit_device residue (Issue 1, Docker Postgres)', () => {
       VALUES ('QTX-TRIG-CLEAN', 'EE-TRIG-CLEAN', 'AH Basic', 'In Stock', 'Production')`)
     process.env.LEGACY_DATABASE_URL = legacyUrlForSchema(SCHEMA)
 
-    await main()
+    await runMainFresh()
 
     expect(await triggerState(admin)).toBe('O')
     await admin.query(`DELETE FROM device WHERE device_sn = 'QTX-TRIG-CLEAN'`)
@@ -259,7 +274,7 @@ describe('trg_audit_device residue (Issue 1, Docker Postgres)', () => {
         ('QTX-DUP', 'EE-DUP-2', 'AH Basic', 'In Stock', 'Production', now() - interval '1 day')`)
     process.env.LEGACY_DATABASE_URL = legacyUrlForSchema(SCHEMA)
 
-    await expect(main()).rejects.toThrow(/duplicate key|unique/i)
+    await expect(runMainFresh()).rejects.toThrow(/duplicate key|unique/i)
 
     // Rolled back: neither row landed on the platform.
     const { rows } = await admin.query(`SELECT id FROM device WHERE device_sn = 'QTX-DUP'`)
@@ -269,6 +284,56 @@ describe('trg_audit_device residue (Issue 1, Docker Postgres)', () => {
     // leave auditing off, because SET LOCAL never committed anything outside
     // the rolled-back transaction.
     expect(await triggerState(admin)).toBe('O')
+  })
+})
+
+// ===========================================================================
+// migrate_demo.ts WRITES through the getPool() singleton (withTransaction),
+// not through the platformPool it builds itself — so main() has to close that
+// singleton too, or the process sits idle for idleTimeoutMillis (30s) after
+// the summary prints. That reads as a hang, and an operator who Ctrl-Cs it
+// gets exit 130 instead of the real code, which a wrapping runbook script
+// misreads. RB-07 and RB-08 are a mandatory-ordered pair run back to back and
+// scripts/migrate_components.ts already closes it; this is the assertion that
+// the sibling now does too.
+// ===========================================================================
+
+describe('main() closes the write pool (no 30s idle hang)', () => {
+  const SCHEMA = 'legacy_src_poolclose'
+  let admin: Client
+
+  beforeAll(async () => {
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
+    admin = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+    await admin.connect()
+  })
+
+  afterAll(async () => {
+    // In afterAll, not at the end of the test: a failing assertion must not
+    // leave the migrated row behind for the NEXT run to trip over
+    // device_sn_unique on.
+    await admin.query(`DELETE FROM device WHERE device_sn = 'QTX-POOL-CLOSE'`)
+    await admin.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`)
+    await admin.end()
+  })
+
+  it('ends the getPool() singleton it wrote through', async () => {
+    await createLegacySchema(admin, SCHEMA)
+    // Self-healing against a run that died before its afterAll.
+    await admin.query(`DELETE FROM device WHERE device_sn = 'QTX-POOL-CLOSE'`)
+    await admin.query(`
+      INSERT INTO ${SCHEMA}.device (device_sn, pcba_a_sn, product_name, status, phase)
+      VALUES ('QTX-POOL-CLOSE', 'EE-POOL-CLOSE', 'AH Basic', 'In Stock', 'Production')`)
+    process.env.LEGACY_DATABASE_URL = legacyUrlForSchema(SCHEMA)
+
+    vi.resetModules()
+    const migrate = await import('@/scripts/migrate_demo')
+    await migrate.main()
+
+    // Imported WITHOUT another resetModules, so this is the very singleton
+    // main() just wrote through — not a fresh one that would trivially be open.
+    const { getPool: freshGetPool } = await import('@/lib/db/pool')
+    expect(freshGetPool().ended).toBe(true)
   })
 })
 

@@ -16,33 +16,74 @@ document. Take the snapshot before the run, not after something looks wrong.
 
 Written 2026-07-30 alongside the migration code (the mapper, the runner, and the
 reconcile additions) — the same day a review/fix pass on the runner found and fixed
-two data-integrity defects before commit (a re-run that could resurrect a
-removed-and-not-replaced installation, and a shared-serial revision conflict that was
-silently discarded instead of reported; see "Design notes" below and
-`.superpowers/sdd/task-2-report.md`, section "Fix pass 1", for the full writeup).
+two data-integrity defects before commit (commit `32fd36f`):
+
+1. **A re-run could resurrect a removed-and-not-replaced installation.** The
+   installation `INSERT` was guarded only by `ON CONFLICT ... WHERE removed_at IS NULL`,
+   which sees nothing when a component was removed through the UI and never replaced —
+   so a re-run inserted a second installation back-dated to before the removal, and the
+   registry then asserted a component was installed that had physically been pulled
+   out. Fixed by making the `INSERT` conditional on the slot having **no installation
+   history at all** (`NOT EXISTS`), with `ON CONFLICT` kept only as a race backstop.
+2. **A shared-serial revision conflict was silently discarded.** When two legacy
+   devices carried the same serial with different `hw_rev`/`bom_rev`/`fw_ver`, the
+   existing unit was correctly reused but the second device's revisions were written
+   nowhere and reported nowhere — a silent drop the Global Constraint forbids. Fixed by
+   returning the conflict from `upsertUnit` and printing both sides in the summary
+   (`Shared serials with divergent revisions`).
+
+A pre-merge review pass then found a third (commit under review here): the unit
+`INSERT`'s `ON CONFLICT (component_type_id, serial_no) WHERE deleted_at IS NULL` did
+not cover a **soft-deleted** unit, so a re-run inserted a second live unit while the
+installation guard correctly suppressed the installation — leaving a live
+`component_unit` with `disposition = 'installed'` and zero installations pointing at
+it. Fixed by deciding the whole component group once, before either write (see "Design
+notes").
+
 **The actual run against real legacy data has NOT happened yet** — there is no
 `LEGACY_DATABASE_URL` in this environment, the same blocker RB-07 records. The mapper,
 runner, and reconciliation are verified by:
 
-- **57 automated tests** across three files: 28 in
+- **60 automated tests** across three files: 28 in
   `__tests__/platform/manufacturing/legacyComponents.test.ts` (the pure mapper —
   clean-serial vs ranged/listed/prose-serial flagging via the allowlist in
   `needsSplitSerial`, the screen's batch-vs-unit branch, a legacy row with nothing
-  populated producing no drafts at all); 20 in
+  populated producing no drafts at all); 21 in
   `__tests__/integration/migrateComponents.test.ts` (the runner end to end against a
   dockerized-Postgres legacy stand-in — including a fault-injected mid-run failure
-  that proves the partial-result summary and resume point, keyset pagination across
+  that proves the partial-result summary and progress marker, keyset pagination across
   multiple pages with rows sharing a `created_at`, a re-run that does *not* resurrect
-  a removed-and-not-replaced installation, and the shared-serial divergent-revision
-  case); 9 in `__tests__/integration/reconcileComponents.test.ts` (the reconcile
+  a removed-and-not-replaced installation, a re-run over a **soft-deleted** unit that
+  does not insert a second live one, and the shared-serial divergent-revision case);
+  11 in `__tests__/integration/reconcileComponents.test.ts` (the reconcile
   additions, run against their own private throwaway database —
   `qtx_test_reconcile` — specifically because the platform-side component counts
   reconcile compares are global totals, not scoped to one test's rows, so isolation
-  from the rest of the suite has to be a real separate database, not a row filter).
-- Mutation-testing on the reconcile additions (each mutation applied, run, reverted:
-  the `count(*) * 3` shortcut for the installation total, dropping the `DISTINCT` from
-  the unit count, removing the revision null-collapse, and replacing the orphan query
-  with a constant `0` — all caught). Detail in `.superpowers/sdd/task-3-report.md`.
+  from the rest of the suite has to be a real separate database, not a row filter;
+  two of the eleven pin the legacy-side trim to `String.prototype.trim()` using a
+  tab-only column, a U+3000-only column, and a serial that differs from another only
+  by a leading U+3000).
+- Mutation-testing on the reconcile additions, committed as
+  `__tests__/integration/reconcileComponents.test.ts` in commit `58addb2`. Four
+  mutations were each applied to `scripts/reconcile.ts`, the suite run, and the
+  mutation reverted; every one was caught by a failing assertion, which is what makes
+  the transcription meaningful rather than decorative:
+  - replacing the three-filter installation total with the `count(*) * 3` shortcut
+    (caught: the fixture's 6 devices produce 9 installations, not 18);
+  - dropping the `DISTINCT` from the unit count (caught: two devices share one serial,
+    so the count became 7 against 6 real units);
+  - removing the revision null-collapse `btrim(coalesce(x,''))` (caught: the NULL/blank
+    pair started reporting as a divergence invented out of empty strings);
+  - replacing the orphan query with a constant `0` (caught: the re-pointed installation
+    no longer failed reconcile).
+
+  The pre-merge pass added a fifth, which the original four had not covered and which
+  the code was **failing**: restoring the one-argument `btrim(x)` on the legacy side.
+  Caught, now that the fixture contains non-ASCII whitespace — `source=14 target=11`
+  on the installation line and `source=9 target=7` on the unit line. Two further
+  mutations pin the runner: removing the hoisted group check strands a second live
+  unit (`unitsCreated` 1 instead of 0), and removing `getPool().end()` from
+  `migrate_demo.ts` leaves the write pool open.
 - No real database has been touched by any of this — there is no
   `LEGACY_DATABASE_URL` and no cloud-reachable legacy project in this environment.
   Unlike RB-07, there was no separate manual local end-to-end walkthrough on top of
@@ -60,6 +101,11 @@ reconcile are both clean):
 - Shared serials with divergent revisions: `___`
 - Wall-clock runtime: `___`
 - `reconcile` exit code and any residual mismatches (component lines): `___`
+- Did the run complete in one attempt? `yes / no` — if **no**, one line per attempt:
+  - Attempt `___`: failed during batch `___`, on device `___`, error `___`
+  - Progress reached (last committed legacy row): `created_at=___ id=___`
+  - Cause found and fixed: `___`
+  - Final attempt that completed: `___` (counts above are from this attempt)
 
 ## Safety
 
@@ -134,10 +180,27 @@ Read the output:
   cleanup queue (see below), and a re-run must still show what nobody has cleaned up
   yet.
 - `Shared serials with divergent revisions (N)` (stderr) — see "Divergent revisions"
-  below. Never fails the run.
+  below. Never fails the run. Unlike the `needs_split` list, this one appears only on
+  the run that actually migrates a group; a pure re-run prints nothing here, and
+  `reconcile`'s `INFO ... DIVERGENT revisions` count is the surface that persists.
 - `Legacy devices with no platform counterpart (N)` (stderr, `console.error`) — this
   is what makes `main()` exit 1. Run `migrate_demo.ts` (and its own reconcile)
   against this same data first, then re-run this script — safe.
+
+And, **only if the run died part-way**, five more lines printed *before* the counts —
+see "If the run fails partway" below for what to do about them:
+- `=== PARTIAL RESULT — RUN FAILED during batch N ===` — the banner. Its presence is
+  the signal that every number underneath it is partial. It is on stdout, deliberately,
+  so it sits with the counts it qualifies.
+- `Batch N rolled back entirely; batches 1-(N-1) committed; any later batch never ran.`
+  — the transaction boundary, stated for this specific run.
+- `Failed while processing device: <uuid>` — the legacy device id being processed when
+  it died. This is the one to look at first.
+- `Progress reached: last legacy row COMMITTED was created_at=... id=...` — **a
+  diagnostic, not an instruction.** There is no `--after` flag; the script parses no
+  arguments. It tells you how far the run got, nothing more.
+- `TO RECOVER: fix the cause, then re-run this script from the start. ...` — the actual
+  instruction, and the only supported recovery.
 
 Then reconcile:
 
@@ -199,6 +262,82 @@ concurrent writer.
 This means the run/re-run window has **no** limitation worth documenting: re-run at
 any point in the migrated fleet's life, including after it is in service, and the
 script will never resurrect or duplicate anything — it only ever fills a gap.
+
+The unit `INSERT` is guarded by the *same* decision, not by a second independent one.
+Before either write, the runner asks whether this `(device_id, component_type_id,
+slot_no)` already has installation history, and skips the **whole component group** —
+unit and installation both — when it does. That matters because the unit's own
+`ON CONFLICT (component_type_id, serial_no) WHERE deleted_at IS NULL` cannot see a
+**soft-deleted** unit (the index is partial), so on its own it would insert a second
+live unit while the installation guard correctly suppressed the installation — leaving
+a live `component_unit` with `disposition = 'installed'` and no installation pointing
+at it, and reporting a non-zero `Component units:` on a re-run this runbook promises
+will report `0`. Both `ON CONFLICT` clauses remain, as race backstops only.
+
+One consequence worth knowing: because an already-migrated group is skipped before the
+stored unit is read, the runner's `Shared serials with divergent revisions` list is
+produced only on the run that actually migrates a group — a pure re-run prints nothing
+there. That queue is not lost; `reconcile.ts` derives the same population from the
+legacy side alone and prints its count on **every** run. The `needs_split` cleanup
+queue is unaffected and still prints on every run, because it is derived from the
+legacy row with no database read at all.
+
+## If the run fails partway
+
+The script dies on the first error it cannot handle (a constraint violation, a dropped
+connection, a killed session). It is designed to be legible when that happens, and the
+recovery is always the same: **re-run it from the start.**
+
+**What committed and what did not.** Work is committed one batch at a time — 500 legacy
+devices per `withTransaction`. So on a failure during batch `N`:
+
+- batches `1 … N-1` are **committed** and durable;
+- batch `N` is **rolled back in its entirety** — every unit and installation it wrote
+  is gone, including the rows it had already written before the failing one;
+- batch `N+1` and later **never ran**.
+
+Nothing is left half-written inside a batch, and nothing needs unwinding by hand.
+
+**How to read the output.** The four partial-failure lines are listed under "Read the
+output" above. In short: the `=== PARTIAL RESULT — RUN FAILED during batch N ===`
+banner means every count below it is partial; `Batch N rolled back entirely; ...` spells
+out the boundary for that specific run; `Failed while processing device: <uuid>` names
+the legacy device to investigate; and `Progress reached: last legacy row COMMITTED was
+created_at=... id=...` says how far it got. The counts underneath follow a deliberate
+split, restated in the output itself: **`Legacy devices seen` is rows READ** (it
+includes the rolled-back batch), while **`Component units` and `Installations` are rows
+COMMITTED** (per-batch counters are folded in only after that batch commits, so a
+rolled-back batch never contributes).
+
+**There is no resume flag.** `Progress reached: ...` is a progress marker, not an
+instruction — the script parses no arguments and reads no cursor environment variable,
+so there is nothing to feed it to. Do not go looking for `--after`.
+
+**The recovery.**
+
+1. Read `Failed while processing device: <uuid>` and the error itself (stderr) and fix
+   the cause. Common ones: a legacy device with no platform counterpart (run RB-07
+   first), a missing `component_type` row (apply
+   `20260720000001_platform_components.sql`), or a platform-side constraint the legacy
+   data violates.
+2. Re-run the exact same command from the start. This is safe and is the *only*
+   supported recovery — see "Re-running is safe — unconditionally". Committed batches
+   are skipped group by group, so the re-run picks up where the last one stopped
+   without depending on any cursor.
+3. Confirm: the second run's `Component units` / `Installations` counts should cover
+   only the devices the failed run never reached. Then run `reconcile` — a clean
+   reconcile, not a clean exit code from the runner, is what says the back-fill landed.
+
+**What to record** in "Fill in when the real run happens" above: the batch number it
+died on, the device id, the error, the `Progress reached` line, what you changed, and
+which attempt finally completed. The final attempt's counts are the ones that belong in
+the count fields — an earlier attempt's partial numbers are not a smaller version of the
+same thing.
+
+**If it keeps failing on the same device**, stop re-running and look at that legacy row.
+`component_installation` is append-only and there is no in-app undo (see Rollback), so a
+loop of failed attempts is cheap only as long as it stays a loop of *rolled-back*
+batches.
 
 ## The screen is batch-tracked — this is intentional
 
@@ -267,6 +406,13 @@ device ids) and, independently, by `reconcile.ts` (`INFO ... DIVERGENT revisions
 ever fails the run — like the cleanup queue, this is a human's judgement call about
 which revision is real, not a migration defect.
 
+The runner's list is produced **on the run that migrates the group**, not on every run:
+an already-migrated slot is skipped before its stored unit is read (see "Re-running is
+safe"), so a pure re-run prints nothing there. `reconcile.ts`'s count is the one that
+keeps appearing — it is derived from the legacy side alone — so capture the runner's
+output from the migrating run, and use `reconcile` afterwards to confirm the population
+has not changed.
+
 Worth knowing: such a serial is also left **open-installed in two devices at once**,
 which is physically impossible. `one_open_install` cannot catch this because it is
 scoped per-device, not per-unit — resolving that is part of the same human review.
@@ -316,6 +462,12 @@ re-run does.
   can share a timestamp and a plain `> cursor` comparison risks skipping or repeating
   rows across a batch boundary. Verified by a dedicated test with a page size smaller
   than the fixture and rows deliberately sharing timestamps.
+- **One group check decides both writes.** The "does this slot already have
+  installation history" question is asked once, per `(device_id, component_type_id,
+  slot_no)`, before the unit is touched — not once for the unit (`ON CONFLICT`) and
+  again for the installation (`NOT EXISTS`). Two independent guards could disagree, and
+  on a soft-deleted unit they did: see "Re-running is safe — unconditionally" for the
+  orphan-live-unit case this removes.
 - **Both `ON CONFLICT` clauses restate their partial index predicate**
   (`WHERE deleted_at IS NULL` / `WHERE removed_at IS NULL`) because
   `component_unit_sn` and `one_open_install` are both partial unique indexes —
@@ -328,6 +480,14 @@ re-run does.
   a real gap. This also means a batch that rolls back never leaves its counts in a
   summary the operator reads as committed — see the fault-injection test and the
   `PARTIAL RESULT` banner it produces.
+- **`reconcile.ts`'s legacy-side `btrim()` takes an explicit character set**
+  (`TRIM_CHARS`) that matches `String.prototype.trim()` exactly. It has to: the other
+  half of every component comparison is the mapper's `text()` helper, which *is*
+  `.trim()`. One-argument `btrim(x)` strips the ASCII space and nothing else, so a
+  column holding only a tab or a U+3000 IDEOGRAPHIC SPACE would be "no component" to
+  the mapper and "a populated group" to reconcile — a mismatch no re-run could ever
+  clear, in a fleet whose data already contains 至, U+FF0C, U+3001 and U+FF5E. Do not
+  simplify it back to the one-argument form.
 - **`existingDeviceIds` is not filtered by `deleted_at`.** `migrate_demo.ts` carries a
   legacy row's soft-delete state verbatim, and a soft-deleted device still has the
   components it was built with. Filtering here would report a correctly-migrated

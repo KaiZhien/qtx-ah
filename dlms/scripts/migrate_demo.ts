@@ -9,6 +9,7 @@
 
 import { Pool } from 'pg'
 import { fileURLToPath } from 'node:url'
+import { getPool } from '@/lib/db/pool'
 import { withTransaction } from '@/lib/db/tx'
 
 /**
@@ -477,6 +478,15 @@ export async function main(): Promise<void> {
 
   await legacyPool.end()
   await platformPool.end()
+  // The WRITE path runs through the getPool() singleton (see withTransaction),
+  // not platformPool, so this script owns that pool's lifetime too. Without
+  // closing it the process sits idle for idleTimeoutMillis (30s) after the
+  // summary prints, which reads as a hang — and an operator who Ctrl-Cs it gets
+  // exit 130 instead of the real code, which a wrapping runbook script would
+  // misread as something other than the failure it was. RB-07 and RB-08 are a
+  // mandatory-ordered pair run back to back; migrate_components.ts closes it for
+  // the same reason.
+  await getPool().end()
 
   if (thrown) throw thrown
 }

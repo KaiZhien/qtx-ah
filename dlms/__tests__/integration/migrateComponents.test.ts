@@ -282,6 +282,55 @@ describe('migrateComponents — slots the platform has taken over', () => {
 })
 
 // ===========================================================================
+// The unit guard and the installation guard used to be two independent
+// checks looking at different things, and a SOFT-DELETED unit is exactly where
+// they disagreed: component_unit_sn is partial (WHERE deleted_at IS NULL), so a
+// soft-deleted row is invisible to ON CONFLICT and a second live unit went in —
+// while the installation's own NOT EXISTS correctly suppressed the
+// installation. The result was a live component_unit with
+// disposition='installed' and ZERO installations pointing at it: the duplicate
+// identity for one physical board the unique index exists to prevent. The group
+// check now decides both writes together, before either happens.
+// ===========================================================================
+
+describe('migrateComponents — a soft-deleted unit on an already-migrated slot', () => {
+  it('does not insert a second live unit stranded with no installation', async () => {
+    const device = await createDevice('basic', '2026-06-20 08:00:00+00')
+    const serial = `SOFTDEL-${runTag}`
+    await db.query(
+      `INSERT INTO ${SCHEMA}.device (id, pcba_a_sn, created_at)
+       VALUES ($1, $2, timestamptz '2026-06-20 08:00:00+00')`, [device, serial])
+
+    await migrateComponents(legacyPool, platformPool, actorId)
+    const seeded = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM component_unit WHERE serial_no = $1`, [serial])
+    expect(seeded.rows[0].n).toBe('1')
+
+    // Someone soft-deletes the unit — an ordinary, permitted operation on
+    // component_unit (unlike component_installation, which is append-only). The
+    // row drops out of the partial unique index and the runner's ON CONFLICT can
+    // no longer see it.
+    await db.query(
+      `UPDATE component_unit SET deleted_at = now(), updated_by = $2 WHERE serial_no = $1`,
+      [serial, actorId])
+
+    const again = await migrateComponents(legacyPool, platformPool, actorId)
+    expect(again.unitsCreated).toBe(0)      // the count RB-08 promises is 0 on a re-run
+    expect(again.installsCreated).toBe(0)
+
+    const units = await db.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM component_unit WHERE serial_no = $1`, [serial])
+    expect(units.rows).toHaveLength(1)              // not two identities for one board
+    expect(units.rows[0].deleted_at).not.toBeNull() // and the survivor is the soft-deleted one
+
+    // Nothing was stranded: the one installation is still the original.
+    const installs = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM component_installation WHERE device_id = $1`, [device])
+    expect(installs.rows[0].n).toBe('1')
+  })
+})
+
+// ===========================================================================
 // Two devices carrying the SAME serial for the same component type with
 // DIFFERENT revisions. The existing unit is reused (§15 forbids inventing a
 // second identity for one physical part), so the second row's revisions are
@@ -323,16 +372,29 @@ describe('migrateComponents — a shared serial with divergent revisions', () =>
     })
   })
 
-  it('reports it again on a re-run — like needs_split it is a queue a human works', async () => {
+  it('does not re-derive it on a re-run — the slot is already migrated', async () => {
     const again = await migrateComponents(legacyPool, platformPool, actorId)
-    expect(again.divergentUnits.some((d) => d.serialNo === shared)).toBe(true)
     expect(again.unitsCreated).toBe(0)
     expect(again.installsCreated).toBe(0)
+
+    // The group check (slotAlreadyMigrated) now decides unit AND installation
+    // together, before either is touched — that is what stops a soft-deleted
+    // unit from being re-inserted as a live orphan. A slot with history is
+    // therefore skipped before the stored unit is read, and there is nothing
+    // left to compare revisions against. The queue is not lost: reconcile.ts
+    // re-derives exactly this population from the LEGACY side alone
+    // (`INFO ... DIVERGENT revisions`) and prints it on every run, and the
+    // needs_split queue — which needs no database read — still prints here on
+    // every run too.
+    expect(again.divergentUnits.some((d) => d.serialNo === shared)).toBe(false)
   })
 
-  it('does not report divergence for a re-run whose revisions match', async () => {
+  it('still lists needs_split serials on a run that writes nothing', async () => {
+    // The cleanup queue is derived from the legacy row alone, so unlike the
+    // divergence report it survives the skip — RB-08 promises it on every run.
     const again = await migrateComponents(legacyPool, platformPool, actorId)
-    expect(again.divergentUnits.some((d) => d.serialNo === `A-${runTag}`)).toBe(false)
+    expect(again.installsCreated).toBe(0)
+    expect(again.flaggedSerials.some((f) => f.serialNo === `EE-${runTag}-0001 to 0015`)).toBe(true)
   })
 })
 

@@ -177,13 +177,53 @@ async function platformDeviceIds(platformPool: Pool): Promise<string[]> {
 }
 
 /**
+ * The characters `btrim()` must strip everywhere below, so that the legacy-side
+ * SQL in this section agrees with the mapper about what "blank" means.
+ *
+ * THIS SET MUST TRACK `String.prototype.trim()`, character for character. The
+ * other half of every comparison here is `text()` in
+ * modules/manufacturing/domain/legacyComponents.ts, and `text()` is JS
+ * `.trim()`. Whatever one side calls whitespace the other has to, or the two
+ * disagree about whether a column holds a component at all.
+ *
+ * One-argument `btrim(x)` is NOT equivalent — do not "simplify" it back to that.
+ * It strips the ASCII space and nothing else; verified against this project's
+ * own Postgres 15:
+ *
+ *     btrim(E'\t')     -> NOT empty     '\t'.trim()     -> ''      (U+0009 TAB)
+ *     btrim(E'\u00A0') -> NOT empty     '\u00A0'.trim() -> ''      (U+00A0 NBSP)
+ *     btrim(E'\u3000') -> NOT empty     '\u3000'.trim() -> ''      (U+3000 IDEOGRAPHIC SPACE)
+ *
+ * With the one-argument form, a component column holding only a tab or a U+3000
+ * IDEOGRAPHIC SPACE — the space character that lives right next to the 至,
+ * U+FF0C, U+3001 and U+FF5E forms legacyComponents.ts's own allowlist comment
+ * names as observed in this bilingual fleet — is "no component" to the mapper
+ * and "a populated group" to reconcile. The installation line then mismatches
+ * permanently and no re-run can clear it, which is exactly the case RB-08's
+ * "re-running is the first thing to try" advice cannot fix. Likewise a serial
+ * with a leading U+3000 and the same serial without one are ONE serial to the
+ * mapper and two here.
+ *
+ * The set is exactly ECMAScript WhiteSpace + LineTerminator: space, tab,
+ * newline, carriage return, form feed, vertical tab, U+00A0, U+1680,
+ * U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF. Written as a
+ * Postgres escape-string literal — note `\v` is not a Postgres escape (it would
+ * strip the letter "v"), so vertical tab is spelled `\x0B`.
+ */
+const TRIM_CHARS =
+  "E' \\t\\n\\r\\f\\x0B\\u00A0\\u1680" +
+  "\\u2000\\u2001\\u2002\\u2003\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200A" +
+  "\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF'"
+
+/**
  * The three conditions under which a legacy row produces an installation,
  * transcribed from mapLegacyComponents (modules/manufacturing/domain/
  * legacyComponents.ts) rather than guessed at: a pcba_a serial, a pcba_b
  * serial, and a screen group that exists when EITHER screen_model or hmi_ver
- * survives the trim. `btrim(coalesce(x,'')) <> ''` is the SQL spelling of that
- * module's text() helper — a whitespace-only column is "no component", not a
- * component with a blank serial.
+ * survives the trim. `btrim(coalesce(x,''), TRIM_CHARS) <> ''` is the SQL
+ * spelling of that module's text() helper — a whitespace-only column is "no
+ * component", not a component with a blank serial. See TRIM_CHARS for why the
+ * explicit character set is load-bearing.
  *
  * This is a sum of three filters, NOT devices × 3, and the difference is the
  * whole point: a device may populate one, two or three groups, and a group
@@ -192,10 +232,10 @@ async function platformDeviceIds(platformPool: Pool): Promise<string[]> {
  */
 const LEGACY_POPULATED_GROUPS = `
   SELECT (
-      count(*) FILTER (WHERE btrim(coalesce(pcba_a_sn, '')) <> '')
-    + count(*) FILTER (WHERE btrim(coalesce(pcba_b_sn, '')) <> '')
-    + count(*) FILTER (WHERE btrim(coalesce(screen_model, '')) <> ''
-                          OR btrim(coalesce(hmi_ver, '')) <> '')
+      count(*) FILTER (WHERE btrim(coalesce(pcba_a_sn, ''), ${TRIM_CHARS}) <> '')
+    + count(*) FILTER (WHERE btrim(coalesce(pcba_b_sn, ''), ${TRIM_CHARS}) <> '')
+    + count(*) FILTER (WHERE btrim(coalesce(screen_model, ''), ${TRIM_CHARS}) <> ''
+                          OR btrim(coalesce(hmi_ver, ''), ${TRIM_CHARS}) <> '')
   )::text AS n
     FROM device WHERE id = ANY($1::uuid[])`
 
@@ -206,19 +246,25 @@ const LEGACY_POPULATED_GROUPS = `
  * what the mapper's text() does to them, and therefore what decides whether two
  * devices sharing a serial actually disagree. Without the collapse the
  * divergence line below would invent disagreements out of empty strings.
+ *
+ * Every btrim here takes TRIM_CHARS for the reason given there: the serial the
+ * mapper stores is `.trim()`ed, so a serial this side trims differently is a
+ * different serial and the DISTINCT count parts company with reality.
  */
 const LEGACY_SERIALS = `
-  SELECT 'pcba_a' AS type_code, btrim(pcba_a_sn) AS serial_no,
-         btrim(coalesce(pcba_a_hw_rev, '')) AS hw_rev,
-         btrim(coalesce(pcba_a_bom_rev, '')) AS bom_rev,
-         btrim(coalesce(pcba_a_fw_ver, '')) AS fw_ver
-    FROM device WHERE id = ANY($1::uuid[]) AND btrim(coalesce(pcba_a_sn, '')) <> ''
+  SELECT 'pcba_a' AS type_code, btrim(pcba_a_sn, ${TRIM_CHARS}) AS serial_no,
+         btrim(coalesce(pcba_a_hw_rev, ''), ${TRIM_CHARS}) AS hw_rev,
+         btrim(coalesce(pcba_a_bom_rev, ''), ${TRIM_CHARS}) AS bom_rev,
+         btrim(coalesce(pcba_a_fw_ver, ''), ${TRIM_CHARS}) AS fw_ver
+    FROM device WHERE id = ANY($1::uuid[])
+     AND btrim(coalesce(pcba_a_sn, ''), ${TRIM_CHARS}) <> ''
    UNION ALL
-  SELECT 'pcba_b', btrim(pcba_b_sn),
-         btrim(coalesce(pcba_b_hw_rev, '')),
-         btrim(coalesce(pcba_b_bom_rev, '')),
-         btrim(coalesce(pcba_b_fw_ver, ''))
-    FROM device WHERE id = ANY($1::uuid[]) AND btrim(coalesce(pcba_b_sn, '')) <> ''`
+  SELECT 'pcba_b', btrim(pcba_b_sn, ${TRIM_CHARS}),
+         btrim(coalesce(pcba_b_hw_rev, ''), ${TRIM_CHARS}),
+         btrim(coalesce(pcba_b_bom_rev, ''), ${TRIM_CHARS}),
+         btrim(coalesce(pcba_b_fw_ver, ''), ${TRIM_CHARS})
+    FROM device WHERE id = ANY($1::uuid[])
+     AND btrim(coalesce(pcba_b_sn, ''), ${TRIM_CHARS}) <> ''`
 
 /**
  * Open installations: one per populated legacy group. The screen group is in

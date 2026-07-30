@@ -432,3 +432,85 @@ describe('reconcileComponents — the orphan-installation check', () => {
     expect(ok).toBe(true)
   })
 })
+
+// ===========================================================================
+// Whitespace, which is where the transcription was actually WRONG. The legacy
+// side used one-argument `btrim(x)`, and a comment claimed that was "the SQL
+// spelling of" the mapper's text() helper — which is JS String.trim(). They are
+// not the same function: one-argument btrim strips the ASCII space and nothing
+// else, while .trim() strips tab, newline, NBSP and every Unicode space
+// separator INCLUDING U+3000 IDEOGRAPHIC SPACE — the space that lives right
+// next to the 至, U+FF0C, U+3001 and U+FF5E forms this bilingual fleet's data
+// actually contains.
+//
+// The consequence was permanent and unrecoverable: a component column holding
+// only a tab or an ideographic space is "no component" to the mapper and "a
+// populated group" to reconcile, so the installation line mismatches and a
+// re-run cannot clear it — while RB-08 tells the operator a shortfall "most
+// often means the back-fill did not fully land — re-running is safe and the
+// first thing to try."
+//
+// Until this block the only whitespace exercised anywhere was ASCII '   ',
+// which is the single form the two sides already agreed on.
+// ===========================================================================
+
+describe('reconcileComponents — whitespace the two sides must agree about', () => {
+  const TAB = '\t'
+  const IDEOGRAPHIC_SPACE = '\u3000'
+  const NBSP = '\u00A0'
+
+  it('counts a tab-only and an ideographic-space-only column as no component, like the mapper', async () => {
+    const tabOnly = await createDevice('basic', '2026-03-22 08:00:00+00')
+    const spaceOnly = await createDevice('basic', '2026-03-23 08:00:00+00')
+    await db.query(
+      `INSERT INTO ${LEGACY_FULL}.device (id, pcba_a_sn, pcba_b_sn, screen_model, hmi_ver, created_at)
+       VALUES ($1, $3, NULL, NULL,  NULL, timestamptz '2026-03-22 08:00:00+00'),
+              ($2, NULL, $4,  $4,   $5,   timestamptz '2026-03-23 08:00:00+00')`,
+      [tabOnly, spaceOnly, TAB, IDEOGRAPHIC_SPACE, NBSP])
+
+    // The mapper produces NOTHING for either device — text() trims all of these
+    // to '' and unitFor()/the screen branch refuse to invent a component.
+    const result = await migrateComponents(fullPool, platformPool, actorId)
+    expect(result.installsCreated).toBe(0)
+    expect(result.unitsCreated).toBe(0)
+
+    // ...so reconcile has to say zero populated groups for them too. Verified by
+    // mutation: restore the one-argument btrim and all four columns above read
+    // as populated, giving `source=14 target=11` and `source=9 target=7` — a
+    // mismatch no re-run could ever clear, because the mapper is right.
+    const { ok, out } = await runReconcile()
+    expect(out).toMatch(
+      /OK {6} {2}open component_installation rows vs populated legacy groups: source=11 target=11/)
+    expect(out).toMatch(
+      /OK {6} {2}component_unit rows \(pcba_a\+pcba_b\) vs distinct legacy serials: source=7 target=7/)
+    expect(ok).toBe(true)
+  })
+
+  it('treats a serial with a leading ideographic space as the SAME serial, like the mapper', async () => {
+    const padded = await createDevice('basic', '2026-03-24 08:00:00+00')
+    await db.query(
+      `INSERT INTO ${LEGACY_FULL}.device (id, pcba_b_sn, created_at)
+       VALUES ($1, $2, timestamptz '2026-03-24 08:00:00+00')`,
+      [padded, `${IDEOGRAPHIC_SPACE}SHARED-${runTag}`])
+
+    // One MORE installation, but NOT one more unit: the mapper trims the U+3000
+    // away and reuses the unit sharedNull/sharedBlank already created.
+    const result = await migrateComponents(fullPool, platformPool, actorId)
+    expect(result.installsCreated).toBe(1)
+    expect(result.unitsCreated).toBe(0)
+
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM component_unit
+        WHERE serial_no = $1 AND deleted_at IS NULL`, [`SHARED-${runTag}`])
+    expect(rows[0].n).toBe('1')     // one physical board, one identity
+
+    const { ok, out } = await runReconcile()
+    expect(out).toMatch(
+      /OK {6} {2}open component_installation rows vs populated legacy groups: source=12 target=12/)
+    // 7, not 8: the padded value is not a second DISTINCT legacy serial. Under
+    // the one-argument btrim it was (mutation-verified: `source=10 target=7`).
+    expect(out).toMatch(
+      /OK {6} {2}component_unit rows \(pcba_a\+pcba_b\) vs distinct legacy serials: source=7 target=7/)
+    expect(ok).toBe(true)
+  })
+})

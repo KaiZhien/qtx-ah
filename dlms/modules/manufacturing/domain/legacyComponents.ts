@@ -51,9 +51,19 @@ export type ComponentUnitDraft = {
    * "This serial needs human eyes before it is trustworthy." Spec §15 defines
    * it for ranged serials; it is deliberately widened here to any value that is
    * not a single clean serial, because component_unit has no other flag and the
-   * admin cleanup queue works off this one. A migration that judged prose like
-   * "No wifi version" to mean "no board" would be guessing — so it carries the
-   * value verbatim and flags it instead.
+   * admin cleanup queue works off this one. A migration that judged an odd
+   * serial to mean "no board" would be guessing — so it carries the value
+   * verbatim and flags it instead.
+   *
+   * Computed from the SERIAL ONLY — `needsSplitSerial(serialNo)`, never from
+   * hwRev/bomRev/fwVer. That matters because the legacy schema's prose warning
+   * is on `pcba_b_fw_ver`, not on the serial column: `20250101000003_device.sql`
+   * annotates `pcba_b_fw_ver` with "may contain notes e.g. 'No wifi version'".
+   * A value like that is carried verbatim into component_unit.fw_ver and is NOT
+   * flagged — a unit with a perfectly clean serial can still hold a prose
+   * firmware string that needs_split will never surface. That is the real,
+   * documented gap the cleanup queue has to eyeball for itself (RB-08, "The
+   * cleanup queue").
    */
   needsSplit: boolean
 }

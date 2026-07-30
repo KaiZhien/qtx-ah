@@ -71,6 +71,12 @@ export type ComponentRevisions = {
  * none. Note that such a serial is also left open-installed in two devices at
  * once, which is physically impossible; one_open_install is per-device and
  * cannot catch it. That is the same human's problem to resolve.
+ *
+ * Derived only on the run that actually migrates the group: a slot with
+ * installation history is skipped before the stored unit is read (see
+ * slotAlreadyMigrated), so a re-run over already-migrated data reports nothing
+ * here. reconcile.ts's `INFO ... DIVERGENT revisions` line re-derives the same
+ * population from the legacy side alone and does print on every run.
  */
 export type DivergentUnit = {
   deviceId: string
@@ -89,11 +95,19 @@ export type MigrateComponentsResult = {
   divergentUnits: DivergentUnit[]
 }
 
-/** Where a run died, for the partial summary printed before the error propagates. */
+/**
+ * Where a run died, for the partial summary printed before the error propagates.
+ *
+ * `lastCommittedRow` is a PROGRESS MARKER, not a resume cursor: this script
+ * parses no argv and reads no cursor env var, so there is no `--after` to feed
+ * it to. It exists so an operator can tell whether the run died on the first row
+ * or the twelve hundredth. The recovery is always to re-run from the start,
+ * which is safe (see RB-08, "If the run fails partway").
+ */
 type FailureContext = {
   batchNo: number
   deviceId: string | null
-  resumeAfter: { createdAt: Date; id: string } | null
+  lastCommittedRow: { createdAt: Date; id: string } | null
 }
 
 const LEGACY_SELECT_COLUMNS = `id,
@@ -111,7 +125,8 @@ const revs = (r: ComponentRevisions): string =>
  * A mid-run failure used to print a bare pg error and nothing else, leaving the
  * operator unable to tell whether it died on the first row or the twelve
  * hundredth. Now the same numbers appear either way; `failure` adds the banner,
- * the batch number, the device being processed, and the resume point.
+ * the batch number, the device being processed, how far the run got, and the
+ * recovery (re-run from the start — there is no resume flag).
  *
  * The banner goes to console.log (stdout) rather than console.error, unlike the
  * missing-device block below: the counts are on stdout, and a "these are
@@ -128,10 +143,17 @@ function reportResult(result: MigrateComponentsResult, failure?: FailureContext)
     if (failure.deviceId) {
       console.log(`Failed while processing device: ${failure.deviceId}`)
     }
-    console.log(failure.resumeAfter
-      ? `Resume after legacy row: created_at=${failure.resumeAfter.createdAt.toISOString()} ` +
-        `id=${failure.resumeAfter.id} (re-running from the start is also safe)`
-      : `Resume from the start — no batch committed.`)
+    // How far it got, NOT an instruction. There is no --after flag: this script
+    // takes no arguments and reads no cursor. Recovery is always a full re-run.
+    console.log(failure.lastCommittedRow
+      ? `Progress reached: last legacy row COMMITTED was created_at=` +
+        `${failure.lastCommittedRow.createdAt.toISOString()} id=${failure.lastCommittedRow.id} ` +
+        `(diagnostic only — there is no resume flag).`
+      : `Progress reached: none — no batch committed.`)
+    console.log(
+      `TO RECOVER: fix the cause, then re-run this script from the start. That is ` +
+      `the only supported recovery and it is safe — already-migrated slots are skipped. ` +
+      `See docs/runbooks/RB-08-component-migration.md, "If the run fails partway".`)
     console.log(
       `Counts below: devices seen = rows READ (includes the rolled-back batch); ` +
       `units/installations = rows COMMITTED.`)
@@ -209,6 +231,36 @@ async function existingDeviceIds(platformPool: Pool, ids: string[]): Promise<Set
   const { rows } = await platformPool.query<{ id: string }>(
     `SELECT id FROM device WHERE id = ANY($1::uuid[])`, [ids])
   return new Set(rows.map((r) => r.id))
+}
+
+/**
+ * Whether this device already has ANY installation history in the slot this
+ * back-fill writes — removed rows included, not merely open ones.
+ *
+ * This is the ONE decision for the whole component group, and it is taken
+ * BEFORE the unit is touched. It used to live only in the installation
+ * INSERT's `NOT EXISTS`, which left the unit INSERT guarded independently by
+ * `ON CONFLICT (component_type_id, serial_no) WHERE deleted_at IS NULL` — and
+ * the two could disagree. When a matching unit exists but is SOFT-DELETED the
+ * partial index does not cover it, so the conflict never fires and a second
+ * live unit is inserted; the installation's own guard then correctly suppresses
+ * the installation, leaving a live component_unit with disposition='installed'
+ * and ZERO installations pointing at it. That is the duplicate identity for one
+ * physical board that upsertUnit's unique index exists to prevent, and it also
+ * made `unitsCreated` non-zero on a run the runbook promises reports 0.
+ *
+ * Deciding once, here, makes the two writes agree by construction instead of by
+ * two guards that happen to be looking at different things. Both `ON CONFLICT`
+ * clauses stay where they are as race backstops — this check and the INSERTs
+ * are not atomic against a concurrent writer.
+ */
+async function slotAlreadyMigrated(tx: Tx, deviceId: string, typeId: string): Promise<boolean> {
+  const { rowCount } = await tx.query(
+    `SELECT 1 FROM component_installation
+      WHERE device_id = $1::uuid AND component_type_id = $2::uuid AND slot_no = $3::integer
+      LIMIT 1`,
+    [deviceId, typeId, MIGRATION_SLOT_NO])
+  return (rowCount ?? 0) > 0
 }
 
 /**
@@ -395,15 +447,28 @@ export async function migrateComponents(
               const typeId = typeIds[draft.typeCode]
               let unitId: string | null = null
 
+              // Reported on every run, not only the run that created the unit,
+              // and deliberately BEFORE the skip below: this list IS the admin
+              // cleanup queue, it is derived from the legacy row alone with no
+              // database read at all, and a re-run must still show the operator
+              // which serials nobody has cleaned up yet. (The divergent-revision
+              // report cannot keep that promise, because deriving it means
+              // reading the stored unit — which is exactly what the skip exists
+              // to avoid. reconcile.ts re-derives that population from the legacy
+              // side on every run instead.)
+              if (draft.unit?.needsSplit) {
+                batch.flaggedSerials.push({
+                  deviceId, typeCode: draft.typeCode, serialNo: draft.unit.serialNo,
+                })
+              }
+
+              // ONE decision for the whole group — unit AND installation — taken
+              // before either is touched. See slotAlreadyMigrated: two
+              // independent guards could disagree and strand a live unit with no
+              // installation pointing at it.
+              if (await slotAlreadyMigrated(tx, deviceId, typeId)) continue
+
               if (draft.unit) {
-                // Reported on every run, not only the run that created the unit:
-                // this list IS the admin cleanup queue, and a re-run must still
-                // show the operator which serials nobody has cleaned up yet.
-                if (draft.unit.needsSplit) {
-                  batch.flaggedSerials.push({
-                    deviceId, typeCode: draft.typeCode, serialNo: draft.unit.serialNo,
-                  })
-                }
                 const unit = await upsertUnit(tx, typeId, draft.unit, actorId)
                 unitId = unit.id
                 batch.unitsCreated += unit.created
@@ -431,6 +496,12 @@ export async function migrateComponents(
               // would assert a component is currently installed that was
               // physically pulled out. fn_component_installation_guard cannot
               // help — it blocks UPDATE and DELETE, and this is an INSERT.
+              //
+              // slotAlreadyMigrated above asks the same question one step
+              // earlier, for the whole group; this NOT EXISTS stays because it
+              // is the guard that has to be right — it is inside the statement,
+              // so it cannot be skipped, reordered, or drift from the INSERT it
+              // protects. Keep both.
               //
               // ON CONFLICT stays as the race backstop (NOT EXISTS and INSERT
               // are not atomic against a concurrent writer), and must restate
@@ -472,9 +543,10 @@ export async function migrateComponents(
   } catch (err) {
     // Everything the success path prints, marked partial, BEFORE the error
     // propagates: an operator reading only the script's output must be able to
-    // tell what committed and where to resume. `cursor` still points at the
-    // last row of the last COMMITTED batch, which is exactly the resume point.
-    reportResult(result, { batchNo, deviceId: currentDeviceId, resumeAfter: cursor })
+    // tell what committed and how far it got. `cursor` still points at the last
+    // row of the last COMMITTED batch — a progress marker, not a resume cursor
+    // (see FailureContext; the recovery is a full re-run).
+    reportResult(result, { batchNo, deviceId: currentDeviceId, lastCommittedRow: cursor })
     throw err
   }
 
