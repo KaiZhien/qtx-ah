@@ -63,13 +63,25 @@ function moduleAllowed(actor: Actor, module: ModuleKey): boolean {
 }
 
 /**
- * Creates a task and its record links in ONE transaction.
+ * Everything "creating a task" means — authorization, validation, the row, and its
+ * links — inside a transaction the CALLER owns.
  *
- * The links are the reason this is transactional: a task that exists without the
- * link that gives it context is worse than no task, because it appears in the
- * central list with nothing to act on and appears on no record panel at all.
+ * This exists for the outbox drain (spec §5.5), and the reason is worth stating
+ * precisely: withTransaction acquires a SEPARATE pooled connection every time it is
+ * called, so transactions do not nest. A drain that called createTask() from inside its
+ * own transaction would commit the task on one connection while stamping the event
+ * processed on another, and a crash between the two would leave a task whose event is
+ * still unprocessed — which the next drain would hand off a second time. Exactly-once
+ * requires both writes in ONE transaction, so the drain passes its own `tx` in here.
+ *
+ * The alternative — re-implementing the two INSERTs inside the drain — was rejected:
+ * it would fork the definition of what creating a task means, and the authorization and
+ * link rules below are exactly the part that must not be forked. Callers who do not
+ * already own a transaction want createTask() below instead.
  */
-export async function createTask(actor: Actor, input: CreateTaskInput): Promise<{ taskId: string }> {
+export async function createTaskInTx(
+  tx: Tx, actor: Actor, input: CreateTaskInput,
+): Promise<{ taskId: string }> {
   authorize(actor, 'create_records', 'tasks')
   const data = createSchema.parse(input)
 
@@ -81,24 +93,33 @@ export async function createTask(actor: Actor, input: CreateTaskInput): Promise<
 
   const dueDate = normalizeDueDate(data.dueDate)
 
-  return withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{ id: string }>(
-      `INSERT INTO task (title, description, status, priority, due_date, assignee_id,
-                         department, confidential, parent_task_id, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) RETURNING id`,
-      [data.title, data.description ?? null, data.status, data.priority, dueDate ?? null,
-       data.assigneeId ?? null, data.department ?? null, data.confidential,
-       data.parentTaskId ?? null, actor.id])
-    const taskId = rows[0].id
+  const { rows } = await tx.query<{ id: string }>(
+    `INSERT INTO task (title, description, status, priority, due_date, assignee_id,
+                       department, confidential, parent_task_id, created_by, updated_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) RETURNING id`,
+    [data.title, data.description ?? null, data.status, data.priority, dueDate ?? null,
+     data.assigneeId ?? null, data.department ?? null, data.confidential,
+     data.parentTaskId ?? null, actor.id])
+  const taskId = rows[0].id
 
-    for (const link of data.links) {
-      await tx.query(
-        `INSERT INTO task_link (task_id, entity_type, entity_id, module, created_by)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [taskId, link.entityType, link.entityId, link.module, actor.id])
-    }
-    return { taskId }
-  })
+  for (const link of data.links) {
+    await tx.query(
+      `INSERT INTO task_link (task_id, entity_type, entity_id, module, created_by)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [taskId, link.entityType, link.entityId, link.module, actor.id])
+  }
+  return { taskId }
+}
+
+/**
+ * Creates a task and its record links in ONE transaction.
+ *
+ * The links are the reason this is transactional: a task that exists without the
+ * link that gives it context is worse than no task, because it appears in the
+ * central list with nothing to act on and appears on no record panel at all.
+ */
+export async function createTask(actor: Actor, input: CreateTaskInput): Promise<{ taskId: string }> {
+  return withTransaction(actor.id, (tx) => createTaskInTx(tx, actor, input))
 }
 
 /** Loads a task's visibility inputs inside an open transaction, locking the row. */

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,6 +6,15 @@ import { PERMISSION_MATRIX } from '@/modules/shared/authz/catalog'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { getPool } from '@/lib/db/pool'
 import { listAssignableUsers } from '@/app/(platform)/tasks/directory'
+import {
+  SYSTEM_ACTOR_ID as EXPORTED_SYSTEM_ACTOR_ID, loadSystemActor,
+} from '@/modules/shared/authz/actor'
+import { drainOutbox, MAX_ATTEMPTS } from '@/modules/shared/outbox/services/outboxService'
+
+// actor.ts imports the Supabase server client for the HUMAN login path (loadActor).
+// Nothing under test here goes near it, and importing next/headers in a bare node
+// environment has no request to bind to — so stub it, exactly as taskService.test.ts does.
+vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 
 /**
  * Schema-level contract for the transactional outbox (spec §5.5) and for the
@@ -609,5 +618,360 @@ describe('the assignee directory', () => {
     expect(options.length).toBeGreaterThan(0)   // the exclusion did not empty the picker
     expect(options.map((o) => o.id)).not.toContain(SYSTEM_ACTOR_ID)
     expect(options.map((o) => o.name)).not.toContain('QTX Automation (system)')
+  })
+})
+
+/**
+ * loadSystemActor is the drain's only way in. Everything above proves the DATABASE
+ * seeds the principal correctly; these prove the application resolves it correctly —
+ * including the two deployment faults it must refuse to degrade around.
+ */
+describe('loadSystemActor', () => {
+  it('exports the id the migration actually seeds', () => {
+    expect(EXPORTED_SYSTEM_ACTOR_ID).toBe(SYSTEM_ACTOR_ID)
+    const sql = readFileSync(
+      join(process.cwd(), 'supabase/migrations/20260731000000_platform_outbox.sql'), 'utf8')
+    expect(sql).toContain(`'${EXPORTED_SYSTEM_ACTOR_ID}'`)
+  })
+
+  it('resolves to EXACTLY view_records + create_records, in every module', async () => {
+    const actor = await loadSystemActor()
+    expect(actor.id).toBe(SYSTEM_ACTOR_ID)
+    expect(actor.roleKey).toBe('operator')
+    expect([...actor.permissions].sort()).toEqual([...SYSTEM_ACTOR_PERMISSIONS].sort())
+    expect([...actor.moduleAccess].sort()).toEqual([...ALL_MODULES].sort())
+    expect(actor.active).toBe(true)
+  })
+
+  /**
+   * An inactive principal is a deployment fault, not a degraded mode: `can()` returns
+   * false for every permission of an inactive actor, so a drain that shrugged and carried
+   * on would turn every event into a PermissionError and burn all five attempts on each.
+   * Committed rather than rolled back, because loadSystemActor reads through the POOL —
+   * a different connection, which cannot see an uncommitted change on `db`.
+   */
+  it('throws, naming the migration that seeds it, when the principal is inactive', async () => {
+    await db.query(`UPDATE app_user SET active = false WHERE id = $1`, [SYSTEM_ACTOR_ID])
+    try {
+      await expect(loadSystemActor()).rejects.toThrow(/20260731000000_platform_outbox/)
+    } finally {
+      await db.query(`UPDATE app_user SET active = true WHERE id = $1`, [SYSTEM_ACTOR_ID])
+    }
+    expect((await loadSystemActor()).active).toBe(true)   // really restored
+  })
+
+  /**
+   * The principal cannot simply be deleted to simulate this — app_user.id is referenced
+   * by user_permission_override, audit_log and outbox.created_by. So make the resolver
+   * itself return nothing, then restore it from the migration's own text (rather than a
+   * hand-copied body, which could drift from what actually ships).
+   */
+  it('throws, naming the migration that seeds it, when the principal is missing', async () => {
+    const sql = readFileSync(
+      join(process.cwd(), 'supabase/migrations/20260731000000_platform_outbox.sql'), 'utf8')
+    const original = sql.match(
+      /CREATE OR REPLACE FUNCTION fn_resolve_actor_by_user_id[\s\S]*?\n\$\$;/)
+    expect(original, 'could not extract fn_resolve_actor_by_user_id from the migration')
+      .not.toBeNull()
+
+    await db.query(`
+      CREATE OR REPLACE FUNCTION fn_resolve_actor_by_user_id(p_app_user_id uuid)
+      RETURNS TABLE (
+        id uuid, role_key text, module_access text[], active boolean,
+        role_permissions text[], granted_overrides text[], revoked_overrides text[]
+      ) LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $fn$
+        SELECT NULL::uuid, NULL::text, NULL::text[], NULL::boolean,
+               NULL::text[], NULL::text[], NULL::text[] WHERE false;
+      $fn$`)
+    try {
+      await expect(loadSystemActor()).rejects.toThrow(/20260731000000_platform_outbox/)
+    } finally {
+      await db.query(original![0])
+    }
+    expect((await loadSystemActor()).id).toBe(SYSTEM_ACTOR_ID)   // really restored
+  })
+})
+
+/**
+ * The drain (spec §5.5). Its whole reason to exist is EXACTLY ONCE: an event becomes a
+ * handoff task, and it becomes exactly one handoff task, no matter how often the drain
+ * runs or how it is interrupted.
+ *
+ * Every test here uses a fresh `gen_random_uuid()` as the device id and asserts through
+ * the task_link, so tests cannot see each other's tasks in the shared database.
+ */
+describe('drainOutbox', () => {
+  const HUMAN_NAME = 'Dana Drain'
+  let humanId: string
+
+  beforeAll(async () => {
+    humanId = (await db.query<{ id: string }>(`
+      INSERT INTO app_user (email, full_name, role_id, department, module_access, active)
+      SELECT 'outbox-drain-human@test.local', $1, r.id, 'Manufacturing',
+             ARRAY['manufacturing','tasks']::text[], true
+        FROM role r WHERE r.key = 'operator' RETURNING id`, [HUMAN_NAME])).rows[0].id
+  })
+
+  // A drain claims from the whole table, so every case starts from an empty backlog.
+  beforeEach(async () => { await db.query(`DELETE FROM outbox`) })
+
+  const emit = async (opts: {
+    templateKey?: string
+    deviceSn?: string | null
+    attempts?: number
+    occurredAt?: string
+    payload?: unknown
+    aggregateType?: string
+    eventType?: string
+  } = {}) => {
+    const deviceId = (await db.query<{ id: string }>(`SELECT gen_random_uuid() AS id`)).rows[0].id
+    const payload = opts.payload ?? {
+      taskTemplateKey: opts.templateKey ?? 'logistics_prepare_delivery',
+      fromStatus: 'ready_for_delivery',
+      toStatus: 'shipped',
+      reason: 'buyer collected early',
+      notifyRoles: ['manager'],
+      deviceSn: opts.deviceSn === undefined ? `SN-${deviceId.slice(0, 8)}` : opts.deviceSn,
+      pcbaASnLegacy: null,
+    }
+    const { rows } = await db.query<{ id: string }>(
+      `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by,
+                           attempts, occurred_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7::timestamptz, now()))
+       RETURNING id`,
+      [opts.aggregateType ?? 'device', deviceId, opts.eventType ?? 'device_status_changed',
+       JSON.stringify(payload), humanId, opts.attempts ?? 0, opts.occurredAt ?? null])
+    return { outboxId: rows[0].id, deviceId }
+  }
+
+  const tasksFor = async (deviceId: string) => (await db.query<{
+    id: string; title: string; description: string; department: string | null
+    priority: string; status: string; assignee_id: string | null; created_by: string
+    entity_type: string; module: string
+  }>(
+    `SELECT t.id, t.title, t.description, t.department, t.priority, t.status,
+            t.assignee_id, t.created_by, l.entity_type, l.module
+       FROM task t JOIN task_link l ON l.task_id = t.id
+      WHERE l.entity_id = $1`, [deviceId])).rows
+
+  const outboxRow = async (id: string) => (await db.query<{
+    attempts: number; last_error: string | null; processed_at: string | null; created_by: string
+  }>(
+    `SELECT attempts, last_error, processed_at, created_by FROM outbox WHERE id = $1`,
+    [id])).rows[0]
+
+  it('turns an event into a department-queued task linked to the device', async () => {
+    const { outboxId, deviceId } = await emit({ deviceSn: 'SN-HANDOFF-1' })
+
+    const result = await drainOutbox()
+    expect(result).toMatchObject({ claimed: 1, processed: 1, failed: 0, parked: 0 })
+    expect(result.failures).toEqual([])
+
+    const tasks = await tasksFor(deviceId)
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]).toMatchObject({
+      title: 'Prepare delivery for SN-HANDOFF-1',
+      department: 'Logistics',
+      module: 'logistics',
+      entity_type: 'device',
+      status: 'open',
+      priority: 'normal',
+      // The system principal holds create_records but deliberately NOT assign_tasks:
+      // a handoff lands in a department queue, unassigned.
+      assignee_id: null,
+      created_by: SYSTEM_ACTOR_ID,
+    })
+    // changedByName is NOT carried in the payload — the drain must resolve it from
+    // the outbox row's created_by. A name in the description is the proof.
+    expect(tasks[0].description).toContain(HUMAN_NAME)
+    expect(tasks[0].description).toContain('buyer collected early')
+
+    const row = await outboxRow(outboxId)
+    expect(row.processed_at).not.toBeNull()
+    expect(row).toMatchObject({ attempts: 0, last_error: null, created_by: humanId })
+  })
+
+  it('does nothing on a second drain — a processed event is never redelivered', async () => {
+    const { deviceId } = await emit()
+    await drainOutbox()
+
+    const second = await drainOutbox()
+    expect(second).toMatchObject({ claimed: 0, processed: 0, failed: 0, parked: 0 })
+    expect(await tasksFor(deviceId)).toHaveLength(1)
+  })
+
+  /**
+   * THE exactly-once proof, and the reason createTask grew a Tx-accepting variant.
+   *
+   * withTransaction takes a SEPARATE pooled connection, so a drain that called the
+   * transaction-owning createTask() would commit the task on one connection and stamp
+   * processed_at on another. Interrupt the stamp and that split becomes visible: the task
+   * survives, the event stays unprocessed, and the next drain hands off a SECOND time.
+   *
+   * The trigger below is that interruption, made deterministic. It fires only on the
+   * transition to processed, so the drain's separate attempts/last_error write still lands.
+   */
+  it('creates the task and stamps processed_at in ONE transaction', async () => {
+    const { outboxId, deviceId } = await emit()
+    await db.query(`
+      CREATE OR REPLACE FUNCTION test_block_processed_stamp() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$ BEGIN
+        RAISE EXCEPTION 'simulated crash between the task insert and the processed stamp';
+      END $fn$`)
+    await db.query(`
+      CREATE TRIGGER trg_test_block_processed_stamp BEFORE UPDATE ON outbox
+        FOR EACH ROW WHEN (OLD.processed_at IS NULL AND NEW.processed_at IS NOT NULL)
+        EXECUTE FUNCTION test_block_processed_stamp()`)
+    try {
+      const result = await drainOutbox()
+      expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 })
+      expect(result.failures[0]).toMatchObject({ outboxId })
+      expect(result.failures[0].error).toMatch(/simulated crash/)
+    } finally {
+      await db.query(`DROP TRIGGER IF EXISTS trg_test_block_processed_stamp ON outbox`)
+      await db.query(`DROP FUNCTION IF EXISTS test_block_processed_stamp()`)
+    }
+
+    // The stamp rolled back, so the task must have rolled back WITH it. A task here
+    // means the two writes were in different transactions — and the retry below would
+    // then create a duplicate.
+    expect(await tasksFor(deviceId)).toEqual([])
+    expect(await outboxRow(outboxId)).toMatchObject({ attempts: 1, processed_at: null })
+
+    // ...and the retry, now unobstructed, produces exactly ONE task.
+    await drainOutbox()
+    expect(await tasksFor(deviceId)).toHaveLength(1)
+  })
+
+  /** FOR UPDATE SKIP LOCKED, from the other end: two drains, one event, one task. */
+  it('never hands the same event to two concurrent drains', async () => {
+    const { deviceId } = await emit()
+    const [a, b] = await Promise.all([drainOutbox(), drainOutbox()])
+    expect(a.processed + b.processed).toBe(1)
+    expect(a.failed + b.failed).toBe(0)
+    expect(await tasksFor(deviceId)).toHaveLength(1)
+  })
+
+  /**
+   * A task_template_key in the status graph with no entry in the template registry means
+   * the two have drifted apart. That is data, not a crash — record it, retry it, and let
+   * the rest of the batch through.
+   */
+  it('records an unknown template key without stopping a good row in the same drain', async () => {
+    const bad = await emit({ templateKey: 'no_such_template', occurredAt: '2026-01-01T00:00:00Z' })
+    const good = await emit({ occurredAt: '2026-01-02T00:00:00Z' })
+
+    const result = await drainOutbox()
+    expect(result).toMatchObject({ claimed: 2, processed: 1, failed: 1 })
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures[0].outboxId).toBe(bad.outboxId)
+    expect(result.failures[0].error).toMatch(/no_such_template/)
+
+    const badRow = await outboxRow(bad.outboxId)
+    expect(badRow).toMatchObject({ attempts: 1, processed_at: null })
+    expect(badRow.last_error).toMatch(/no handoff template registered/i)
+    expect(await tasksFor(bad.deviceId)).toEqual([])   // nothing half-created
+
+    expect((await outboxRow(good.outboxId)).processed_at).not.toBeNull()
+    expect(await tasksFor(good.deviceId)).toHaveLength(1)
+  })
+
+  it('records a malformed payload as a retryable failure rather than throwing', async () => {
+    const { outboxId, deviceId } = await emit({ payload: { fromStatus: 'ready_for_delivery' } })
+    const result = await drainOutbox()
+    expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 })
+    expect(await tasksFor(deviceId)).toEqual([])
+    expect((await outboxRow(outboxId)).attempts).toBe(1)
+  })
+
+  it('records an event shape it does not handle rather than looping on it forever', async () => {
+    const { outboxId } = await emit({ eventType: 'device_scrapped' })
+    const result = await drainOutbox()
+    expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 })
+    const row = await outboxRow(outboxId)
+    expect(row).toMatchObject({ attempts: 1, processed_at: null })
+    expect(row.last_error).toMatch(/device_scrapped/)
+  })
+
+  /**
+   * A poison event must not consume every drain forever — and it must be VISIBLE while it
+   * sits there, which is what `parked` is for. `parked` counts what the drain LEAVES
+   * parked, so a row that hits the cap during this very drain is already included.
+   */
+  it('stops claiming a row at the attempts cap, and reports it as parked', async () => {
+    const capped = await emit({ templateKey: 'no_such_template', attempts: MAX_ATTEMPTS })
+    const nearlyCapped = await emit({
+      templateKey: 'no_such_template', attempts: MAX_ATTEMPTS - 1 })
+
+    const first = await drainOutbox()
+    expect(first).toMatchObject({ claimed: 1, processed: 0, failed: 1, parked: 2 })
+    expect(first.failures[0].outboxId).toBe(nearlyCapped.outboxId)
+    expect(await outboxRow(capped.outboxId)).toMatchObject({
+      attempts: MAX_ATTEMPTS, last_error: null,   // never touched: not claimed
+    })
+    expect(await outboxRow(nearlyCapped.outboxId)).toMatchObject({ attempts: MAX_ATTEMPTS })
+
+    const second = await drainOutbox()
+    expect(second).toMatchObject({ claimed: 0, processed: 0, failed: 0, parked: 2 })
+    expect(await tasksFor(capped.deviceId)).toEqual([])
+  })
+
+  it('claims the oldest events first, up to the limit', async () => {
+    const first = await emit({ occurredAt: '2026-01-01T00:00:00Z' })
+    const second = await emit({ occurredAt: '2026-01-02T00:00:00Z' })
+    const third = await emit({ occurredAt: '2026-01-03T00:00:00Z' })
+
+    expect(await drainOutbox({ limit: 2 })).toMatchObject({ claimed: 2, processed: 2 })
+    expect((await outboxRow(first.outboxId)).processed_at).not.toBeNull()
+    expect((await outboxRow(second.outboxId)).processed_at).not.toBeNull()
+    expect((await outboxRow(third.outboxId)).processed_at).toBeNull()
+
+    expect(await drainOutbox()).toMatchObject({ claimed: 1, processed: 1 })
+    expect((await outboxRow(third.outboxId)).processed_at).not.toBeNull()
+  })
+
+  /**
+   * outbox has no updated_by, so with no app.actor_id GUC fn_audit falls back to
+   * created_by — and every drain write would read as the human who changed the status.
+   * The drain owes withTransaction(systemActorId, ...) precisely to prevent that.
+   */
+  it('attributes its writes to the automation principal, not to the human', async () => {
+    const { outboxId, deviceId } = await emit()
+    await drainOutbox()
+
+    const { rows: stamp } = await db.query<{ actor_id: string }>(
+      `SELECT actor_id FROM audit_log
+        WHERE table_name = 'outbox' AND row_id = $1 AND action = 'update'`, [outboxId])
+    expect(stamp).toHaveLength(1)
+    expect(stamp[0].actor_id).toBe(SYSTEM_ACTOR_ID)
+
+    const taskId = (await tasksFor(deviceId))[0].id
+    const { rows: taskAudit } = await db.query<{ actor_id: string }>(
+      `SELECT actor_id FROM audit_log WHERE table_name = 'task' AND row_id = $1`, [taskId])
+    expect(taskAudit.map((a) => a.actor_id)).toEqual([SYSTEM_ACTOR_ID])
+
+    // ...and the CAUSE is still recorded: the outbox row still names the human.
+    expect((await outboxRow(outboxId)).created_by).toBe(humanId)
+  })
+
+  /**
+   * The one thing that IS fatal. A drain that shrugged at an unresolvable principal would
+   * either create nothing while reporting success, or burn every event's attempts against
+   * a PermissionError until they all parked.
+   */
+  it('throws, and writes nothing, when the automation principal cannot be resolved', async () => {
+    const { outboxId, deviceId } = await emit()
+    await db.query(`UPDATE app_user SET active = false WHERE id = $1`, [SYSTEM_ACTOR_ID])
+    try {
+      await expect(drainOutbox()).rejects.toThrow(/20260731000000_platform_outbox/)
+    } finally {
+      await db.query(`UPDATE app_user SET active = true WHERE id = $1`, [SYSTEM_ACTOR_ID])
+    }
+    expect(await tasksFor(deviceId)).toEqual([])
+    expect(await outboxRow(outboxId)).toMatchObject({ attempts: 0, processed_at: null })
+
+    // The event survived the outage intact and drains normally afterwards.
+    expect(await drainOutbox()).toMatchObject({ claimed: 1, processed: 1 })
+    expect(await tasksFor(deviceId)).toHaveLength(1)
   })
 })
