@@ -41,9 +41,16 @@ const PLATFORM_MIGRATION_RE = /^\d{14}_platform_.*\.sql$/
  * anything): if a future integration-test file shares this setupFiles entry and
  * Vitest re-evaluates this module for that file against the same live Postgres
  * container, re-running `CREATE TABLE` would otherwise fail with "already exists".
+ *
+ * `connectionString` is a parameter, and exported, for the ONE case that needs a
+ * database of its own rather than the shared one: reconcileComponents.test.ts
+ * counts the platform side globally (see scripts/reconcile.ts) and so cannot
+ * tolerate component rows other test files leave in `public`. It stands up a
+ * private database and bootstraps it through this same function, so the two can
+ * never drift into being migrated differently.
  */
-async function migratePlatformSchema() {
-  const client = new Client({ connectionString: TEST_DB })
+export async function migratePlatformSchema(connectionString: string = TEST_DB) {
+  const client = new Client({ connectionString })
   await client.connect()
   try {
     const { rows } = await client.query(`SELECT to_regclass('public.role') AS reg`)
@@ -111,4 +118,4 @@ async function migratePlatformSchema() {
   }
 }
 
-await migratePlatformSchema()
+await migratePlatformSchema(TEST_DB)
