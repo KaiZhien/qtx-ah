@@ -1,6 +1,6 @@
 # QTX Operations Platform — Progress Checklist
 
-**Living status board.** Last updated: 2026-07-20.
+**Living status board.** Last updated: 2026-07-30.
 Spec: [2026-07-17-ops-platform-design.md](specs/2026-07-17-ops-platform-design.md) · Weeks 1–2 plan: [2026-07-17-weeks-1-2-foundation-and-demo.md](plans/2026-07-17-weeks-1-2-foundation-and-demo.md)
 
 Legend: ✅ done & merged · 🔄 in progress · ⏳ planned · ⏸️ deferred (blocked on external input)
@@ -64,7 +64,7 @@ Ordered by dependency and priority. **RLS hardening is first** because the schem
 | MA1 | **Maintenance module (basic)** — 6-state repair workflow (spec §5.3), sign-off (`sign_off_repairs` + testing-notes precondition), repair history, best-effort device Under Repair ↔ Active moves via the manufacturing service | ✅ | Migration applied to cloud; lands the deferred `component_installation.repair_id` FK. Deferred: files/photos, usage logs, modifications, "replacements committed" sign-off precondition (needs §14 wiring), atomic device move |
 | F1 | **Finance module (basic)** — buyers + SGD sales invoices with lines (`view_finance`/`manage_finance` gated; server-side money math; 4-state flow) | ✅ | Migration applied to cloud; lands the deferred `device.buyer_id` FK. Deferred: threshold-approval engine, PDF generation |
 | L1 | **Logistics module (basic)** — stock locations + delivery orders with POD reference fields (5-state DO flow) | ✅ | Migration applied to cloud; lands the deferred `component_unit.location_id` FK. Deferred: file uploads, stock-level accounting |
-| — | Manufacturing **bulk import** (Excel/draft → devices, column mapping, dedupe, ranged-serial review queue) | ⏳ | Split out of the write path (own subsystem); pairs with the legacy component-data migration |
+| I1 | Manufacturing **bulk import** — server-side parse → `import_batch`/`import_row` staging → review queue → per-row resumable commit into devices + component units + installations | ✅ | 7 tasks merged + 8 fix passes. Migration committed, awaiting cloud apply (not yet applied — RLS/advisor status TBD at apply time). Bilingual column mapping, ranged-serial expansion with a needs-review queue for ambiguous notation, within-batch and DB dedupe. Parsed drafts live server-side, closing the legacy importer's client-tamper path. 1177 unit + 351 integration tests; `tsc` clean; `next build` green (52/52 pages). Deferred: fix-in-place editing of `needs_review` rows (a reviewer skips the row and corrects the source sheet), PDF/draft extraction port, import of components onto existing devices, batch-listing page (a batch is reachable only via the post-upload redirect or a saved URL) |
 | — | Legacy component-data migration (DLMS PCBA/screen columns → component_unit/installation rows) | ⏳ | Follow-up now that the component schema is live |
 | — | Status-driven cross-department handoffs (transactional outbox → auto-tasks; reads `status_transition.task_template_key`) | ⏳ | Depends on the write path (now done) + a worker |
 | — | Module deepening: Engineering (approvals, failure/RCA, doc library, BOM) · Maintenance (files, usage, modifications, §14 wiring) · Finance (threshold approval, PDF) · Logistics (uploads, stock levels) | ⏳ | The basic portions of all five modules now exist; this is the fill-out work |

@@ -57,8 +57,16 @@ export default async function ManufacturingPage() {
         </div>
       </div>
 
+      {can(actor, 'import_data', 'manufacturing') && can(actor, 'view_records', 'manufacturing') && (
+        <div className="flex flex-wrap gap-3">
+          <Link href="/manufacturing/import" className="text-sm font-medium text-primary hover:underline">
+            Import devices →
+          </Link>
+        </div>
+      )}
+
       <p className="inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
-        Create, edit, import, and status-change actions land Week 3.
+        Create, edit, and status-change actions land Week 3.
       </p>
     </div>
   )
