@@ -50,13 +50,17 @@ CREATE TABLE import_row (
   raw jsonb NOT NULL,                      -- mapped-but-unvalidated cell values, verbatim
   parsed jsonb,                            -- ImportDeviceDraft; NULL unless status='valid'
   errors jsonb NOT NULL DEFAULT '[]'::jsonb,
-  status text NOT NULL DEFAULT 'valid'
+  status text NOT NULL DEFAULT 'needs_review'  -- safe resting state requires a human; a forgotten
+                                                -- explicit status can never masquerade as ready-to-commit
     CONSTRAINT import_row_status
     CHECK (status IN ('valid','invalid','needs_review','committed','skipped','failed')),
   device_id uuid REFERENCES device(id),    -- set in the same tx that creates the device
   committed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  created_by uuid NOT NULL REFERENCES app_user(id)
+  created_by uuid NOT NULL REFERENCES app_user(id),
+  updated_at timestamptz NOT NULL DEFAULT now()  -- services set this explicitly on every status
+                                                  -- transition; committed_at remains the
+                                                  -- success-specific stamp
 );
 COMMENT ON TABLE import_row IS
   'One prospective device from a staged import. Deliberately NOT audit-attached: it is transient staging (a 5000-row file would otherwise write 5000+ audit_log rows), and the durable record — the created device and its components — carries its own audit trail. import_batch IS audited, so who imported what is never lost.';
