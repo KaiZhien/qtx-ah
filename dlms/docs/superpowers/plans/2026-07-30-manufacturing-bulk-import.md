@@ -1244,7 +1244,11 @@ export type StagedBatch = {
 const stageSchema = z.object({
   filename: z.string().min(1).max(255),
   kind: z.enum(['xlsx', 'csv']),
-  bytes: z.instanceof(Uint8Array),
+  // Not z.instanceof(Uint8Array): TS 5.7 parameterised the typed arrays, so that
+  // form infers the narrower Uint8Array<ArrayBuffer> and rejects callers holding a
+  // plain Uint8Array (or a Node Buffer). Same runtime guard, published contract
+  // stays Uint8Array.
+  bytes: z.custom<Uint8Array>((v) => v instanceof Uint8Array, 'Expected Uint8Array'),
   defaultVariantCode: z.string().min(1).max(50),
 })
 export type StageImportInput = z.input<typeof stageSchema>
@@ -1337,18 +1341,29 @@ export async function stageImportFile(
   })
 }
 
-/** Live vocabulary — statuses/phases/variants are admin-editable rows, not constants. */
+/**
+ * Live vocabulary — statuses/phases/variants are admin-editable rows, not
+ * constants. Labels travel alongside codes because real traceability sheets
+ * carry human labels ("In Stock", "Production"), not the snake_case codes;
+ * resolveVocab in the domain matches either.
+ */
 async function loadValidationContext(
   actor: Actor, defaultVariantCode: string,
 ): Promise<ValidationContext> {
   return withTransaction(actor.id, async (tx) => {
-    const codes = async (sql: string) =>
-      (await tx.query<{ code: string }>(sql)).rows.map((r) => r.code)
+    const { rows: variants } = await tx.query<{ code: string; name: string }>(
+      `SELECT code, name FROM device_variant WHERE active`)
+    const { rows: statuses } = await tx.query<{
+      code: string; label_en: string; label_zh: string }>(
+      `SELECT code, label_en, label_zh FROM status_option WHERE active`)
+    const { rows: phases } = await tx.query<{
+      code: string; label_en: string; label_zh: string }>(
+      `SELECT code, label_en, label_zh FROM phase_option WHERE active`)
     return {
       defaultVariantCode,
-      validVariantCodes: await codes(`SELECT code FROM device_variant WHERE active`),
-      validStatusCodes: await codes(`SELECT code FROM status_option WHERE active`),
-      validPhaseCodes: await codes(`SELECT code FROM phase_option WHERE active`),
+      variants: variants.map((v) => ({ code: v.code, labels: [v.name] })),
+      statuses: statuses.map((s) => ({ code: s.code, labels: [s.label_en, s.label_zh] })),
+      phases: phases.map((p) => ({ code: p.code, labels: [p.label_en, p.label_zh] })),
     }
   })
 }
@@ -1789,7 +1804,7 @@ export async function skipImportRow(actor: Actor, rowId: string): Promise<void> 
   z.string().uuid().parse(rowId)
   await withTransaction(actor.id, async (tx) => {
     await tx.query(
-      `UPDATE import_row SET status='skipped'
+      `UPDATE import_row SET status='skipped', updated_at=now()
         WHERE id=$1 AND status IN ('valid','invalid','needs_review','failed')`, [rowId])
   })
 }
@@ -1946,7 +1961,8 @@ async function commitOneRow(
     }
 
     await tx.query(
-      `UPDATE import_row SET status='committed', device_id=$1, committed_at=now(), errors='[]'::jsonb
+      `UPDATE import_row SET status='committed', device_id=$1, committed_at=now(),
+              updated_at=now(), errors='[]'::jsonb
         WHERE id=$2`, [deviceId, rowId])
   })
 }
@@ -1994,7 +2010,8 @@ async function markRow(
   actor: Actor, rowId: string, status: ImportRowStatus, errors: string[],
 ): Promise<void> {
   await withTransaction(actor.id, async (tx) => {
-    await tx.query(`UPDATE import_row SET status=$1, errors=$2 WHERE id=$3`,
+    await tx.query(
+      `UPDATE import_row SET status=$1, errors=$2, updated_at=now() WHERE id=$3`,
       [status, JSON.stringify(errors), rowId])
   })
 }
