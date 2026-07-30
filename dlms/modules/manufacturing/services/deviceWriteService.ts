@@ -25,8 +25,9 @@ export type ChangeStatusInput = z.input<typeof changeStatusSchema>
  * Move a device to a new status through the fail-closed status_transition graph
  * (spec §5.2). One transaction: lock the device row, validate the edge exists,
  * enforce requires_reason and the terminal-needs-delete_records rule, then
- * UPDATE the device (version bump) and INSERT the history row — atomically.
- * A rejected move writes nothing.
+ * UPDATE the device (version bump), INSERT the history row, and — when the edge
+ * hands off to another department — INSERT the outbox event (spec §5.5), all
+ * atomically. A rejected move writes nothing, event included.
  */
 export async function changeDeviceStatus(
   actor: Actor, input: ChangeStatusInput,
@@ -35,25 +36,37 @@ export async function changeDeviceStatus(
   const data = changeStatusSchema.parse(input)
 
   return withTransaction(actor.id, async (tx) => {
-    // Lock the target device; read the true current status + version.
-    const { rows: devRows } = await tx.query<{ status: string; version: number }>(
-      `SELECT status, version FROM device
+    // Lock the target device; read the true current status + version. The two
+    // identity columns ride along for the outbox payload below — they come from
+    // the row this statement already locks, so carrying them costs no extra
+    // round trip and nothing reads them when the move emits no event.
+    const { rows: devRows } = await tx.query<{
+      status: string; version: number
+      device_sn: string | null; pcba_a_sn_legacy: string | null
+    }>(
+      `SELECT status, version, device_sn, pcba_a_sn_legacy FROM device
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.deviceId])
     if (devRows.length === 0) throw new DeviceNotFoundError(data.deviceId)
     const current = devRows[0]
     if (current.version !== data.version) throw new OptimisticLockError('device', data.deviceId)
 
-    // Load the three decision facts in one round trip: does the edge exist +
-    // its requires_reason, and is the target terminal + its label (for errors).
+    // Load the decision facts in one round trip: does the edge exist + its
+    // requires_reason, is the target terminal + its label (for errors), and the
+    // handoff columns the outbox event below is built from. All from the same
+    // join — an event that described a different edge from the one just
+    // authorized would be worse than no event at all.
     const { rows: factRows } = await tx.query<{
       transition_exists: boolean; requires_reason: boolean
       to_is_terminal: boolean; to_label: string | null; from_label: string
+      task_template_key: string | null; notify_roles: string[] | null
     }>(
       `SELECT (st.from_status IS NOT NULL)                       AS transition_exists,
               COALESCE(st.requires_reason, false)                AS requires_reason,
               so_to.is_terminal                                  AS to_is_terminal,
               so_to.label_en                                     AS to_label,
-              so_from.label_en                                   AS from_label
+              so_from.label_en                                   AS from_label,
+              st.task_template_key                               AS task_template_key,
+              st.notify_roles                                    AS notify_roles
          FROM status_option so_from
          JOIN status_option so_to ON so_to.code = $2
          LEFT JOIN status_transition st
@@ -89,10 +102,48 @@ export async function changeDeviceStatus(
       [data.toStatus, actor.id, data.deviceId, data.version])
     if (updated.length === 0) throw new OptimisticLockError('device', data.deviceId)
 
+    // One normalized reason for both writes below, so the history row and the
+    // handoff task can never disagree about why the device moved.
+    const reason = data.reason?.trim() || null
+
     await tx.query(
       `INSERT INTO device_status_history (device_id, from_status, to_status, reason, changed_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [data.deviceId, current.status, data.toStatus, data.reason?.trim() || null, actor.id])
+      [data.deviceId, current.status, data.toStatus, reason, actor.id])
+
+    // Transactional outbox (spec §5.5). An edge carrying a task_template_key
+    // hands the device off to another department, and that intent commits with
+    // the status change or not at all: a crash between COMMIT and a task-creation
+    // call would otherwise lose the handoff silently. The drain retries until the
+    // row is processed, so the worst case is a late task, never a missing one.
+    //
+    // Only edges with a template key emit. An in-department move is not a
+    // handoff, and an outbox full of no-op events buries the real ones.
+    //
+    // The payload is self-contained by design (see the table's COMMENT): the
+    // drain builds the handoff task from it alone and never re-reads a device
+    // row that has since moved on to another status. Keys match
+    // HandoffContext's field names in
+    // modules/shared/outbox/domain/handoffTemplates.ts.
+    //
+    // Nothing here can fail a legal status change short of a genuine database
+    // error — no drain call, no scheduling, no second transaction, and no work
+    // done outside this INSERT.
+    if (facts.task_template_key !== null) {
+      await tx.query(
+        `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
+         VALUES ('device', $1, 'device_status_changed', $2::jsonb, $3)`,
+        [data.deviceId, JSON.stringify({
+          taskTemplateKey: facts.task_template_key,
+          fromStatus: current.status,
+          toStatus: data.toStatus,
+          reason,
+          // Carried for the future notifications task (spec §6.3); read by nothing today.
+          notifyRoles: facts.notify_roles,
+          deviceSn: current.device_sn,
+          pcbaASnLegacy: current.pcba_a_sn_legacy,
+        }), actor.id])
+    }
 
     return { status: data.toStatus, version: updated[0].version }
   })

@@ -33,11 +33,13 @@ const viewer = (): Actor => ({
   permissions: new Set(['view_records']), moduleAccess: new Set(['manufacturing']), active: true,
 })
 
-async function makeDevice(status: string): Promise<{ id: string; version: number }> {
+async function makeDevice(
+  status: string, deviceSn: string | null = null,
+): Promise<{ id: string; version: number }> {
   const { rows } = await db.query<{ id: string; version: number }>(
-    `INSERT INTO device (variant_id, status, created_by, updated_by)
-     VALUES ((SELECT id FROM device_variant WHERE code='pro'), $1, $2, $2)
-     RETURNING id, version`, [status, userId])
+    `INSERT INTO device (variant_id, status, device_sn, created_by, updated_by)
+     VALUES ((SELECT id FROM device_variant WHERE code='pro'), $1, $3, $2, $2)
+     RETURNING id, version`, [status, userId, deviceSn])
   createdDeviceIds.push(rows[0].id)
   return rows[0]
 }
@@ -50,6 +52,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
   if (createdDeviceIds.length) {
+    await db.query(`DELETE FROM outbox WHERE aggregate_id = ANY($1)`, [createdDeviceIds])
     await db.query(`DELETE FROM device_status_history WHERE device_id = ANY($1)`, [createdDeviceIds])
     await db.query(`DELETE FROM device WHERE id = ANY($1)`, [createdDeviceIds])
   }
@@ -121,6 +124,125 @@ describe('changeDeviceStatus', () => {
     await expect(changeDeviceStatus(op(), {
       deviceId: '00000000-0000-0000-0000-000000000000', toStatus: 'quality_check', version: 1,
     })).rejects.toThrow(DeviceNotFoundError)
+  })
+})
+
+/**
+ * The transactional outbox (spec §5.5). The property under test is not "a row
+ * appears" but "the row and the status change share one fate": a move the graph,
+ * the reason rule or the permission rule rejects must leave NO event behind, and
+ * a move that commits must leave exactly one — so a handoff can be delayed by a
+ * stalled drain but never lost to a crash between commit and event send.
+ */
+describe('changeDeviceStatus — outbox handoff events', () => {
+  type OutboxRow = {
+    aggregate_type: string; aggregate_id: string; event_type: string
+    payload: Record<string, unknown>; created_by: string
+    processed_at: string | null; attempts: number
+  }
+  const eventsFor = async (deviceId: string): Promise<OutboxRow[]> => {
+    const { rows } = await db.query<OutboxRow>(
+      `SELECT aggregate_type, aggregate_id, event_type, payload, created_by, processed_at, attempts
+         FROM outbox WHERE aggregate_id = $1 ORDER BY occurred_at`, [deviceId])
+    return rows
+  }
+  const historyFor = async (deviceId: string) =>
+    (await db.query(`SELECT from_status, to_status FROM device_status_history WHERE device_id=$1`,
+      [deviceId])).rows
+
+  it('emits exactly one event for a transition carrying a task_template_key', async () => {
+    // ready_for_delivery -> shipped is the one seeded edge with a template key.
+    const d = await makeDevice('ready_for_delivery', `QTX-OB-${runTag}`)
+    const res = await changeDeviceStatus(op(), {
+      deviceId: d.id, toStatus: 'shipped', version: d.version, reason: 'palletised',
+    })
+
+    // The status change itself is unaffected by the event write.
+    expect(res).toEqual({ status: 'shipped', version: d.version + 1 })
+    const dev = await db.query(`SELECT status, version FROM device WHERE id=$1`, [d.id])
+    expect(dev.rows[0]).toMatchObject({ status: 'shipped', version: d.version + 1 })
+    expect(await historyFor(d.id)).toEqual([
+      { from_status: 'ready_for_delivery', to_status: 'shipped' },
+    ])
+
+    const events = await eventsFor(d.id)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      aggregate_type: 'device', aggregate_id: d.id, event_type: 'device_status_changed',
+      created_by: userId,        // the human who caused it, not the drain
+      processed_at: null, attempts: 0,
+    })
+    expect(events[0].payload).toMatchObject({
+      taskTemplateKey: 'logistics_prepare_delivery',
+      fromStatus: 'ready_for_delivery',
+      toStatus: 'shipped',
+      reason: 'palletised',
+      notifyRoles: null,         // not seeded on this edge
+      // Device identity travels with the event so the drain can name the device
+      // without re-reading a row that may have moved on by then.
+      deviceSn: `QTX-OB-${runTag}`,
+      pcbaASnLegacy: null,
+    })
+  })
+
+  it('emits nothing for a transition without a task_template_key', async () => {
+    const d = await makeDevice('in_production')
+    await changeDeviceStatus(op(), { deviceId: d.id, toStatus: 'quality_check', version: d.version })
+    // The move really happened — the empty outbox is a deliberate no-op, not a failure.
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [d.id])
+    expect(dev.rows[0].status).toBe('quality_check')
+    expect(await eventsFor(d.id)).toEqual([])
+  })
+
+  it('emits nothing when the transition graph rejects the move', async () => {
+    // ready_for_delivery has a template-key edge (-> shipped) but no edge to delivered.
+    const d = await makeDevice('ready_for_delivery')
+    await expect(changeDeviceStatus(op(), {
+      deviceId: d.id, toStatus: 'delivered', version: d.version,
+    })).rejects.toThrow(InvalidStatusChangeError)
+    expect(await eventsFor(d.id)).toEqual([])
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [d.id])
+    expect(dev.rows[0].status).toBe('ready_for_delivery')
+  })
+
+  it('emits nothing when the terminal-status permission rule rejects the move', async () => {
+    // No seeded terminal edge carries a template key, so attach one for the duration
+    // of this test: without it the assertion would pass vacuously. Restored in
+    // `finally`, and safe to mutate because integration files run serially
+    // (vitest.integration.config.ts: fileParallelism false) and status_transition
+    // carries no audit trigger.
+    await db.query(
+      `UPDATE status_transition SET task_template_key='logistics_prepare_delivery',
+              notify_roles=ARRAY['manager']
+        WHERE from_status='active' AND to_status='retired'`)
+    try {
+      const blocked = await makeDevice('active')
+      await expect(changeDeviceStatus(op(), {
+        deviceId: blocked.id, toStatus: 'retired', version: blocked.version,
+      })).rejects.toThrow(PermissionError)     // operator lacks delete_records
+      expect(await eventsFor(blocked.id)).toEqual([])
+      expect(await historyFor(blocked.id)).toEqual([])
+      const dev = await db.query(`SELECT status, version FROM device WHERE id=$1`, [blocked.id])
+      expect(dev.rows[0]).toMatchObject({ status: 'active', version: blocked.version })
+
+      // Control: the same edge DOES emit for an actor who may make the move, so the
+      // emptiness above is the rollback and not a transition that never emits.
+      const allowed = await makeDevice('active')
+      await changeDeviceStatus(mgr(), {
+        deviceId: allowed.id, toStatus: 'retired', version: allowed.version, reason: 'end of life',
+      })
+      const events = await eventsFor(allowed.id)
+      expect(events).toHaveLength(1)
+      expect(events[0].payload).toMatchObject({
+        taskTemplateKey: 'logistics_prepare_delivery',
+        fromStatus: 'active', toStatus: 'retired', reason: 'end of life',
+        notifyRoles: ['manager'],              // carried verbatim for the future notifications task
+      })
+    } finally {
+      await db.query(
+        `UPDATE status_transition SET task_template_key=NULL, notify_roles=NULL
+          WHERE from_status='active' AND to_status='retired'`)
+    }
   })
 })
 
