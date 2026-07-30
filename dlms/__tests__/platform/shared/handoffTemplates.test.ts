@@ -39,11 +39,11 @@ describe('logistics_prepare_delivery', () => {
     expect(task.description).toContain('Buyer requested expedited shipping')
   })
 
-  it('reads coherently when there is no reason — no dangling "Reason:" label', () => {
+  it('reads coherently when there is no reason — no dangling "Reason given:" label', () => {
     const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(ctx({ reason: null }))
-    expect(task.description).not.toMatch(/Reason:\s*(null|undefined)?\s*\./)
-    expect(task.description.toLowerCase()).not.toContain('reason: null')
-    expect(task.description.toLowerCase()).not.toContain('reason: undefined')
+    expect(task.description).not.toMatch(/Reason given:\s*(null|undefined)?\s*\./)
+    expect(task.description.toLowerCase()).not.toContain('reason given: null')
+    expect(task.description.toLowerCase()).not.toContain('reason given: undefined')
     // Still a well-formed sentence, not truncated mid-clause.
     expect(task.description.trim().endsWith('.')).toBe(true)
   })
@@ -145,6 +145,36 @@ describe('logistics_prepare_delivery', () => {
     expect(task.title.endsWith('…')).toBe(false)
     expect(task.description.endsWith('…')).toBe(false)
   })
+
+  describe('truncation is UTF-16 surrogate-pair safe', () => {
+    // A lone surrogate is not validly encodable as UTF-8, which is what the
+    // eventual Postgres `text` insert requires — so a mid-pair cut merely
+    // relocates the failure this truncation exists to prevent. Try both an
+    // even and an odd repeat count so the fixed-length prefix text ("Prepare
+    // delivery for " / the description preamble) can't accidentally hide a
+    // parity bug in just one of the two lengths.
+    function hasLoneSurrogate(s: string): boolean {
+      return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s)
+    }
+
+    it('never splits a surrogate pair in the title when deviceSn is astral (emoji) and overlong', () => {
+      for (const repeat of [150, 151]) {
+        const emojiSn = '🎉'.repeat(repeat)
+        const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(ctx({ deviceSn: emojiSn }))
+        expect(task.title.length).toBeLessThanOrEqual(TITLE_MAX)
+        expect(hasLoneSurrogate(task.title)).toBe(false)
+      }
+    })
+
+    it('never splits a surrogate pair in the description when reason is astral (emoji) and overlong', () => {
+      for (const repeat of [3000, 3001]) {
+        const emojiReason = '🎉'.repeat(repeat)
+        const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(ctx({ reason: emojiReason }))
+        expect(task.description.length).toBeLessThanOrEqual(DESCRIPTION_MAX)
+        expect(hasLoneSurrogate(task.description)).toBe(false)
+      }
+    })
+  })
 })
 
 describe('buildHandoffTask', () => {
@@ -167,5 +197,30 @@ describe('buildHandoffTask', () => {
       expect(err).toBeInstanceOf(UnknownTemplateError)
       expect((err as Error).message).toContain('finance_reconcile_invoice')
     }
+  })
+
+  describe('is safe against Object.prototype key collisions', () => {
+    // task_template_key is admin-editable free text on status_transition, so
+    // any string — including the name of an inherited Object.prototype member
+    // — is a plausible input. A plain-object truthiness lookup either hands
+    // back an inherited method mistyped as HandoffTask or throws a raw
+    // TypeError; only own, registered keys should ever resolve.
+    const pollutingKeys = [
+      'constructor',
+      'toString',
+      'hasOwnProperty',
+      'valueOf',
+      'isPrototypeOf',
+      'propertyIsEnumerable',
+      'toLocaleString',
+      '__proto__',
+    ]
+
+    it.each(pollutingKeys)(
+      'throws UnknownTemplateError for the inherited key %s instead of returning garbage or a raw TypeError',
+      (key) => {
+        expect(() => buildHandoffTask(key, ctx())).toThrow(UnknownTemplateError)
+      },
+    )
   })
 })

@@ -49,16 +49,34 @@ export class UnknownTemplateError extends Error {
   }
 }
 
+const ELLIPSIS = '…'
+
 /**
  * Truncates with a trailing ellipsis rather than throwing: a handoff task that
  * arrives slightly abbreviated is far better than one the drain can never
  * create because `createTask` rejects an oversized field. The result's length
- * never exceeds `max`, including the ellipsis character itself.
+ * never exceeds `max` (in UTF-16 code units — the unit `createSchema`'s zod
+ * `.max()` counts, and thus what the Postgres `text` insert must satisfy),
+ * including the ellipsis character itself.
+ *
+ * Cuts on whole code points, not UTF-16 code units: `reason`/`deviceSn` can
+ * contain astral-plane characters (emoji, CJK Extension B+ names), which are
+ * two code units each. Slicing on `.length` can land mid-surrogate-pair,
+ * producing a lone surrogate that is not validly encodable as UTF-8 — merely
+ * relocating the failure this function exists to prevent to `createTask`'s
+ * insert (or corrupting it via replacement-character substitution). Iterating
+ * the string (rather than indexing it) walks whole code points for free.
  */
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text
-  if (max <= 1) return text.slice(0, max)
-  return `${text.slice(0, max - 1)}…`
+  if (max <= 0) return ''
+
+  let result = ''
+  for (const codePoint of text) {
+    if (result.length + codePoint.length + ELLIPSIS.length > max) break
+    result += codePoint
+  }
+  return `${result}${ELLIPSIS}`
 }
 
 /**
@@ -116,9 +134,19 @@ export const HANDOFF_TEMPLATES: Record<string, (ctx: HandoffContext) => HandoffT
   },
 }
 
-/** Dispatches on templateKey; throws UnknownTemplateError rather than falling back. */
+/**
+ * Dispatches on templateKey; throws UnknownTemplateError rather than falling
+ * back. `task_template_key` is admin-editable free text, so any string —
+ * including the name of an inherited `Object.prototype` member such as
+ * `"constructor"` or `"toString"` — is a plausible input. A plain truthiness
+ * check on `HANDOFF_TEMPLATES[templateKey]` would walk the prototype chain
+ * and either hand back an inherited method mistyped as `HandoffTask` or throw
+ * a raw `TypeError`; the explicit `hasOwnProperty` guard restricts resolution
+ * to keys this module actually registered.
+ */
 export function buildHandoffTask(templateKey: string, ctx: HandoffContext): HandoffTask {
-  const template = HANDOFF_TEMPLATES[templateKey]
-  if (!template) throw new UnknownTemplateError(templateKey)
-  return template(ctx)
+  if (!Object.prototype.hasOwnProperty.call(HANDOFF_TEMPLATES, templateKey)) {
+    throw new UnknownTemplateError(templateKey)
+  }
+  return HANDOFF_TEMPLATES[templateKey](ctx)
 }
