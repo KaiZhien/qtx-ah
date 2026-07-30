@@ -358,6 +358,24 @@ describe('validateSheetRow — rejections', () => {
     expect(out.errors).toContain('PCBA-A S/N is required')
   })
 
+  it('stays invalid, not needs_review, when a blank PCBA-A serial leaves a stray screen serial', () => {
+    const row = goodRow()
+    delete (row as Partial<typeof row>).pcba_a_sn
+    const [out] = validateSheetRow({ ...row, screen_sn: 'SCR-77' }, ctx)
+    expect(out.status).toBe('invalid')
+    expect(out.errors).toContain('PCBA-A S/N is required')
+    expect(out.errors.some((e) => e.includes('counts differ'))).toBe(false)
+  })
+
+  it('stays invalid, not needs_review, when a blank PCBA-A serial leaves a stray qty value', () => {
+    const row = goodRow()
+    delete (row as Partial<typeof row>).pcba_a_sn
+    const [out] = validateSheetRow({ ...row, qty: '2' }, ctx)
+    expect(out.status).toBe('invalid')
+    expect(out.errors).toContain('PCBA-A S/N is required')
+    expect(out.errors.some((e) => e.includes('counts differ'))).toBe(false)
+  })
+
   it('marks a row needs_review when the serial notation is ambiguous', () => {
     const [out] = validateSheetRow({ ...goodRow(), pcba_a_sn: 'A-1 and A-2' }, ctx)
     expect(out.status).toBe('needs_review')

@@ -256,7 +256,7 @@ export function validateSheetRow(
     reviewErrors.push(`Screen: ${screen.error}`)
   } else {
     screenSerials = screen.serials
-    if (screenSerials.length > 0 && screenSerials.length !== paired.units.length) {
+    if (paired.units.length > 0 && screenSerials.length > 0 && screenSerials.length !== paired.units.length) {
       reviewErrors.push(
         `Screen (${screenSerials.length}) and PCBA-A (${paired.units.length}) counts differ — fix this row manually`)
     }
@@ -272,7 +272,7 @@ export function validateSheetRow(
   }
 
   const qty = parseQty(raw.qty)
-  if (qty !== null && qty !== paired.units.length) {
+  if (paired.units.length > 0 && qty !== null && qty !== paired.units.length) {
     reviewErrors.push(
       `Qty (${qty}) and expanded serial count (${paired.units.length}) differ — fix this row manually`)
   }
