@@ -281,7 +281,8 @@ COMMENT ON TRIGGER trg_reconcile_system_actor ON role_permission IS
   'Re-derives the outbox automation principal''s revocations after any change to the role x permission matrix, so granting the `operator` role a permission never silently widens the principal (spec §5.5). Delegates to fn_seed_system_actor() — the single definition of what that principal may do.';
 
 -- ---------------------------------------------------------------------------
--- ENFORCEMENT 2 of 3 — the principal's authority has no additive route at all.
+-- ENFORCEMENT 2 of 3 — the principal's authority has no additive route at all,
+-- and no route to make a revocation temporary either.
 --
 -- Reconciliation above makes a widening self-healing; this makes it unreachable. The
 -- principal's effective set must be role-grants MINUS revocations, so a `granted` override
@@ -290,25 +291,46 @@ COMMENT ON TRIGGER trg_reconcile_system_actor ON role_permission IS
 -- `granted = EXCLUDED.granted, deleted_at = NULL` and would otherwise flip a revocation
 -- into a grant from the admin console.
 --
--- The WHEN clause keeps this off the hot path: the function body is only ever reached for
--- a row that is both the system actor's and additive.
+-- A non-NULL `expires_at` on a revocation is refused for the same reason, not a smaller
+-- one. roleService.addOverride accepts an expiry on ANY override, including a revoke — so an
+-- admin can leave one of this principal's revocations set to lapse on a schedule. The
+-- reconciling upsert in fn_seed_system_actor() re-asserts `expires_at = NULL` on its next
+-- run (see its header), so the widening is healed EVENTUALLY, but nothing guarantees a
+-- `role_permission` write or a manual re-run happens before the expiry hits. For a role a
+-- human actually holds, a time-limited revocation is an ordinary, reviewable configuration —
+-- someone chose the date and is accountable for what happens on it. For a standing identity
+-- nobody logs in as and nobody watches, that review never happens: an expiring revocation on
+-- this principal is not a smaller version of a grant, it IS a grant, just deferred to a timer
+-- instead of an admin click. So the guard refuses both `granted = true` and any non-NULL
+-- `expires_at`, and the error names which of the two was attempted.
+--
+-- The WHEN clause keeps this off the hot path: the function body is only ever reached for a
+-- row that is the system actor's AND (additive OR carries an expiry).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_forbid_system_actor_grant()
 RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
-  RAISE EXCEPTION
-    'Cannot grant permissions to the outbox automation principal (% / system@qtx.internal): its authority is the operator role MINUS revocations, by construction (spec 5.5). Widen fn_seed_system_actor()''s keep-list in a migration instead.',
-    NEW.user_id
-    USING ERRCODE = '23514';
+  IF NEW.granted THEN
+    RAISE EXCEPTION
+      'Cannot grant permissions to the outbox automation principal (% / system@qtx.internal): its authority is the operator role MINUS revocations, by construction (spec 5.5). Widen fn_seed_system_actor()''s keep-list in a migration instead.',
+      NEW.user_id
+      USING ERRCODE = '23514';
+  ELSE
+    RAISE EXCEPTION
+      'Cannot put an expiry on a revocation for the outbox automation principal (% / system@qtx.internal): a time-limited revocation on a standing identity nobody logs in as and nobody watches is a scheduled privilege escalation, not a legitimate configuration — the permission would return the moment it lapses with nothing guaranteed to notice or re-run the reconciliation first. Revoke it permanently (expires_at NULL) instead.',
+      NEW.user_id
+      USING ERRCODE = '23514';
+  END IF;
 END $$;
 
 CREATE TRIGGER trg_forbid_system_actor_grant
   BEFORE INSERT OR UPDATE ON user_permission_override
   FOR EACH ROW
-  WHEN (NEW.user_id = '22222222-2222-2222-2222-222222222222'::uuid AND NEW.granted)
+  WHEN (NEW.user_id = '22222222-2222-2222-2222-222222222222'::uuid
+        AND (NEW.granted OR NEW.expires_at IS NOT NULL))
   EXECUTE FUNCTION fn_forbid_system_actor_grant();
 COMMENT ON TRIGGER trg_forbid_system_actor_grant ON user_permission_override IS
-  'Refuses any additive (granted = true) override on the outbox automation principal. Its authority is role grants minus revocations with no route to add a grant (spec §5.5).';
+  'Refuses any additive (granted = true) override on the outbox automation principal, and refuses any non-NULL expires_at on one of its revocations. Its authority is role grants minus revocations with no route to add a grant, and no route to make a revocation temporary — a time-limited revocation on an identity nobody logs in as and nobody watches is a scheduled escalation, not a legitimate configuration (spec §5.5).';
 
 -- ---------------------------------------------------------------------------
 -- ENFORCEMENT 3 of 3 — the principal cannot acquire a login path.

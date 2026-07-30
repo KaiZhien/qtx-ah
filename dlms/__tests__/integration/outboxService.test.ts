@@ -222,17 +222,32 @@ describe('fn_resolve_actor_by_user_id', () => {
    * override stops applying immediately rather than waiting for the hourly sweep. Every
    * seeded override has a NULL expiry, so without this case deleting the predicate from
    * both subqueries changes nothing observable.
+   *
+   * On a throwaway user, not the system actor: the guard trigger below now refuses ANY
+   * non-NULL expires_at on the principal's revocations, so exercising this branch there would
+   * mean fighting the guard (e.g. disabling it) to test something that has nothing to do with
+   * the principal in the first place. This test is purely about fn_resolve_actor_by_user_id's
+   * expiry filtering, which applies identically to every actor — pinning it on an ordinary
+   * user keeps that distinction honest, and it is exactly this predicate that a prior pass
+   * deleted from both subqueries while leaving the suite green.
    */
   it('stops applying a revocation once it has expired', async () => {
     await inRollback(async () => {
+      const { rows: created } = await db.query<{ id: string }>(
+        `INSERT INTO app_user (email, full_name, role_id, module_access, active)
+         SELECT 'outbox-revoke-expiry@test.local', 'Revoke Expiry', r.id, ARRAY['tasks']::text[], true
+           FROM role r WHERE r.key = 'viewer' RETURNING id`)
+      const userId = created[0].id
       await db.query(
-        `UPDATE user_permission_override SET expires_at = now() - interval '1 minute'
-          WHERE user_id = $1
-            AND permission_id = (SELECT id FROM permission WHERE key = 'edit_records')`,
-        [SYSTEM_ACTOR_ID])
-      const actor = await resolveSystemActor()
-      expect(actor.revoked_overrides).not.toContain('edit_records')
-      expect(effectivePermissions(actor)).toContain('edit_records')
+        `INSERT INTO user_permission_override
+           (user_id, permission_id, granted, reason, expires_at, created_by)
+         SELECT $1, p.id, false, 'lapsed revocation', now() - interval '1 minute', $1
+           FROM permission p WHERE p.key = 'download_files'`, [userId])
+
+      const { rows } = await db.query<ResolvedActor>(
+        `SELECT * FROM fn_resolve_actor_by_user_id($1)`, [userId])
+      expect(rows[0].revoked_overrides).toEqual([])
+      expect(effectivePermissions(rows[0])).toContain('download_files')
     })
   })
 
@@ -471,13 +486,24 @@ describe('the system actor cannot be widened at runtime', () => {
     })
   })
 
-  /** ...and an expiry, the third way a standing revocation can quietly stop applying. */
+  /**
+   * ...and an expiry, the third way a standing revocation can quietly stop applying. The
+   * guard trigger now refuses a non-NULL expires_at on the principal outright (see below), so
+   * — same as the flip/soft-delete case above — getting the table into that corrupted state
+   * at all means reaching deliberately past the guard: the healing defence must hold for
+   * whatever state the row is already in (e.g. one written before this migration existed),
+   * independent of whether the guard would have allowed writing it today.
+   */
   it('heals a revocation that was given an expiry', async () => {
     await inRollback(async () => {
+      await db.query(
+        `ALTER TABLE user_permission_override DISABLE TRIGGER trg_forbid_system_actor_grant`)
       await db.query(
         `UPDATE user_permission_override SET expires_at = now() - interval '1 minute'
           WHERE user_id = $1 AND permission_id = $2`,
         [SYSTEM_ACTOR_ID, await permissionId('upload_files')])
+      await db.query(
+        `ALTER TABLE user_permission_override ENABLE TRIGGER trg_forbid_system_actor_grant`)
       expect(effectivePermissions(await resolveSystemActor())).toContain('upload_files')
 
       await db.query(`SELECT fn_seed_system_actor()`)
@@ -502,6 +528,24 @@ describe('the system actor cannot be widened at runtime', () => {
   it('refuses an additive override on the principal — UPDATE arm', async () => {
     await expect(db.query(
       `UPDATE user_permission_override SET granted = true, deleted_at = NULL
+        WHERE user_id = $1
+          AND permission_id = (SELECT id FROM permission WHERE key = 'assign_tasks')`,
+      [SYSTEM_ACTOR_ID]))
+      .rejects.toThrow(/automation principal/i)
+  })
+
+  /**
+   * `expires_at` is a third widening route, alongside `granted` and a login path: an admin
+   * can call roleService.addOverride with an expiry on one of the principal's EXISTING
+   * revocations, and the permission returns the instant it lapses with nothing guaranteed to
+   * heal it before then (only the next role_permission write or a manual re-seed does). For a
+   * standing identity nobody logs in as and nobody watches, that is a scheduled privilege
+   * escalation, not a legitimate configuration — so the guard refuses it outright, the same as
+   * an outright grant.
+   */
+  it('refuses an expiring revocation on the principal', async () => {
+    await expect(db.query(
+      `UPDATE user_permission_override SET expires_at = now() + interval '1 day'
         WHERE user_id = $1
           AND permission_id = (SELECT id FROM permission WHERE key = 'assign_tasks')`,
       [SYSTEM_ACTOR_ID]))
