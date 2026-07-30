@@ -1,20 +1,20 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import ExcelJS from 'exceljs'
-import { withTransaction } from '@/lib/db/tx'
+import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
+import { ImportParseError } from '@/modules/manufacturing/domain/importErrors'
+import { readCsvGrid } from '@/modules/manufacturing/domain/csvGrid'
 import {
   mapHeaders, validateSheetRow, type ImportField, type ImportRowOutcome,
   type ValidationContext,
 } from '@/modules/manufacturing/domain/importMapping'
 
-export class ImportParseError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ImportParseError'
-  }
-}
+// Declared in modules/manufacturing/domain/importErrors.ts so the pure readers
+// can throw it without a cycle; re-exported here because this service is the
+// public face of the parse path.
+export { ImportParseError }
 
 export type StagedBatch = {
   batchId: string; rowCount: number
@@ -40,6 +40,10 @@ export type StageImportInput = z.input<typeof stageSchema>
 // cannot omit. Scanning the first 10 rows tolerates the title/legend banners
 // real traceability workbooks carry above the table.
 const HEADER_MARKERS = ['Device S/N', '设备序列号', 'PCBA-A S/N', '电源板序列号']
+const HEADER_SCAN_ROWS = 10
+
+/** Rows below the header are inserted in chunks rather than one statement each. */
+const INSERT_CHUNK = 500
 
 /**
  * Parse an uploaded spreadsheet and stage it as an import_batch + import_rows.
@@ -58,13 +62,13 @@ export async function stageImportFile(
   // pooled connection open.
   const grid = data.kind === 'xlsx'
     ? await readWorkbook(data.bytes)
-    : readCsv(new TextDecoder().decode(data.bytes))
+    : readCsvGrid(new TextDecoder().decode(data.bytes))
 
-  const headerIdx = grid.findIndex((row) =>
-    row.some((cell) => HEADER_MARKERS.some((m) => cell.includes(m))))
-  if (headerIdx === -1 || headerIdx > 9) {
+  const headerIdx = findHeaderRow(grid)
+  if (headerIdx === -1) {
     throw new ImportParseError(
-      'Could not find a header row — the sheet needs a "Device S/N" or "PCBA-A S/N" column in its first 10 rows.')
+      'Could not find a header row — the sheet needs a "Device S/N" or "PCBA-A S/N" column, '
+      + 'plus at least one other recognised column, within its first 10 rows.')
   }
 
   const { columns, unmapped } = mapHeaders(grid[headerIdx])
@@ -87,6 +91,16 @@ export async function stageImportFile(
   }
   markDuplicateSerials(staged)
 
+  // An empty batch is never a success: it means a decoy banner was read as the
+  // header, or the file is header-only, or a semicolon-delimited CSV collapsed
+  // into one column. Thrown here, before any transaction opens, so no batch row
+  // can survive to be reviewed as "0 rows, all good".
+  if (staged.length === 0) {
+    throw new ImportParseError(
+      `Found a header row (sheet row ${headerIdx + 1}) but no data rows below it — nothing was `
+      + 'staged. Check that the rows sit under the header, and that a CSV is comma-separated.')
+  }
+
   const sha256 = createHash('sha256').update(data.bytes).digest('hex')
 
   return withTransaction(actor.id, async (tx) => {
@@ -105,15 +119,7 @@ export async function stageImportFile(
        JSON.stringify(unmapped), actor.id])
     const batchId = bRows[0].id
 
-    for (const { sourceRowNo, outcome } of staged) {
-      await tx.query(
-        `INSERT INTO import_row
-           (batch_id, source_row_no, unit_no, raw, parsed, errors, status, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [batchId, sourceRowNo, outcome.unitNo, JSON.stringify(outcome.raw),
-         outcome.status === 'valid' ? JSON.stringify(outcome.parsed) : null,
-         JSON.stringify(outcome.errors), outcome.status, actor.id])
-    }
+    await insertStagedRows(tx, batchId, actor.id, staged)
 
     const count = (s: string) => staged.filter((x) => x.outcome.status === s).length
     return {
@@ -122,6 +128,28 @@ export async function stageImportFile(
       unmappedHeaders: unmapped,
     }
   })
+}
+
+/**
+ * First row that both names a serial column and resolves to two or more distinct
+ * fields, or -1.
+ *
+ * The marker alone is not enough: a banner reading "QTX Traceability Report —
+ * Device S/N master list" contains one, and picking it as the header maps zero
+ * columns and stages zero rows while reporting success. Requiring a second
+ * mapped field is what distinguishes a table header from prose that mentions a
+ * column name.
+ */
+function findHeaderRow(grid: string[][]): number {
+  const limit = Math.min(grid.length, HEADER_SCAN_ROWS)
+  for (let r = 0; r < limit; r++) {
+    const row = grid[r]
+    if (!row.some((cell) => HEADER_MARKERS.some((m) => cell.includes(m)))) continue
+    const { columns } = mapHeaders(row)
+    const distinct = new Set(columns.filter((c): c is ImportField => c !== null))
+    if (distinct.size >= 2) return r
+  }
+  return -1
 }
 
 /**
@@ -152,41 +180,119 @@ async function loadValidationContext(
 }
 
 /**
- * Two rows claiming the same PCBA-A serial cannot both become devices — the
- * second would collide on component_unit_sn. The first wins; later ones are
- * marked invalid, naming the row that took it.
+ * Insert the staged rows in chunked multi-row statements.
+ *
+ * One sheet row can legitimately expand to thousands of units, so a
+ * statement-per-row turns a modest file into tens of thousands of sequential
+ * round-trips while holding one of only ten pooled connections. Every chunk runs
+ * inside the caller's transaction, so a failure anywhere still stages nothing.
+ *
+ * `status` is always written explicitly: the column defaults to 'needs_review'
+ * precisely so a forgotten status cannot masquerade as ready-to-commit, and
+ * leaning on that default would silently reclassify valid rows.
+ */
+async function insertStagedRows(
+  tx: Tx, batchId: string, actorId: string,
+  staged: Array<{ sourceRowNo: number; outcome: ImportRowOutcome }>,
+): Promise<void> {
+  const COLS = 8
+  for (let start = 0; start < staged.length; start += INSERT_CHUNK) {
+    const chunk = staged.slice(start, start + INSERT_CHUNK)
+    const values: unknown[] = []
+    const tuples = chunk.map(({ sourceRowNo, outcome }, n) => {
+      values.push(
+        batchId, sourceRowNo, outcome.unitNo, JSON.stringify(outcome.raw),
+        // parsed is non-null only for a valid row (the column's contract).
+        outcome.status === 'valid' ? JSON.stringify(outcome.parsed) : null,
+        JSON.stringify(outcome.errors), outcome.status, actorId)
+      const b = n * COLS
+      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8})`
+    })
+    await tx.query(
+      `INSERT INTO import_row
+         (batch_id, source_row_no, unit_no, raw, parsed, errors, status, created_by)
+       VALUES ${tuples.join(',')}`, values)
+  }
+}
+
+/**
+ * Two rows claiming the same component serial cannot both become devices — the
+ * second would collide on component_unit_sn, which is unique on
+ * (component_type_id, serial_no). So every component of every row is checked,
+ * not just the PCBA-A one: a shared PCBA-B or screen serial collides just as
+ * hard. The first claimant wins; later ones are marked invalid, naming the
+ * claiming row *and unit* (a fanned row shares its source_row_no across units,
+ * so the row number alone would not identify it).
  */
 function markDuplicateSerials(
   staged: Array<{ sourceRowNo: number; outcome: ImportRowOutcome }>,
 ): void {
-  const claimed = new Map<string, number>()
+  const claimed = new Map<string, { sourceRowNo: number; unitNo: number }>()
   for (const entry of staged) {
     const { outcome } = entry
     if (outcome.status !== 'valid') continue
-    const primary = outcome.parsed.components[0]?.serialNo
-    if (!primary) continue
-    const owner = claimed.get(primary)
-    if (owner !== undefined) {
-      entry.outcome = {
-        unitNo: outcome.unitNo, raw: outcome.raw, status: 'invalid',
-        errors: [`Duplicate serial "${primary}" — already claimed by sheet row ${owner}`],
+
+    // Collisions are gathered before anything is claimed, so a row that is about
+    // to be rejected never takes a serial its other components would then own.
+    const collisions: string[] = []
+    for (const component of outcome.parsed.components) {
+      const owner = claimed.get(`${component.typeCode}:${component.serialNo}`)
+      if (owner) {
+        collisions.push(
+          `Duplicate ${component.typeCode} serial "${component.serialNo}" — already claimed by `
+          + `sheet row ${owner.sourceRowNo}, unit ${owner.unitNo}`)
       }
-    } else {
-      claimed.set(primary, entry.sourceRowNo)
+    }
+    if (collisions.length > 0) {
+      entry.outcome = {
+        unitNo: outcome.unitNo, raw: outcome.raw, status: 'invalid', errors: collisions,
+      }
+      continue
+    }
+    for (const component of outcome.parsed.components) {
+      claimed.set(`${component.typeCode}:${component.serialNo}`,
+        { sourceRowNo: entry.sourceRowNo, unitNo: outcome.unitNo })
     }
   }
 }
 
-/** Workbook → a dense string grid. Formula cells yield their computed result. */
+/** The tab a real traceability workbook keeps the table on, matched loosely. */
+const PREFERRED_SHEET = 'traceability'
+
+/**
+ * Workbook → a dense string grid.
+ *
+ * A formula cell yields its cached result when the writer stored one, and empty
+ * otherwise — see cellText.
+ */
 async function readWorkbook(bytes: Uint8Array): Promise<string[][]> {
   const wb = new ExcelJS.Workbook()
-  // bytes.slice() copies into a buffer whose byteOffset is 0. Passing
-  // bytes.buffer directly hands ExcelJS the wrong bytes whenever the array is a
-  // view into a larger allocation.
-  await wb.xlsx.load(bytes.slice().buffer)
+  try {
+    // bytes.slice() copies into a buffer whose byteOffset is 0. Passing
+    // bytes.buffer directly hands ExcelJS the wrong bytes whenever the array is a
+    // view into a larger allocation.
+    await wb.xlsx.load(bytes.slice().buffer)
+  } catch (err) {
+    // A CSV sent as xlsx, a PDF, random bytes or a truncated upload all surface a
+    // JSZip internal ("Can't find end of central directory : is this a zip file ?").
+    // Translating it is what lets the action layer tell a bad upload from a server
+    // bug — and keeps a library internal away from the uploader. The original is
+    // logged once and travels as `cause`, so nothing is swallowed.
+    console.error(JSON.stringify({
+      level: 'error', msg: 'xlsx load failed', err: (err as Error).message,
+    }))
+    throw new ImportParseError(
+      'Could not read the file as an Excel workbook — check that it is a real .xlsx file '
+      + 'and not a renamed CSV, a PDF, or a partial upload.', { cause: err })
+  }
   if (wb.worksheets.length === 0) throw new ImportParseError('The workbook has no sheets.')
 
-  const ws = wb.getWorksheet('Traceability') ?? wb.worksheets[0]
+  // Matched case- and whitespace-insensitively: a tab named "traceability" or
+  // " Traceability " must not fall through to worksheets[0], which on a real
+  // workbook is often a cover/legend sheet — parsing that "succeeds" with the
+  // wrong data, the worst kind of failure here.
+  const ws = wb.worksheets.find((s) => s.name.trim().toLowerCase() === PREFERRED_SHEET)
+    ?? wb.worksheets[0]
   const grid: string[][] = []
   ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
     const cells: string[] = []
@@ -198,42 +304,59 @@ async function readWorkbook(bytes: Uint8Array): Promise<string[][]> {
   return Array.from(grid, (r) => r ?? [])
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null
+
+/**
+ * One ExcelJS cell value → text.
+ *
+ * ExcelJS models a cell as one of several object shapes, and String() on any of
+ * them yields the literal "[object Object]" — which, in a serial column, would
+ * stage a device whose permanent traceability record reads "[OBJECT OBJECT]". So
+ * every shape is handled explicitly and anything unrecognised returns empty.
+ *
+ * Empty is the deliberate fail-closed choice: a blank required serial makes the
+ * row invalid with "PCBA-A S/N is required", which a reviewer sees and fixes. A
+ * confidently-wrong serial is permanent.
+ */
 function cellText(value: unknown): string {
   if (value == null) return ''
   let v: unknown = value
-  if (typeof v === 'object' && v !== null && 'result' in v) {
+
+  // A formula cell carries the result the writer cached. Many generators write
+  // none (they expect Excel to recalculate on open), and a formula that evaluated
+  // to #N/A caches an error object — neither is a value we may invent.
+  if (isRecord(v) && ('formula' in v || 'sharedFormula' in v)) {
+    if (!('result' in v)) return ''
     v = (v as { result?: unknown }).result ?? null
   }
   if (v == null) return ''
+
   // Dates are re-rendered as DD/MM/YYYY so parseSheetDate handles them on the
-  // same path as text dates.
+  // same path as text dates. The UTC accessors are load-bearing, not a style
+  // choice: ExcelJS converts a date serial to UTC midnight, so getDate() on any
+  // host west of UTC reads the previous calendar day and stores the build date
+  // one day early. Do not "simplify" these to the local getters.
   if (v instanceof Date) {
-    return `${String(v.getDate()).padStart(2, '0')}/${String(v.getMonth() + 1).padStart(2, '0')}/${v.getFullYear()}`
+    return `${String(v.getUTCDate()).padStart(2, '0')}/`
+      + `${String(v.getUTCMonth() + 1).padStart(2, '0')}/${v.getUTCFullYear()}`
   }
-  return String(v).trim()
-}
 
-/** Minimal RFC-4180 CSV reader: quoted fields, doubled quotes, embedded newlines. */
-function readCsv(body: string): string[][] {
-  const grid: string[][] = []
-  let row: string[] = []
-  let field = ''
-  let quoted = false
-
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i]
-    if (quoted) {
-      if (ch === '"') {
-        if (body[i + 1] === '"') { field += '"'; i++ } else { quoted = false }
-      } else field += ch
-      continue
+  if (isRecord(v)) {
+    // Rich text: a partly-bold serial arrives as segments to be joined in order.
+    const rich = (v as { richText?: unknown }).richText
+    if (Array.isArray(rich)) {
+      return rich
+        .map((seg) => (isRecord(seg) && typeof seg.text === 'string' ? seg.text : ''))
+        .join('').trim()
     }
-    if (ch === '"') { quoted = true; continue }
-    if (ch === ',') { row.push(field.trim()); field = ''; continue }
-    if (ch === '\r') continue
-    if (ch === '\n') { row.push(field.trim()); grid.push(row); row = []; field = ''; continue }
-    field += ch
+    // An error cell (#N/A, #REF!, …) has no value to read.
+    if ('error' in v) return ''
+    // A hyperlink cell keeps its display text in .text, which is itself either a
+    // string or a rich-text object.
+    if ('hyperlink' in v || 'text' in v) return cellText((v as { text?: unknown }).text)
+    return ''
   }
-  if (field !== '' || row.length > 0) { row.push(field.trim()); grid.push(row) }
-  return grid.filter((r) => r.some((c) => c !== ''))
+
+  return String(v).trim()
 }

@@ -92,9 +92,14 @@ const viewer = (userId: string): Actor => ({
   moduleAccess: new Set(['manufacturing']), active: true,
 })
 
-async function sheetBytes(rows: string[][]): Promise<Uint8Array> {
+/**
+ * Rows are `unknown[]` rather than `string[]` so a test can hand ExcelJS a real
+ * cell shape — a rich-text object, a hyperlink, a formula, a Date — which is the
+ * only way to exercise cellText against what a real workbook actually carries.
+ */
+async function sheetBytes(rows: unknown[][], sheetName = 'Traceability'): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet('Traceability')
+  const ws = wb.addWorksheet(sheetName)
   rows.forEach((r) => ws.addRow(r))
   const buf = await wb.xlsx.writeBuffer()
   return new Uint8Array(buf as ArrayBuffer)
@@ -102,6 +107,8 @@ async function sheetBytes(rows: string[][]): Promise<Uint8Array> {
 
 const HEADERS = ['Device S/N', 'PCBA-A S/N', 'PCBA-A HW Rev', 'PCBA-A BOM Rev',
                  'PCBA-A FW Ver', 'Status', 'Phase']
+const COMPONENT_HEADERS = ['Device S/N', 'PCBA-A S/N', 'PCBA-B S/N', 'Screen S/N',
+                           'Status', 'Phase']
 
 describe('stageImportFile', () => {
   let userId: string
@@ -220,5 +227,472 @@ describe('stageImportFile', () => {
       defaultVariantCode: 'pro',
     })
     expect(staged.valid).toBe(1)
+  })
+
+  it('records the batch as a draft with its kind and row count', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', `EE-A-${t}-0001 to 0002`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'batch.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    const { rows } = await db.query<{
+      source_kind: string; row_count: number; status: string; source_filename: string
+      source_sha256: string; rows_present: number }>(
+      `SELECT b.source_kind, b.row_count, b.status, b.source_filename, b.source_sha256,
+              (SELECT count(*)::int FROM import_row r WHERE r.batch_id = b.id) AS rows_present
+         FROM import_batch b WHERE b.id = $1`, [staged.batchId])
+    expect(rows[0].source_kind).toBe('xlsx')
+    expect(rows[0].status).toBe('draft')
+    expect(rows[0].row_count).toBe(2)
+    expect(rows[0].rows_present).toBe(2)   // multi-row insert wrote every row
+    expect(rows[0].source_filename).toBe('batch.xlsx')
+    expect(rows[0].source_sha256).toMatch(/^[0-9a-f]{64}$/)
+
+    const csv = `${HEADERS.join(',')}\n,EE-A-${t}-0003,V1,B1,1.0,in_stock,production\n`
+    const csvStaged = await stageImportFile(mgr(userId), {
+      filename: 'batch.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })
+    const { rows: csvRows } = await db.query<{ source_kind: string; row_count: number }>(
+      `SELECT source_kind, row_count FROM import_batch WHERE id=$1`, [csvStaged.batchId])
+    expect(csvRows[0].source_kind).toBe('csv')
+    expect(csvRows[0].row_count).toBe(1)
+  })
+
+  it('creates no device or component rows — staging is not committing', async () => {
+    const t = tag()
+    const sn = `EE-A-${t}-0100`
+    const countOf = async (table: string) => (await db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM ${table}`)).rows[0].n
+    const before = { d: await countOf('device'), c: await countOf('component_unit') }
+
+    const bytes = await sheetBytes([
+      HEADERS, ['', sn, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'nodevices.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(1)
+
+    expect(await countOf('device')).toBe(before.d)
+    expect(await countOf('component_unit')).toBe(before.c)
+    const { rows } = await db.query(
+      `SELECT 1 FROM component_unit WHERE serial_no = $1`, [sn.toUpperCase()])
+    expect(rows).toHaveLength(0)
+  })
+
+  // ── Fix 1: ExcelJS cell shapes that String() renders as "[object Object]" ──
+
+  it('reads a rich-text serial as its text, not "[object Object]"', async () => {
+    const t = tag()
+    const sn = `EE-A-${t}-0201`
+    // A partly-bold serial: exactly what a hand-edited traceability sheet carries.
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', { richText: [{ text: `EE-A-${t}-` }, { font: { bold: true }, text: '0201' }] },
+       'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'rich.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    const { rows } = await db.query<{
+      status: string; parsed: { components: Array<{ serialNo: string }> } | null }>(
+      `SELECT status, parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].parsed?.components[0].serialNo).toBe(sn.toUpperCase())
+    expect(JSON.stringify(rows[0])).not.toMatch(/object object/i)
+    expect(rows[0].status).toBe('valid')
+  })
+
+  it('reads a hyperlink serial as its display text', async () => {
+    const t = tag()
+    const sn = `EE-A-${t}-0202`
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', { text: sn, hyperlink: 'https://example.invalid/trace' },
+       'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'link.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    const { rows } = await db.query<{
+      status: string; parsed: { components: Array<{ serialNo: string }> } | null }>(
+      `SELECT status, parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows[0].status).toBe('valid')
+    expect(rows[0].parsed?.components[0].serialNo).toBe(sn.toUpperCase())
+    expect(JSON.stringify(rows[0])).not.toMatch(/object object|https:/i)
+  })
+
+  it('fails closed on a formula with no cached result and on an error cell', async () => {
+    // Both are unreadable, and a wrong serial is permanent — so the row must be
+    // rejected as "serial missing" rather than staged with placeholder text.
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', { formula: 'B3&"x"' }, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+      ['', { error: '#N/A' }, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+      ['', { formula: 'NA()', result: { error: '#N/A' } },
+       'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'unreadable.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(0)
+    expect(staged.invalid).toBe(3)
+    const { rows } = await db.query<{ errors: string[]; parsed: unknown }>(
+      `SELECT errors, parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    for (const row of rows) {
+      expect(row.errors).toContain('PCBA-A S/N is required')
+      expect(row.parsed).toBeNull()
+    }
+    expect(JSON.stringify(rows)).not.toMatch(/object object/i)
+  })
+
+  it('keeps a formula cell that does carry a cached result', async () => {
+    const t = tag()
+    const sn = `EE-A-${t}-0203`
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', { formula: 'X1&"y"', result: sn }, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'formula.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(1)
+    const { rows } = await db.query<{ parsed: { components: Array<{ serialNo: string }> } }>(
+      `SELECT parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows[0].parsed.components[0].serialNo).toBe(sn.toUpperCase())
+  })
+
+  // ── Fix 6: a date cell must not shift a day ──
+
+  it('stores a date cell as the calendar day the sheet means, on any host', async () => {
+    const t = tag()
+    // ExcelJS turns a date serial into UTC midnight, so local getDate() reads the
+    // previous day on every host west of UTC (the bug class commit 6b36485 fixed
+    // elsewhere). Pinning TZ makes the assertion bite regardless of where the
+    // suite runs, instead of passing by accident on a UTC+ machine.
+    const originalTz = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    try {
+      const bytes = await sheetBytes([
+        [...HEADERS, 'Build Date', 'Ship Date'],
+        ['', `EE-A-${t}-0301`, 'V1', 'B1', '1.0', 'in_stock', 'production',
+         new Date(Date.UTC(2026, 2, 15)), '01/12/2026'],
+      ])
+      const staged = await stageImportFile(mgr(userId), {
+        filename: 'dates.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+      })
+      const { rows } = await db.query<{
+        parsed: { buildDate: string; shipDate: string }; raw: { build_date: string } }>(
+        `SELECT parsed, raw FROM import_row WHERE batch_id=$1`, [staged.batchId])
+      expect(rows[0].raw.build_date).toBe('15/03/2026')
+      expect(rows[0].parsed.buildDate).toBe('2026-03-15')
+      expect(rows[0].parsed.shipDate).toBe('2026-12-01')
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ
+      else process.env.TZ = originalTz
+    }
+  })
+
+  // ── Fix 3: every component's serial is checked, not just PCBA-A ──
+
+  it('catches a duplicate PCBA-B serial', async () => {
+    const t = tag()
+    const sharedB = `EE-B-${t}-0001`
+    const bytes = await sheetBytes([
+      COMPONENT_HEADERS,
+      ['', `EE-A-${t}-0401`, sharedB, `EE-S-${t}-0401`, 'in_stock', 'production'],
+      ['', `EE-A-${t}-0402`, sharedB, `EE-S-${t}-0402`, 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'dupe-b.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(1)
+    expect(staged.invalid).toBe(1)
+    const { rows } = await db.query<{ errors: string[]; source_row_no: number }>(
+      `SELECT errors, source_row_no FROM import_row
+        WHERE batch_id=$1 AND status='invalid'`, [staged.batchId])
+    expect(rows[0].source_row_no).toBe(3)
+    expect(rows[0].errors[0]).toMatch(/duplicate pcba_b serial/i)
+    expect(rows[0].errors[0]).toContain(sharedB.toUpperCase())
+    expect(rows[0].errors[0]).toMatch(/sheet row 2, unit 1/)
+  })
+
+  it('catches a duplicate screen serial', async () => {
+    const t = tag()
+    const sharedScreen = `EE-S-${t}-0500`
+    const bytes = await sheetBytes([
+      COMPONENT_HEADERS,
+      ['', `EE-A-${t}-0501`, `EE-B-${t}-0501`, sharedScreen, 'in_stock', 'production'],
+      ['', `EE-A-${t}-0502`, `EE-B-${t}-0502`, sharedScreen, 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'dupe-screen.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(1)
+    expect(staged.invalid).toBe(1)
+    const { rows } = await db.query<{ errors: string[] }>(
+      `SELECT errors FROM import_row WHERE batch_id=$1 AND status='invalid'`, [staged.batchId])
+    expect(rows[0].errors[0]).toMatch(/duplicate hmi_screen serial/i)
+    expect(rows[0].errors[0]).toContain(sharedScreen.toUpperCase())
+  })
+
+  it('names the claiming unit of a fanned row, not just its sheet row', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', `EE-A-${t}-0601 to 0603`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+      ['', `EE-A-${t}-0602`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'dupe-fan.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(3)
+    expect(staged.invalid).toBe(1)
+    const { rows } = await db.query<{ errors: string[] }>(
+      `SELECT errors FROM import_row WHERE batch_id=$1 AND status='invalid'`, [staged.batchId])
+    // unit 2 of sheet row 2 is what claimed …0602 — "row 2" alone would be ambiguous.
+    expect(rows[0].errors[0]).toMatch(/sheet row 2, unit 2/)
+  })
+
+  // ── Fix 4: a header must look like a header, and a batch must have rows ──
+
+  it('skips a banner that merely mentions a column name', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      ['QTX Traceability Report — Device S/N master list'],
+      HEADERS,
+      ['', `EE-A-${t}-0701`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'banner.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.rowCount).toBe(1)
+    expect(staged.valid).toBe(1)
+    const { rows } = await db.query<{ source_row_no: number }>(
+      `SELECT source_row_no FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows[0].source_row_no).toBe(3)
+  })
+
+  it('rejects a header-only sheet instead of staging an empty batch', async () => {
+    // The filename is tagged so the "nothing survived" assertion cannot be
+    // confused by a batch an earlier run of this suite left in the shared DB.
+    const filename = `headeronly-${tag()}.xlsx`
+    const bytes = await sheetBytes([HEADERS])
+    await expect(stageImportFile(mgr(userId), {
+      filename, kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })).rejects.toThrow(/no data rows/i)
+    const { rows } = await db.query(
+      `SELECT 1 FROM import_batch WHERE source_filename=$1`, [filename])
+    expect(rows).toHaveLength(0)   // nothing survived the failed parse
+  })
+
+  it('rejects a semicolon-delimited CSV instead of staging an empty batch', async () => {
+    const t = tag()
+    const filename = `semi-${t}.csv`
+    const csv = `${HEADERS.join(';')}\n;EE-A-${t}-0801;V1;B1;1.0;in_stock;production\n`
+    await expect(stageImportFile(mgr(userId), {
+      filename, kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })).rejects.toThrow(ImportParseError)
+    const { rows } = await db.query(
+      `SELECT 1 FROM import_batch WHERE source_filename=$1`, [filename])
+    expect(rows).toHaveLength(0)
+  })
+
+  // ── Fix 5: source_row_no is the physical row number ──
+
+  it('numbers xlsx rows by their physical sheet row, blank row included', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      HEADERS,
+      [],   // physically row 2, contentless
+      ['', `EE-A-${t}-0901`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+      ['', `EE-A-${t}-0902`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'blank.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.rowCount).toBe(2)
+    const { rows } = await db.query<{ source_row_no: number }>(
+      `SELECT source_row_no FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`,
+      [staged.batchId])
+    expect(rows.map((r) => r.source_row_no)).toEqual([3, 4])
+  })
+
+  it('numbers csv rows by their physical line, blank lines included', async () => {
+    const t = tag()
+    // Header on line 2, data on lines 3 and 5. Filtering the blank lines out
+    // before numbering (the Fix-5 bug) reported these as rows 2 and 3.
+    const csv = `\n${HEADERS.join(',')}\n,EE-A-${t}-1001,V1,B1,1.0,in_stock,production\n`
+      + `\n,EE-A-${t}-1002,V1,B1,1.0,in_stock,production\n`
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'blank.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })
+    expect(staged.rowCount).toBe(2)
+    const { rows } = await db.query<{ source_row_no: number }>(
+      `SELECT source_row_no FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`,
+      [staged.batchId])
+    expect(rows.map((r) => r.source_row_no)).toEqual([3, 5])
+  })
+
+  it('keeps a quoted inch mark in a CSV cell and the rows after it', async () => {
+    const t = tag()
+    const headers = [...HEADERS, 'Screen Model']
+    const csv = `${headers.join(',')}\n`
+      + `,EE-A-${t}-1101,V1,B1,1.0,in_stock,production,10.1" HMI\n`
+      + `,EE-A-${t}-1102,V1,B1,1.0,in_stock,production,7" HMI\n`
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'inch.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })
+    expect(staged.rowCount).toBe(2)   // the second row used to vanish silently
+    const { rows } = await db.query<{ raw: { screen_model: string } }>(
+      `SELECT raw FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`, [staged.batchId])
+    expect(rows.map((r) => r.raw.screen_model)).toEqual(['10.1" HMI', '7" HMI'])
+  })
+
+  it('rejects a CSV with an unterminated quoted field', async () => {
+    const t = tag()
+    const csv = `${HEADERS.join(',')}\n,"EE-A-${t}-1201,V1,B1,1.0,in_stock,production\n`
+    await expect(stageImportFile(mgr(userId), {
+      filename: 'unterminated.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })).rejects.toThrow(ImportParseError)
+  })
+
+  // ── Fix 7: an unreadable upload is a user error, not a stack trace ──
+
+  it('rejects a non-xlsx upload as an ImportParseError', async () => {
+    const t = tag()
+    const names = [`renamed-${t}.xlsx`, `random-${t}.xlsx`, `empty-${t}.xlsx`]
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      // A CSV renamed .xlsx, a PDF header, and a zero-byte upload: all three used
+      // to surface JSZip's "Can't find end of central directory" verbatim.
+      const notAWorkbook = new TextEncoder().encode('Device S/N,PCBA-A S/N\n,EE-A-1\n')
+      await expect(stageImportFile(mgr(userId), {
+        filename: names[0], kind: 'xlsx', bytes: notAWorkbook,
+        defaultVariantCode: 'pro',
+      })).rejects.toThrow(ImportParseError)
+      await expect(stageImportFile(mgr(userId), {
+        filename: names[1], kind: 'xlsx',
+        bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]),
+        defaultVariantCode: 'pro',
+      })).rejects.toThrow(/real \.xlsx/i)
+      await expect(stageImportFile(mgr(userId), {
+        filename: names[2], kind: 'xlsx', bytes: new Uint8Array(0),
+        defaultVariantCode: 'pro',
+      })).rejects.toThrow(ImportParseError)
+      expect(logged).toHaveBeenCalled()   // the library error is logged, not swallowed
+    } finally {
+      logged.mockRestore()
+    }
+    const { rows } = await db.query(
+      `SELECT 1 FROM import_batch WHERE source_filename = ANY($1)`, [names])
+    expect(rows).toHaveLength(0)
+  })
+
+  it('carries the underlying library error as the cause', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const err = await stageImportFile(mgr(userId), {
+        filename: `cause-${tag()}.xlsx`, kind: 'xlsx',
+        bytes: new TextEncoder().encode('not a workbook'), defaultVariantCode: 'pro',
+      }).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ImportParseError)
+      expect((err as { cause?: unknown }).cause).toBeInstanceOf(Error)
+    } finally {
+      logged.mockRestore()
+    }
+  })
+
+  // ── Fix 10: the preferred sheet is matched loosely ──
+
+  it('prefers a traceability sheet whose name differs in case', async () => {
+    const t = tag()
+    const wb = new ExcelJS.Workbook()
+    wb.addWorksheet('Cover').addRow(['Device S/N', 'PCBA-A S/N'])
+    const ws = wb.addWorksheet(' traceability ')
+    ws.addRow(HEADERS)
+    ws.addRow(['', `EE-A-${t}-1301`, 'V1', 'B1', '1.0', 'in_stock', 'production'])
+    const bytes = new Uint8Array(await wb.xlsx.writeBuffer() as ArrayBuffer)
+
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'case.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(1)
+    const { rows } = await db.query<{ parsed: { components: Array<{ serialNo: string }> } }>(
+      `SELECT parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows[0].parsed.components[0].serialNo).toBe(`EE-A-${t}-1301`.toUpperCase())
+  })
+
+  // ── Vocabulary labels, and the parsed/status contract ──
+
+  it('resolves human status and phase labels to their codes', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', `EE-A-${t}-1401`, 'V1', 'B1', '1.0', 'In Stock', 'Production'],
+      ['', `EE-A-${t}-1402`, 'V1', 'B1', '1.0', 'In Production', 'Rework'],
+      ['', `EE-A-${t}-1403`, 'V1', 'B1', '1.0', '库存', '量产'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'labels.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.valid).toBe(3)
+    const { rows } = await db.query<{ parsed: { status: string; phase: string } }>(
+      `SELECT parsed FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`,
+      [staged.batchId])
+    expect(rows.map((r) => [r.parsed.status, r.parsed.phase])).toEqual([
+      ['in_stock', 'production'],
+      ['in_production', 'rework'],
+      ['in_stock', 'production'],
+    ])
+  })
+
+  it('leaves parsed NULL for invalid and needs_review rows', async () => {
+    const t = tag()
+    const bytes = await sheetBytes([
+      HEADERS,
+      ['', `EE-A-${t}-1501`, 'V1', 'B1', '1.0', 'in_stock', 'production'],   // valid
+      ['', `EE-A-${t}-1502`, 'V1', 'B1', '1.0', 'Nonesuch', 'production'],   // invalid
+      ['', 'A-1 and A-2', 'V1', 'B1', '1.0', 'in_stock', 'production'],      // needs_review
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'mixed.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect([staged.valid, staged.invalid, staged.needsReview]).toEqual([1, 1, 1])
+    const { rows } = await db.query<{ status: string; parsed: unknown }>(
+      `SELECT status, parsed FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`,
+      [staged.batchId])
+    expect(rows.map((r) => r.status)).toEqual(['valid', 'invalid', 'needs_review'])
+    expect(rows[0].parsed).not.toBeNull()
+    expect(rows[1].parsed).toBeNull()
+    expect(rows[2].parsed).toBeNull()
+  })
+
+  it('stages a batch larger than one insert chunk', async () => {
+    const t = tag()
+    // 600 units from one ranged row: crosses the 500-row chunk boundary, so a
+    // chunking bug (dropped tail, duplicated chunk) shows up as a row-count miss.
+    const bytes = await sheetBytes([
+      HEADERS, ['', `EE-A-${t}-0001 to 0600`, 'V1', 'B1', '1.0', 'in_stock', 'production'],
+    ])
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'chunked.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })
+    expect(staged.rowCount).toBe(600)
+    const { rows } = await db.query<{ n: number; units: number; statuses: number }>(
+      `SELECT count(*)::int AS n, count(DISTINCT unit_no)::int AS units,
+              count(DISTINCT status)::int AS statuses
+         FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    expect(rows[0].n).toBe(600)
+    expect(rows[0].units).toBe(600)
+    expect(rows[0].statuses).toBe(1)   // all 'valid' — never the column's default
   })
 })
