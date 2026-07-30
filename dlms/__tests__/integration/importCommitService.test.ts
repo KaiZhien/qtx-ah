@@ -5,6 +5,7 @@ import { getPool } from '@/lib/db/pool'
 import { stageImportFile } from '@/modules/manufacturing/services/importParseService'
 import {
   commitImportBatch, getImportBatch, listImportRows, skipImportRow, cancelImportBatch,
+  retryFailedRows,
 } from '@/modules/manufacturing/services/importCommitService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -439,5 +440,62 @@ describe('listImportRows / skipImportRow / cancelImportBatch', () => {
   it('treats a malformed batch id as not-found rather than a database error', async () => {
     expect(await getImportBatch(mgr(), 'not-a-uuid')).toBeNull()
     expect(await listImportRows(mgr(), 'not-a-uuid')).toEqual([])
+  })
+})
+
+describe('retryFailedRows', () => {
+  it('refuses an actor without import_data', async () => {
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    await expect(retryFailedRows(viewer(), batchId)).rejects.toThrow(PermissionError)
+  })
+
+  it('requeues a row that failed for a fixable reason, so the next pass commits it', async () => {
+    // The commit pass reads status='valid', so without this route a row that
+    // failed for a fixable reason — here, an actor who may not seat a
+    // non-initial status — could never be re-attempted.
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'shipped', 'production']])
+    expect(await commitImportBatch(importerNoStatus(), { batchId }))
+      .toMatchObject({ committed: 0, failed: 1, remaining: 0 })
+
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 1 })
+    const [requeued] = await listImportRows(mgr(), batchId, 'valid')
+    expect(requeued.status).toBe('valid')
+    // A stale message must not outlive the condition it named.
+    expect(requeued.errors).toEqual([])
+
+    // Same row, an actor who does hold the permission: it commits.
+    expect(await commitImportBatch(mgr(), { batchId }))
+      .toMatchObject({ committed: 1, failed: 0, skipped: 0, remaining: 0 })
+    const { rows } = await db.query<{ status: string }>(
+      `SELECT d.status FROM device d JOIN import_row r ON r.device_id=d.id WHERE r.batch_id=$1`,
+      [batchId])
+    expect(rows[0].status).toBe('shipped')
+  })
+
+  it('leaves invalid, needs_review, skipped and committed rows alone', async () => {
+    const { batchId } = await stage([
+      [sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production'],        // → committed
+      [sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production'],        // → skipped
+      [sn('A'), 'V1', 'B1', '1.0', '', 'Teleported', 'production'],      // → invalid
+      ['A-1 and A-2', 'V1', 'B1', '1.0', '', 'in_stock', 'production'],  // → needs_review
+    ])
+    const pending = await listImportRows(mgr(), batchId, 'valid')
+    expect(pending).toHaveLength(2)
+    await skipImportRow(mgr(), batchId, pending[1].id)
+    expect(await commitImportBatch(mgr(), { batchId })).toMatchObject({ committed: 1 })
+
+    const before = (await getImportBatch(mgr(), batchId))!.counts
+    expect(before).toMatchObject({
+      valid: 0, invalid: 1, needs_review: 1, committed: 1, skipped: 1, failed: 0,
+    })
+
+    // Nothing rests at 'failed', so there is nothing to requeue — and none of
+    // the other four resting states may be dragged back into the pending pool.
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 0 })
+    expect((await getImportBatch(mgr(), batchId))!.counts).toEqual(before)
+  })
+
+  it('treats a malformed batch id as a no-op rather than a database error', async () => {
+    expect(await retryFailedRows(mgr(), 'not-a-uuid')).toEqual({ requeued: 0 })
   })
 })

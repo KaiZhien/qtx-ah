@@ -124,6 +124,29 @@ export async function cancelImportBatch(actor: Actor, batchId: string): Promise<
   })
 }
 
+/**
+ * Move a batch's failed rows back into the pending pool so a commit pass will
+ * retry them. Deliberately explicit rather than folded into the pending read:
+ * a row fails for a reason, and re-attempting it should be a decision someone
+ * makes after fixing that reason, not something every pass does automatically.
+ * Errors are cleared so a stale message can't outlive the condition it named.
+ */
+export async function retryFailedRows(
+  actor: Actor, batchId: string,
+): Promise<{ requeued: number }> {
+  authorize(actor, 'import_data', 'manufacturing')
+  if (!uuidSchema.safeParse(batchId).success) return { requeued: 0 }
+  return withTransaction(actor.id, async (tx) => {
+    const { rowCount } = await tx.query(
+      // parsed IS NOT NULL: only a row that once validated can be committed,
+      // and it is the same precondition the pending read applies.
+      `UPDATE import_row
+          SET status = 'valid', errors = '[]'::jsonb, updated_at = now()
+        WHERE batch_id = $1 AND status = 'failed' AND parsed IS NOT NULL`, [batchId])
+    return { requeued: rowCount ?? 0 }
+  })
+}
+
 const commitSchema = z.object({
   batchId: z.string().uuid(),
   // One action call commits at most this many rows, then reports what is left
