@@ -117,8 +117,13 @@ export function ImportCommitPanel(
       </Button>
       {/* A row fails for a reason — a missing permission, a status deactivated
           mid-import. Requeueing is explicit so it happens after someone fixes
-          that reason, rather than on every pass. */}
-      {failed > 0 && (
+          that reason, rather than on every pass. Gated on status !== 'cancelled'
+          specifically, not on `done`: `done` also covers 'committed', and a
+          committed batch with failed rows is exactly the case Retry exists to
+          rescue. A cancelled batch can never commit, so its failed rows are not
+          requeued by the service either — showing Retry here would succeed at
+          nothing and mislead the reviewer into thinking the row is retryable. */}
+      {failed > 0 && status !== 'cancelled' && (
         <Button
           variant="outline"
           disabled={busy}

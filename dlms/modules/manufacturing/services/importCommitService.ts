@@ -136,6 +136,14 @@ export async function cancelImportBatch(actor: Actor, batchId: string): Promise<
  * makes after fixing that reason, not something every pass does automatically.
  * Errors are cleared so a stale message can't outlive the condition it named.
  *
+ * The row UPDATE is joined against import_batch and scoped off 'cancelled'
+ * there, in the WHERE clause, rather than checked in application code first —
+ * the guarantee must hold no matter what a caller already knows. A cancelled
+ * batch is a deliberate abandonment that can never commit: flipping its failed
+ * rows back to 'valid' would not make them retryable, only inert, since no
+ * commit pass will ever run against a cancelled batch. Leaving them 'failed'
+ * is the honest record.
+ *
  * Requeueing also re-opens a batch that had already been stamped 'committed',
  * in this same transaction. A mixed pass — some rows committed, one refused for
  * a missing permission — leaves no 'valid' rows and at least one committed row,
@@ -154,10 +162,13 @@ export async function retryFailedRows(
   return withTransaction(actor.id, async (tx) => {
     const { rowCount } = await tx.query(
       // parsed IS NOT NULL: only a row that once validated can be committed,
-      // and it is the same precondition the pending read applies.
-      `UPDATE import_row
+      // and it is the same precondition the pending read applies. b.status <>
+      // 'cancelled' is the load-bearing scope described above.
+      `UPDATE import_row r
           SET status = 'valid', errors = '[]'::jsonb, updated_at = now()
-        WHERE batch_id = $1 AND status = 'failed' AND parsed IS NOT NULL`, [batchId])
+         FROM import_batch b
+        WHERE r.batch_id = $1 AND r.status = 'failed' AND r.parsed IS NOT NULL
+          AND b.id = r.batch_id AND b.status <> 'cancelled'`, [batchId])
     const requeued = rowCount ?? 0
     if (requeued > 0) {
       await tx.query(

@@ -510,18 +510,21 @@ describe('retryFailedRows', () => {
     expect(rows.map((r) => r.status)).toEqual(['shipped'])
   })
 
-  it('does not re-open a cancelled batch', async () => {
-    // A retry must never resurrect a batch someone deliberately closed: the rows
-    // go back in the pending pool, but the batch stays cancelled and the commit
-    // pass still refuses it.
+  it('does not requeue a cancelled batch\'s failed rows', async () => {
+    // A cancelled batch is a deliberate abandonment that can never commit, so
+    // flipping its failed rows back to 'valid' would only strand them inert —
+    // requeued but unreachable, since no commit pass ever runs against a
+    // cancelled batch. They stay 'failed': the honest record.
     const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'shipped', 'production']])
     expect(await commitImportBatch(importerNoStatus(), { batchId }))
       .toMatchObject({ committed: 0, failed: 1 })
     await cancelImportBatch(mgr(), batchId)
     expect((await getImportBatch(mgr(), batchId))!.status).toBe('cancelled')
 
-    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 1 })
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 0 })
     expect((await getImportBatch(mgr(), batchId))!.status).toBe('cancelled')
+    const [row] = await listImportRows(mgr(), batchId, 'failed')
+    expect(row.status).toBe('failed')
     expect(await commitImportBatch(mgr(), { batchId }))
       .toMatchObject({ committed: 0, failed: 0, skipped: 0, remaining: 0 })
   })
