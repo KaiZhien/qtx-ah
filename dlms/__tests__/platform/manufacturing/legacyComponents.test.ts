@@ -26,6 +26,13 @@ describe('needsSplitSerial', () => {
     expect(needsSplitSerial('EE-02A-2603-0001')).toBe(false)
     expect(needsSplitSerial('PCBA_B/2026/0007')).toBe(false)
   })
+  it('accepts values that merely contain the ASCII words "to"/"and" as part of a clean serial', () => {
+    // Former false positives: hyphens created regex word boundaries around
+    // "to"/"and" under the old denylist. The allowlist doesn't care — these
+    // are ordinary ASCII letters/digits/separators with no doubled hyphen.
+    expect(needsSplitSerial('EE-TO-2603-0001')).toBe(false)
+    expect(needsSplitSerial('EE-AND-2603-0001')).toBe(false)
+  })
   it('flags a range', () => {
     expect(needsSplitSerial('EE-02A-2603-0001 to 0015')).toBe(true)
     expect(needsSplitSerial('EE-0001 TO 0015')).toBe(true)
@@ -38,6 +45,38 @@ describe('needsSplitSerial', () => {
   it('flags prose — a sentence is not a serial', () => {
     expect(needsSplitSerial('No wifi version')).toBe(true)
     expect(needsSplitSerial('无 wifi 版本')).toBe(true)
+  })
+  it('flags a doubled hyphen even with no whitespace — range notation, not a part number', () => {
+    expect(needsSplitSerial('EE--0015')).toBe(true)
+  })
+  it('flags a list separated by an ASCII comma with no whitespace', () => {
+    // Regression guard: every pre-existing "flags true" fixture also
+    // contained a space, so a stub of just /\s/.test(serial) passed the
+    // whole suite. These cases have zero ASCII whitespace and only pass
+    // under the real allowlist/separator logic.
+    expect(needsSplitSerial('EE-0001,EE-0002')).toBe(true)
+  })
+  it('flags a full-width comma (U+FF0C) with no ASCII whitespace', () => {
+    expect(needsSplitSerial('EE-0001，EE-0002')).toBe(true)
+  })
+  it('flags an ideographic comma (U+3001) with no ASCII whitespace', () => {
+    expect(needsSplitSerial('EE-0001、EE-0002')).toBe(true)
+  })
+  it('flags a full-width tilde (U+FF5E) range with no ASCII whitespace', () => {
+    expect(needsSplitSerial('EE-0001～0015')).toBe(true)
+  })
+  it('flags the Chinese range word 至 with no ASCII whitespace', () => {
+    expect(needsSplitSerial('EE-0001至0015')).toBe(true)
+  })
+  it('flags self-contained CJK prose with no ASCII whitespace', () => {
+    // The bilingual factory sheet can carry Chinese prose with no English
+    // words to force spaces around it — this is the case the old
+    // whitespace-driven check missed entirely.
+    expect(needsSplitSerial('无线版本说明书编号')).toBe(true)
+  })
+  it('treats an empty or whitespace-only value as clean — unitFor already turns it into no unit', () => {
+    expect(needsSplitSerial('')).toBe(false)
+    expect(needsSplitSerial('   ')).toBe(false)
   })
 })
 
@@ -70,6 +109,20 @@ describe('mapLegacyComponents — PCBA-A', () => {
   it('trims surrounding whitespace but preserves internal characters', () => {
     const [install] = mapLegacyComponents(row({ pcbaASn: '  EE-02A-2603-0001  ' }))
     expect(install.unit!.serialNo).toBe('EE-02A-2603-0001')
+  })
+
+  it('trims surrounding whitespace from hwRev/bomRev/fwVer, leaving internal content untouched', () => {
+    // Pinning intentional behavior: spec §15 says revisions are carried
+    // "verbatim", but that means untouched content, not untouched padding.
+    // Surrounding whitespace from the legacy export is trimmed like the
+    // serial; any internal spacing is left exactly as the row had it.
+    const [install] = mapLegacyComponents(row({
+      pcbaAHwRev: '  V1.2 Rev A  ', pcbaABomRev: '  B3  ', pcbaAFwVer: '  1.0.4  ',
+    }))
+    expect(install.unit).toEqual({
+      typeCode: 'pcba_a', serialNo: 'EE-02A-2603-0001',
+      hwRev: 'V1.2 Rev A', bomRev: 'B3', fwVer: '1.0.4', needsSplit: false,
+    })
   })
 })
 

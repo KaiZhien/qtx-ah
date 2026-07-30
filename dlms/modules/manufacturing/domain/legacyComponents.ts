@@ -71,15 +71,42 @@ const text = (v: string | null | undefined): string | null => {
   return t === '' ? null : t
 }
 
-/** A single clean serial: no separators that imply several, and no spaces. */
+/**
+ * Whether to flag a serial is decided by ALLOWLIST, not denylist, and the
+ * asymmetry is deliberate. The observed real part numbers in this fleet
+ * ("EE-02A-2603-0001", "PCBA_B/2026/0007") are all ASCII letters, digits,
+ * and the separators `.` `_` `-` `/`, starting with a letter or digit — so
+ * that is the entire set of values trusted as clean. Everything else is
+ * flagged: a space, an ASCII or full-width comma, an ideographic comma, a
+ * range tilde (ASCII or full-width), 至 or any other CJK character, or any
+ * other punctuation not in the allowed set. A doubled hyphen (`--` or
+ * longer) is flagged explicitly even though its characters are individually
+ * allowed, because in this data it is range notation, not a part number
+ * (e.g. "EE-0001--0015").
+ *
+ * An allowlist fails safe here because the two kinds of mistake are not
+ * symmetric. A false positive — flagging an unusual-but-real single serial —
+ * costs one extra line in the admin cleanup queue a human is already
+ * working through. A false negative — passing something that actually
+ * describes several devices as one trustworthy unit — means nobody ever
+ * looks at it again and the migration silently blesses bad data. So an
+ * unrecognised character means "a human should look," never "this looks
+ * fine."
+ *
+ * An empty or whitespace-only value returns false: unitFor() already turns
+ * that into no unit at all (see `text()`), so flagging it here would put a
+ * nonexistent component in the cleanup queue.
+ */
 export function needsSplitSerial(serial: string): boolean {
   const s = serial.trim()
   if (s === '') return false
-  // Range or list notation — the spec's own examples.
-  if (/\bto\b|\band\b|[,&~]|-{2,}/i.test(s)) return true
-  // Anything with whitespace inside is prose, not a part number.
-  if (/\s/.test(s)) return true
-  return false
+  // Doubled hyphen is range notation, not a part number, even though '-' is
+  // individually allowed below.
+  if (/-{2,}/.test(s)) return true
+  // Clean = ASCII alphanumeric plus '.', '_', '-', '/', starting with a
+  // letter or digit. Anything outside this set — CJK text, full-width or
+  // ideographic punctuation, plain spaces, stray symbols — is flagged.
+  return !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(s)
 }
 
 function unitFor(
@@ -90,6 +117,10 @@ function unitFor(
   if (serialNo === null) return null
   return {
     typeCode, serialNo,
+    // Spec §15 says revisions are carried verbatim; text() still trims
+    // them. That is intentional, not a violation — only surrounding
+    // whitespace (padding from the legacy export) is removed, and internal
+    // content is left exactly as-is.
     hwRev: text(hwRev), bomRev: text(bomRev), fwVer: text(fwVer),
     needsSplit: needsSplitSerial(serialNo),
   }
