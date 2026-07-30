@@ -5,9 +5,9 @@ import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { ImportParseError } from '@/modules/manufacturing/domain/importErrors'
-import { readCsvGrid } from '@/modules/manufacturing/domain/csvGrid'
+import { readCsvGrid, type CsvRow } from '@/modules/manufacturing/domain/csvGrid'
 import {
-  mapHeaders, validateSheetRow, type ImportField, type ImportRowOutcome,
+  mapHeaders, resolveHeader, validateSheetRow, type ImportField, type ImportRowOutcome,
   type ValidationContext,
 } from '@/modules/manufacturing/domain/importMapping'
 
@@ -60,18 +60,22 @@ export async function stageImportFile(
 
   // Parse outside the transaction — ExcelJS on a large workbook must not hold a
   // pooled connection open.
-  const grid = data.kind === 'xlsx'
-    ? await readWorkbook(data.bytes)
+  //
+  // Both readers report a physical row number per record rather than leaving it
+  // to be inferred: a workbook grid is dense and indexed by sheet row, so
+  // index + 1 *is* the sheet row, while a CSV record can span several lines
+  // (a quoted newline) and so carries its own.
+  const rows: CsvRow[] = data.kind === 'xlsx'
+    ? (await readWorkbook(data.bytes)).map((cells, i) => ({ lineNo: i + 1, cells }))
     : readCsvGrid(new TextDecoder().decode(data.bytes))
 
-  const headerIdx = findHeaderRow(grid)
-  if (headerIdx === -1) {
+  const header = findHeaderRow(rows)
+  if (header === null) {
     throw new ImportParseError(
-      'Could not find a header row — the sheet needs a "Device S/N" or "PCBA-A S/N" column, '
-      + 'plus at least one other recognised column, within its first 10 rows.')
+      'Could not find a header row — the sheet needs a "Device S/N" or "PCBA-A S/N" column '
+      + 'header within its first 10 rows.')
   }
-
-  const { columns, unmapped } = mapHeaders(grid[headerIdx])
+  const { columns, unmapped } = header.mapped
 
   const ctx = await loadValidationContext(actor, data.defaultVariantCode)
 
@@ -79,14 +83,17 @@ export async function stageImportFile(
   // than at commit means the reviewer sees the collision before committing
   // anything, instead of a row failing on component_unit_sn mid-batch.
   const staged: Array<{ sourceRowNo: number; outcome: ImportRowOutcome }> = []
-  for (let r = headerIdx + 1; r < grid.length; r++) {
+  for (let r = header.index + 1; r < rows.length; r++) {
     const raw: Record<string, string> = {}
-    grid[r].forEach((cell, c) => {
+    rows[r].cells.forEach((cell, c) => {
       const field: ImportField | null = columns[c] ?? null
       if (field && cell !== '') raw[field] = cell
     })
     for (const outcome of validateSheetRow(raw, ctx)) {
-      staged.push({ sourceRowNo: r + 1, outcome })  // 1-based, matches the spreadsheet
+      // The record's own line number, never its array index: the reviewer opens
+      // the file at this row, and a multi-line quoted cell above would have
+      // shifted an index-derived number off by every extra line it spans.
+      staged.push({ sourceRowNo: rows[r].lineNo, outcome })
     }
   }
   markDuplicateSerials(staged)
@@ -97,8 +104,9 @@ export async function stageImportFile(
   // can survive to be reviewed as "0 rows, all good".
   if (staged.length === 0) {
     throw new ImportParseError(
-      `Found a header row (sheet row ${headerIdx + 1}) but no data rows below it — nothing was `
-      + 'staged. Check that the rows sit under the header, and that a CSV is comma-separated.')
+      `Found a header row (sheet row ${rows[header.index].lineNo}) but no data rows below it — `
+      + 'nothing was staged. Check that the rows sit under the header, and that a CSV is '
+      + 'comma-separated.')
   }
 
   const sha256 = createHash('sha256').update(data.bytes).digest('hex')
@@ -131,25 +139,32 @@ export async function stageImportFile(
 }
 
 /**
- * First row that both names a serial column and resolves to two or more distinct
- * fields, or -1.
+ * First row carrying a marker cell that is *itself* a recognised column header,
+ * with that row's header map — or null.
  *
- * The marker alone is not enough: a banner reading "QTX Traceability Report —
+ * Containing a marker is not enough: a banner reading "QTX Traceability Report —
  * Device S/N master list" contains one, and picking it as the header maps zero
- * columns and stages zero rows while reporting success. Requiring a second
- * mapped field is what distinguishes a table header from prose that mentions a
- * column name.
+ * columns and stages zero rows while reporting success. Requiring the
+ * marker-bearing cell to resolve to a field via resolveHeader is what separates a
+ * table header from prose that mentions a column name — and, unlike counting
+ * mapped fields, it does not reject the legitimately minimal sheets that carry a
+ * single serial column, or a serial column plus one unrecognised one.
+ *
+ * The map is returned rather than recomputed by the caller: mapHeaders is a pure
+ * function of the row, and running it twice on the winning row invites the two
+ * results drifting apart.
  */
-function findHeaderRow(grid: string[][]): number {
-  const limit = Math.min(grid.length, HEADER_SCAN_ROWS)
+function findHeaderRow(
+  rows: CsvRow[],
+): { index: number; mapped: ReturnType<typeof mapHeaders> } | null {
+  const limit = Math.min(rows.length, HEADER_SCAN_ROWS)
   for (let r = 0; r < limit; r++) {
-    const row = grid[r]
-    if (!row.some((cell) => HEADER_MARKERS.some((m) => cell.includes(m)))) continue
-    const { columns } = mapHeaders(row)
-    const distinct = new Set(columns.filter((c): c is ImportField => c !== null))
-    if (distinct.size >= 2) return r
+    const { cells } = rows[r]
+    const named = cells.some((cell) =>
+      HEADER_MARKERS.some((m) => cell.includes(m)) && resolveHeader(cell) !== null)
+    if (named) return { index: r, mapped: mapHeaders(cells) }
   }
-  return -1
+  return null
 }
 
 /**
@@ -260,48 +275,56 @@ function markDuplicateSerials(
 const PREFERRED_SHEET = 'traceability'
 
 /**
- * Workbook → a dense string grid.
+ * Workbook → a dense string grid, indexed so that index + 1 is the sheet row.
  *
  * A formula cell yields its cached result when the writer stored one, and empty
  * otherwise — see cellText.
+ *
+ * The whole read is wrapped, not just the load: a workbook that opens but is
+ * internally malformed throws from eachRow/cellText instead, and that must reach
+ * the uploader as the same "this file is not readable" message rather than as a
+ * raw library error the action layer would report as a server bug.
  */
 async function readWorkbook(bytes: Uint8Array): Promise<string[][]> {
-  const wb = new ExcelJS.Workbook()
   try {
+    const wb = new ExcelJS.Workbook()
     // bytes.slice() copies into a buffer whose byteOffset is 0. Passing
     // bytes.buffer directly hands ExcelJS the wrong bytes whenever the array is a
     // view into a larger allocation.
     await wb.xlsx.load(bytes.slice().buffer)
+    if (wb.worksheets.length === 0) throw new ImportParseError('The workbook has no sheets.')
+
+    // Matched case- and whitespace-insensitively: a tab named "traceability" or
+    // " Traceability " must not fall through to worksheets[0], which on a real
+    // workbook is often a cover/legend sheet — parsing that "succeeds" with the
+    // wrong data, the worst kind of failure here.
+    const ws = wb.worksheets.find((s) => s.name.trim().toLowerCase() === PREFERRED_SHEET)
+      ?? wb.worksheets[0]
+    const grid: string[][] = []
+    ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      const cells: string[] = []
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        cells[colNumber - 1] = cellText(cell.value)
+      })
+      grid[rowNumber - 1] = Array.from(cells, (c) => c ?? '')
+    })
+    return Array.from(grid, (r) => r ?? [])
   } catch (err) {
+    // Already translated (no sheets): pass it through untouched, so it is neither
+    // logged twice nor reworded into "not a real .xlsx".
+    if (err instanceof ImportParseError) throw err
     // A CSV sent as xlsx, a PDF, random bytes or a truncated upload all surface a
     // JSZip internal ("Can't find end of central directory : is this a zip file ?").
     // Translating it is what lets the action layer tell a bad upload from a server
     // bug — and keeps a library internal away from the uploader. The original is
     // logged once and travels as `cause`, so nothing is swallowed.
     console.error(JSON.stringify({
-      level: 'error', msg: 'xlsx load failed', err: (err as Error).message,
+      level: 'error', msg: 'xlsx read failed', err: (err as Error).message,
     }))
     throw new ImportParseError(
       'Could not read the file as an Excel workbook — check that it is a real .xlsx file '
       + 'and not a renamed CSV, a PDF, or a partial upload.', { cause: err })
   }
-  if (wb.worksheets.length === 0) throw new ImportParseError('The workbook has no sheets.')
-
-  // Matched case- and whitespace-insensitively: a tab named "traceability" or
-  // " Traceability " must not fall through to worksheets[0], which on a real
-  // workbook is often a cover/legend sheet — parsing that "succeeds" with the
-  // wrong data, the worst kind of failure here.
-  const ws = wb.worksheets.find((s) => s.name.trim().toLowerCase() === PREFERRED_SHEET)
-    ?? wb.worksheets[0]
-  const grid: string[][] = []
-  ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-    const cells: string[] = []
-    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cells[colNumber - 1] = cellText(cell.value)
-    })
-    grid[rowNumber - 1] = Array.from(cells, (c) => c ?? '')
-  })
-  return Array.from(grid, (r) => r ?? [])
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>

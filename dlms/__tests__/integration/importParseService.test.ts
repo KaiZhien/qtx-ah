@@ -687,12 +687,123 @@ describe('stageImportFile', () => {
       filename: 'chunked.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro',
     })
     expect(staged.rowCount).toBe(600)
-    const { rows } = await db.query<{ n: number; units: number; statuses: number }>(
+    const { rows } = await db.query<{ n: number; units: number; statuses: string[] }>(
       `SELECT count(*)::int AS n, count(DISTINCT unit_no)::int AS units,
-              count(DISTINCT status)::int AS statuses
+              array_agg(DISTINCT status) AS statuses
          FROM import_row WHERE batch_id=$1`, [staged.batchId])
     expect(rows[0].n).toBe(600)
     expect(rows[0].units).toBe(600)
-    expect(rows[0].statuses).toBe(1)   // all 'valid' — never the column's default
+    // The value, not just the cardinality: one distinct status could as easily be
+    // 600 rows sitting on the column's 'needs_review' default.
+    expect(rows[0].statuses).toEqual(['valid'])
+
+    // Values and order across the boundary, not only the count: a chunking bug can
+    // repeat chunk 1, drop chunk 2's tail, or misalign the parameter tuples — none
+    // of which changes how many rows exist.
+    const { rows: spans } = await db.query<{
+      unit_no: number; parsed: { components: Array<{ serialNo: string }> } | null }>(
+      `SELECT unit_no, parsed FROM import_row
+        WHERE batch_id=$1 AND unit_no IN (500, 501, 600) ORDER BY unit_no`, [staged.batchId])
+    expect(spans.map((r) => r.unit_no)).toEqual([500, 501, 600])
+    expect(spans[1].parsed).not.toBeNull()
+    expect(spans.map((r) => r.parsed?.components[0].serialNo)).toEqual([
+      `EE-A-${t}-0500`.toUpperCase(),
+      `EE-A-${t}-0501`.toUpperCase(),   // first row of the second chunk
+      `EE-A-${t}-0600`.toUpperCase(),
+    ])
+  })
+
+  // ── Fix pass 2: header detection, CSV padding, and true CSV line numbers ──
+
+  it('accepts a minimal sheet whose only recognised column is a serial', async () => {
+    const t = tag()
+    const single = await stageImportFile(mgr(userId), {
+      filename: 'minimal.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['PCBA-A S/N'], [`EE-A-${t}-1601`]]),
+    })
+    expect([single.rowCount, single.valid]).toEqual([1, 1])
+
+    // A serial column plus one column this importer does not know is still a
+    // header — the unknown one is reported, not a reason to reject the sheet.
+    const withNotes = await stageImportFile(mgr(userId), {
+      filename: 'minimal-notes.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['PCBA-A S/N', 'Notes'], [`EE-A-${t}-1602`, 'hand-built']]),
+    })
+    expect([withNotes.rowCount, withNotes.valid]).toEqual([1, 1])
+    expect(withNotes.unmappedHeaders).toEqual(['Notes'])
+
+    // Two headers that both resolve to the *same* field: a real bilingual sheet
+    // that names one column twice. The row is invalid (no PCBA-A serial), which is
+    // the point — the header row itself was accepted rather than the whole sheet
+    // rejected as headerless.
+    const bilingual = await stageImportFile(mgr(userId), {
+      filename: 'minimal-bilingual.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['Device S/N', '设备序列号'], [`EE-D-${t}-1603`, '']]),
+    })
+    expect([bilingual.rowCount, bilingual.invalid]).toEqual([1, 1])
+  })
+
+  it('rejects a sheet whose only marker sits inside a prose banner', async () => {
+    // The decoy: it contains "Device S/N" but is not a column header, so choosing
+    // it would map zero columns and stage zero rows while reporting success.
+    const filename = `bannerorphan-${tag()}.xlsx`
+    const bytes = await sheetBytes([
+      ['QTX Traceability Report — Device S/N master list'],
+      ['Prepared by Manufacturing, 2026-07-30'],
+      ['red', 'L'],
+    ])
+    await expect(stageImportFile(mgr(userId), {
+      filename, kind: 'xlsx', bytes, defaultVariantCode: 'pro',
+    })).rejects.toThrow(/could not find a header row/i)
+    const { rows } = await db.query(
+      `SELECT 1 FROM import_batch WHERE source_filename=$1`, [filename])
+    expect(rows).toHaveLength(0)
+  })
+
+  it('keeps CSV columns aligned when a quoted cell is padded before its quote', async () => {
+    const t = tag()
+    // Remarks sits *between* two mapped columns, so a quote read as literal text
+    // would shift Status onto the remark's tail — an invalid row at best, and a
+    // wrong-but-plausible value at worst.
+    const headers = ['Device S/N', 'PCBA-A S/N', 'Remarks', 'Status', 'Phase']
+    const csv = `${headers.join(',')}\n`
+      + `,EE-A-${t}-1701, "first batch, urgent" ,in_stock,production\n`
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'padded.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })
+    expect([staged.rowCount, staged.valid]).toEqual([1, 1])
+    const { rows } = await db.query<{
+      raw: { remarks: string }; parsed: { remarks: string; status: string } }>(
+      `SELECT raw, parsed FROM import_row WHERE batch_id=$1`, [staged.batchId])
+    // The padding before the opening quote is syntax and is dropped; what follows
+    // the closing quote is content, like any post-close character.
+    expect(rows[0].raw.remarks).toBe('first batch, urgent ')
+    expect(rows[0].parsed.remarks).toBe('first batch, urgent ')
+    expect(rows[0].parsed.status).toBe('in_stock')
+  })
+
+  it('numbers a CSV row below a multi-line quoted remark by its physical line', async () => {
+    const t = tag()
+    // remarks is documented as bilingual and multiline, so this file is legal —
+    // and its second data row starts on line 4, not line 3. Deriving
+    // source_row_no from the record index reported it as 3, sending a reviewer
+    // chasing "row 3" to the wrong line of the file.
+    const headers = [...HEADERS, 'Remarks']
+    const csv = `${headers.join(',')}\n`
+      + `,EE-A-${t}-1801,V1,B1,1.0,in_stock,production,"首批出货\nfirst batch"\n`
+      + `,EE-A-${t}-1802,V1,B1,1.0,in_stock,production,second batch\n`
+    const staged = await stageImportFile(mgr(userId), {
+      filename: 'multiline.csv', kind: 'csv', bytes: new TextEncoder().encode(csv),
+      defaultVariantCode: 'pro',
+    })
+    expect([staged.rowCount, staged.valid]).toEqual([2, 2])
+    const { rows } = await db.query<{
+      source_row_no: number; parsed: { remarks: string } }>(
+      `SELECT source_row_no, parsed FROM import_row WHERE batch_id=$1 ORDER BY source_row_no`,
+      [staged.batchId])
+    expect(rows.map((r) => r.source_row_no)).toEqual([2, 4])
+    expect(rows[0].parsed.remarks).toBe('首批出货\nfirst batch')   // verbatim, newline kept
+    expect(rows[1].parsed.remarks).toBe('second batch')
   })
 })
