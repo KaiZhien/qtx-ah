@@ -9,22 +9,8 @@ import {
   advanceCommit, ZERO_COMMIT_TOTALS, MAX_COMMIT_PASSES,
   type CommitTotals, type CommitStop,
 } from '@/modules/manufacturing/domain/importUi'
+import { callFailed } from '@/components/manufacturing/importCallFailed'
 import { Button } from '@/components/ui/button'
-
-/**
- * A rejected action *invocation*: the actions never throw, but the call itself
- * can fail — a dropped connection mid-loop, a stale action id after a redeploy.
- * Left uncaught, a rejection inside startTransition's async callback is rethrown
- * when the transition unwraps it and escalates to the error boundary, which
- * would replace the page halfway through a commit. Logged structured and once,
- * the way the actions log.
- */
-function callFailed(err: unknown): string {
-  console.error(JSON.stringify({
-    level: 'error', msg: 'import commit call failed', err: String(err),
-  }))
-  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
-}
 
 const tally = (t: CommitTotals) =>
   `Imported ${t.committed} · skipped ${t.skipped} · failed ${t.failed}`
@@ -91,7 +77,7 @@ export function ImportCommitPanel(
         } catch (err) {
           // Whatever already committed is committed — say so, or 400 imported
           // rows read as "nothing happened".
-          setMessage(`${callFailed(err)} ${tally(totals)} before this.`)
+          setMessage(`${callFailed('commit', err)} ${tally(totals)} before this.`)
           return
         }
         if (!res.ok) {
@@ -136,7 +122,7 @@ export function ImportCommitPanel(
                   ? `Requeued ${res.data.requeued} failed row${res.data.requeued === 1 ? '' : 's'} — import again to retry.`
                   : res.error)
               } catch (err) {
-                setMessage(callFailed(err))
+                setMessage(callFailed('retry', err))
               }
             })
           }}
@@ -160,7 +146,7 @@ export function ImportCommitPanel(
               const res = await cancelBatchAction({ batchId })
               if (!res.ok) setMessage(res.error)
             } catch (err) {
-              setMessage(callFailed(err))
+              setMessage(callFailed('cancel', err))
             }
           })
         }}

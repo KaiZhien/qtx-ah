@@ -6,6 +6,7 @@ import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { ImportParseError } from '@/modules/manufacturing/domain/importErrors'
 import { readCsvGrid, type CsvRow } from '@/modules/manufacturing/domain/csvGrid'
+import { MAX_STAGED_ROWS } from '@/modules/manufacturing/domain/importLimits'
 import {
   mapHeaders, resolveHeader, validateSheetRow, type ImportField, type ImportRowOutcome,
   type ValidationContext,
@@ -39,7 +40,7 @@ export type StageImportInput = z.input<typeof stageSchema>
 // A header row is one that names a serial column — the only columns the sheet
 // cannot omit. Scanning the first 10 rows tolerates the title/legend banners
 // real traceability workbooks carry above the table.
-const HEADER_MARKERS = ['Device S/N', '设备序列号', 'PCBA-A S/N', '电源板序列号']
+const SERIAL_FIELDS: ImportField[] = ['device_sn', 'pcba_a_sn']
 const HEADER_SCAN_ROWS = 10
 
 /** Rows below the header are inserted in chunks rather than one statement each. */
@@ -90,6 +91,15 @@ export async function stageImportFile(
       if (field && cell !== '') raw[field] = cell
     })
     for (const outcome of validateSheetRow(raw, ctx)) {
+      // Checked here, inside the accumulation, rather than on the finished array:
+      // the whole point of the cap is that the memory is never spent, and one
+      // sheet row can fan out to thousands of drafts (see MAX_STAGED_ROWS).
+      if (staged.length >= MAX_STAGED_ROWS) {
+        throw new ImportParseError(
+          `This file expands to more than ${MAX_STAGED_ROWS.toLocaleString('en-US')} device `
+          + 'rows, which is more than one import batch takes — serial ranges count as one row '
+          + 'per unit. Split the file and import it in parts.')
+      }
       // The record's own line number, never its array index: the reviewer opens
       // the file at this row, and a multi-line quoted cell above would have
       // shifted an index-derived number off by every extra line it spans.
@@ -139,16 +149,23 @@ export async function stageImportFile(
 }
 
 /**
- * First row carrying a marker cell that is *itself* a recognised column header,
- * with that row's header map — or null.
+ * First row carrying a cell that resolves to a serial column, with that row's
+ * header map — or null.
  *
- * Containing a marker is not enough: a banner reading "QTX Traceability Report —
- * Device S/N master list" contains one, and picking it as the header maps zero
- * columns and stages zero rows while reporting success. Requiring the
- * marker-bearing cell to resolve to a field via resolveHeader is what separates a
- * table header from prose that mentions a column name — and, unlike counting
- * mapped fields, it does not reject the legitimately minimal sheets that carry a
- * single serial column, or a serial column plus one unrecognised one.
+ * Mentioning a column name is not enough: a banner reading "QTX Traceability
+ * Report — Device S/N master list" mentions one, and picking it as the header
+ * maps zero columns and stages zero rows while reporting success. Asking
+ * resolveHeader is what separates a table header from prose — and, unlike
+ * counting mapped fields, it does not reject the legitimately minimal sheets
+ * that carry a single serial column, or a serial column plus one unrecognised
+ * one.
+ *
+ * resolveHeader is the *only* judge, deliberately: a previous version also
+ * required the cell to contain one of four hardcoded literals, which re-encoded
+ * header knowledge that COLUMN_ALIASES already owns and, being a
+ * case-sensitive substring test, rejected sheets headed `PCBA-A SN`, `Device SN`
+ * or `DEVICE S/N` — all three advertised aliases — with "the sheet needs a
+ * Device S/N column", about a sheet that has exactly that column.
  *
  * The map is returned rather than recomputed by the caller: mapHeaders is a pure
  * function of the row, and running it twice on the winning row invites the two
@@ -160,8 +177,10 @@ function findHeaderRow(
   const limit = Math.min(rows.length, HEADER_SCAN_ROWS)
   for (let r = 0; r < limit; r++) {
     const { cells } = rows[r]
-    const named = cells.some((cell) =>
-      HEADER_MARKERS.some((m) => cell.includes(m)) && resolveHeader(cell) !== null)
+    const named = cells.some((cell) => {
+      const field = resolveHeader(cell)
+      return field !== null && SERIAL_FIELDS.includes(field)
+    })
     if (named) return { index: r, mapped: mapHeaders(cells) }
   }
   return null

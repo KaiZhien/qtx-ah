@@ -8,6 +8,7 @@ import type { ImportRowView } from '@/modules/manufacturing/services/importCommi
 import {
   IMPORT_ROW_PAGE_LIMIT, type ImportRowStatus,
 } from '@/modules/manufacturing/domain/importUi'
+import { callFailed } from '@/components/manufacturing/importCallFailed'
 import { Button } from '@/components/ui/button'
 
 const TABS = [
@@ -18,20 +19,6 @@ const TABS = [
   { key: 'skipped', label: 'Skipped' },
   { key: 'failed', label: 'Failed' },
 ] as const satisfies readonly { key: ImportRowStatus; label: string }[]
-
-/**
- * A rejected action *invocation*: skipRowAction never throws, but the call
- * itself can fail — a dropped connection, a stale action id after a redeploy.
- * Left uncaught, a rejection inside startTransition's async callback is rethrown
- * when the transition unwraps it and escalates to the error boundary, replacing
- * the whole review page. Logged structured and once, the way the actions log.
- */
-function callFailed(err: unknown): string {
-  console.error(JSON.stringify({
-    level: 'error', msg: 'import skip call failed', err: String(err),
-  }))
-  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
-}
 
 export function ImportReviewTable(
   { batchId, rows, active, counts }: {
@@ -85,7 +72,13 @@ export function ImportReviewTable(
           <thead className="bg-muted/50">
             <tr>
               <th className="p-2 text-left">Sheet row</th>
-              <th className="p-2 text-left">PCBA-A S/N</th>
+              {/* Two serial columns, deliberately. The sheet cell is what the
+                  uploader typed — on a fanned row it is the whole range, repeated
+                  identically down every unit it produced. The derived one is the
+                  serial this unit will actually create, which is the value that
+                  becomes permanent and the one worth checking before commit. */}
+              <th className="p-2 text-left">PCBA-A S/N in sheet</th>
+              <th className="p-2 text-left">Serial to create</th>
               <th className="p-2 text-left">Status</th>
               <th className="p-2 text-left">Notes</th>
               <th className="p-2" />
@@ -93,7 +86,7 @@ export function ImportReviewTable(
           </thead>
           <tbody>
             {shown.length === 0 && (
-              <tr><td colSpan={5} className="text-muted-foreground p-4 text-center">
+              <tr><td colSpan={6} className="text-muted-foreground p-4 text-center">
                 Nothing here.
               </td></tr>
             )}
@@ -103,6 +96,9 @@ export function ImportReviewTable(
                 {/* `||`, not `??`: raw cells are strings, and a blank one should
                     render the dash rather than an empty column. */}
                 <td className="p-2 font-mono text-xs">{r.raw.pcba_a_sn || '—'}</td>
+                {/* Null for every row that has no draft to derive it from — an
+                    invalid or needs_review row has no parsed serial yet. */}
+                <td className="p-2 font-mono text-xs">{r.derivedSerialNo ?? '—'}</td>
                 <td className="p-2">{r.raw.status || '—'}</td>
                 <td className="p-2">
                   {r.deviceId
@@ -123,7 +119,7 @@ export function ImportReviewTable(
                             if (!res.ok) { setError(res.error); return }
                             router.refresh()
                           } catch (err) {
-                            setError(callFailed(err))
+                            setError(callFailed('skip', err))
                           }
                         })
                       }}

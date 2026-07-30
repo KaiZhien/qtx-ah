@@ -116,15 +116,35 @@ function rethrowDbError(err: unknown, deviceSn: string | null | undefined): neve
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
 
+/**
+ * How long each free-text device column may be — what this system considers a
+ * valid device row, independent of which write path produced it.
+ *
+ * Named rather than repeated as literals because there are now three schemas
+ * over the same columns: create, update, and the bulk import's draft check
+ * (importCommitService.commitOneRow, which reads a draft out of jsonb and must
+ * not be able to seat a 50 KB product name the interactive form would refuse).
+ * Change a limit here and every write path moves together.
+ */
+export const DEVICE_FIELD_LIMITS = {
+  deviceSn: 100,
+  phase: 50,
+  productName: 200,
+  modelNo: 100,
+  customer: 200,
+  destination: 200,
+  remarks: 5000,
+} as const
+
 const createSchema = z.object({
   variantCode: z.string().min(1),
-  deviceSn: z.string().max(100).optional(),
-  phase: z.string().max(50).optional(),
-  productName: z.string().max(200).optional(),
-  modelNo: z.string().max(100).optional(),
-  customer: z.string().max(200).optional(),
-  destination: z.string().max(200).optional(),
-  remarks: z.string().max(5000).optional(),
+  deviceSn: z.string().max(DEVICE_FIELD_LIMITS.deviceSn).optional(),
+  phase: z.string().max(DEVICE_FIELD_LIMITS.phase).optional(),
+  productName: z.string().max(DEVICE_FIELD_LIMITS.productName).optional(),
+  modelNo: z.string().max(DEVICE_FIELD_LIMITS.modelNo).optional(),
+  customer: z.string().max(DEVICE_FIELD_LIMITS.customer).optional(),
+  destination: z.string().max(DEVICE_FIELD_LIMITS.destination).optional(),
+  remarks: z.string().max(DEVICE_FIELD_LIMITS.remarks).optional(),
   buildDate: DATE.optional(),
   shipDate: DATE.optional(),
   deliveredDate: DATE.optional(),
@@ -181,14 +201,14 @@ export async function createDevice(
 const updateSchema = z.object({
   deviceId: z.string().uuid(),
   version: z.number().int().nonnegative(),
-  deviceSn: z.string().max(100).nullish(),
+  deviceSn: z.string().max(DEVICE_FIELD_LIMITS.deviceSn).nullish(),
   variantCode: z.string().min(1).optional(),
-  phase: z.string().max(50).nullish(),
-  productName: z.string().max(200).nullish(),
-  modelNo: z.string().max(100).nullish(),
-  customer: z.string().max(200).nullish(),
-  destination: z.string().max(200).nullish(),
-  remarks: z.string().max(5000).nullish(),
+  phase: z.string().max(DEVICE_FIELD_LIMITS.phase).nullish(),
+  productName: z.string().max(DEVICE_FIELD_LIMITS.productName).nullish(),
+  modelNo: z.string().max(DEVICE_FIELD_LIMITS.modelNo).nullish(),
+  customer: z.string().max(DEVICE_FIELD_LIMITS.customer).nullish(),
+  destination: z.string().max(DEVICE_FIELD_LIMITS.destination).nullish(),
+  remarks: z.string().max(DEVICE_FIELD_LIMITS.remarks).nullish(),
   buildDate: DATE.nullish(),
   shipDate: DATE.nullish(),
   deliveredDate: DATE.nullish(),

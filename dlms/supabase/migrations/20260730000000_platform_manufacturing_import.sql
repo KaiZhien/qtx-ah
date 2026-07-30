@@ -20,7 +20,11 @@
 CREATE TABLE import_batch (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   source_filename text NOT NULL,
-  source_sha256 text NOT NULL,            -- content hash; surfaced so a re-upload is recognisable
+  -- Content hash; surfaced so a re-upload is recognisable. Constrained to the
+  -- exact shape a sha256 hex digest has, so a truncated, uppercased or
+  -- placeholder value cannot be stored and later compared as if it were real.
+  source_sha256 text NOT NULL
+    CONSTRAINT import_batch_sha256 CHECK (source_sha256 ~ '^[0-9a-f]{64}$'),
   source_kind text NOT NULL
     CONSTRAINT import_batch_kind CHECK (source_kind IN ('xlsx','csv')),
   -- Every device needs a variant and the traceability sheet has no variant
@@ -71,6 +75,15 @@ COMMENT ON COLUMN import_row.unit_no IS
 
 CREATE UNIQUE INDEX import_row_unique ON import_row(batch_id, source_row_no, unit_no);
 CREATE INDEX import_row_batch_status ON import_row(batch_id, status);
+
+-- /manufacturing/import lists recent batches (listImportBatches) so a batch is
+-- not lost with its URL. That listing reads import_batch as a table in its own
+-- right for the first time, and the two ways it is expected to be narrowed —
+-- "which batches are still open" and "the ones I uploaded" — each scan the whole
+-- table without these. created_by additionally covers its app_user FK, which an
+-- unindexed referencing column makes a sequential scan on every parent delete.
+CREATE INDEX import_batch_status ON import_batch(status);
+CREATE INDEX import_batch_created_by ON import_batch(created_by);
 
 -- Audit: batch only, by design (see the import_row table comment).
 SELECT fn_attach_audit('import_batch');

@@ -4,8 +4,8 @@ import ExcelJS from 'exceljs'
 import { getPool } from '@/lib/db/pool'
 import { stageImportFile } from '@/modules/manufacturing/services/importParseService'
 import {
-  commitImportBatch, getImportBatch, listImportRows, skipImportRow, cancelImportBatch,
-  retryFailedRows,
+  commitImportBatch, getImportBatch, listImportRows, listImportBatches, skipImportRow,
+  cancelImportBatch, retryFailedRows,
 } from '@/modules/manufacturing/services/importCommitService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -371,6 +371,50 @@ describe('commitImportBatch', () => {
     expect((await getImportBatch(mgr(), batchId))!.status).toBe('cancelled')
   })
 
+  it('fails a row whose text exceeds the interactive path\'s own limits, without aborting the batch', async () => {
+    // deviceWriteService.createDevice caps product_name at 200 characters, and
+    // commitOneRow used to insert whatever the staged jsonb draft carried — so
+    // the import could seat a device the edit form would refuse to save. The
+    // over-long row must fail *on its own*: the sibling row in the same batch
+    // still commits (spec §7.5's per-row atomicity), and nothing is truncated
+    // behind the uploader's back.
+    const long = sn('A')
+    const fine = sn('A')
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Traceability')
+    ws.addRow(['PCBA-A S/N', 'Product Name'])
+    ws.addRow([long, 'X'.repeat(201)])
+    ws.addRow([fine, 'QTX Pro'])
+    const bytes = new Uint8Array(await wb.xlsx.writeBuffer() as ArrayBuffer)
+    const { batchId } = await stageImportFile(mgr(), {
+      filename: 'toolong.xlsx', kind: 'xlsx', bytes, defaultVariantCode: 'pro' })
+
+    // Staging does not police column widths — the row is 'valid' data-wise; the
+    // limit is a property of the device table's write path.
+    expect(await listImportRows(mgr(), batchId, 'valid')).toHaveLength(2)
+
+    expect(await commitImportBatch(mgr(), { batchId }))
+      .toMatchObject({ committed: 1, failed: 1, skipped: 0 })
+
+    const { rows } = await db.query<{
+      status: string; device_id: string | null; errors: string[]; parsed: { productName: string } }>(
+      `SELECT status, device_id, errors, parsed FROM import_row WHERE batch_id=$1
+        ORDER BY source_row_no`, [batchId])
+    expect(rows[0].status).toBe('failed')
+    expect(rows[0].device_id).toBeNull()
+    expect(rows[0].errors[0]).toMatch(/Product Name/)
+    expect(rows[0].errors[0]).toMatch(/200 characters or fewer/)
+    // Not silently shortened: the draft still holds what the sheet said.
+    expect(rows[0].parsed.productName).toHaveLength(201)
+    expect(rows[1].status).toBe('committed')
+
+    // The whole row rolled back, components included.
+    expect((await db.query(
+      `SELECT 1 FROM component_unit WHERE serial_no=$1`, [long])).rows).toHaveLength(0)
+    // …and the message names a column, never a driver or a query.
+    expect(rows[0].errors.join(' ')).not.toMatch(/select|insert|postgres|zod/i)
+  })
+
   it('leaves invalid and needs_review rows alone', async () => {
     const { batchId } = await stage([
       [sn('A'), 'V1', 'B1', '1.0', '', 'Teleported', 'production'],
@@ -433,6 +477,36 @@ describe('listImportRows / skipImportRow / cancelImportBatch', () => {
       `SELECT 1 FROM component_unit WHERE serial_no=$1`, [a])).rows).toHaveLength(0)
   })
 
+  it('shows both the sheet cell and the serial each unit will actually create', async () => {
+    // A fanned row shares one `raw` across every unit it produced, so the review
+    // screen used to render fifteen identical rows all showing the *range* while
+    // the expanded serial — the one that becomes the permanent
+    // component_unit.serial_no — appeared nowhere before commit.
+    const range = `EE-A-${runTag}-R0001 to 0003`
+    const { batchId } = await stage([
+      [range, 'V1', 'B1', '1.0', '', 'in_stock', 'production'],
+      ['A-1 and A-2', 'V1', 'B1', '1.0', '', 'in_stock', 'production'],   // needs_review
+    ])
+
+    const valid = await listImportRows(mgr(), batchId, 'valid')
+    expect(valid).toHaveLength(3)
+    // The sheet cell is the range, repeated identically — deliberately kept.
+    expect(new Set(valid.map((r) => r.raw.pcba_a_sn))).toEqual(new Set([range]))
+    // The derived serials are what distinguishes the three units.
+    expect(valid.map((r) => r.derivedSerialNo)).toEqual([
+      `EE-A-${runTag}-R0001`.toUpperCase(),
+      `EE-A-${runTag}-R0002`.toUpperCase(),
+      `EE-A-${runTag}-R0003`.toUpperCase(),
+    ])
+
+    // A row with no draft has nothing to derive: `parsed` is NULL unless the row
+    // is 'valid', and the column must read blank rather than throw the page away.
+    const review = await listImportRows(mgr(), batchId, 'needs_review')
+    expect(review).toHaveLength(1)
+    expect(review[0].derivedSerialNo).toBeNull()
+    expect(review[0].raw.pcba_a_sn).toBe('A-1 and A-2')
+  })
+
   it('returns null for a batch that does not exist', async () => {
     expect(await getImportBatch(mgr(), '00000000-0000-0000-0000-000000000000')).toBeNull()
   })
@@ -440,6 +514,52 @@ describe('listImportRows / skipImportRow / cancelImportBatch', () => {
   it('treats a malformed batch id as not-found rather than a database error', async () => {
     expect(await getImportBatch(mgr(), 'not-a-uuid')).toBeNull()
     expect(await listImportRows(mgr(), 'not-a-uuid')).toEqual([])
+  })
+})
+
+describe('listImportBatches', () => {
+  it('refuses an actor without import_data', async () => {
+    await expect(listImportBatches(viewer())).rejects.toThrow(PermissionError)
+  })
+
+  it('lists batches newest first with their row counts', async () => {
+    // Why this exists: close the tab mid-commit and, without a listing, the batch
+    // is unreachable forever — resting at 'committing' with valid rows that
+    // retryFailedRows, MAX_COMMIT_PASSES and SKIP LOCKED all assume someone can
+    // come back to.
+    const first = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    const second = await stage([
+      [sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production'],
+      [sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production'],
+    ])
+    // Half-committed on purpose: this is the shape the listing has to surface.
+    expect(await commitImportBatch(mgr(), { batchId: second.batchId, limit: 1 }))
+      .toMatchObject({ committed: 1, remaining: 1 })
+    const third = await stage(
+      [['A-1 and A-2', 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+
+    // The three newest are these three, most recent first.
+    const mine = (await listImportBatches(mgr())).slice(0, 3)
+    expect(mine.map((b) => b.batchId))
+      .toEqual([third.batchId, second.batchId, first.batchId])
+    expect(mine[0]).toMatchObject({
+      filename: 'batch.xlsx', status: 'draft',
+      rowCount: 1, pendingCount: 0, committedCount: 0,   // the needs_review row
+    })
+    expect(mine[1]).toMatchObject({
+      status: 'committing', rowCount: 2, pendingCount: 1, committedCount: 1,
+    })
+    expect(mine[2]).toMatchObject({
+      status: 'draft', rowCount: 1, pendingCount: 1, committedCount: 0,
+    })
+    expect(mine[0].createdAt).toBeInstanceOf(Date)
+    expect(mine[0].createdAt.getTime()).toBeGreaterThanOrEqual(mine[1].createdAt.getTime())
+  })
+
+  it('honours an explicit limit and refuses a nonsensical one', async () => {
+    await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    expect(await listImportBatches(mgr(), 1)).toHaveLength(1)
+    await expect(listImportBatches(mgr(), 0)).rejects.toThrow()
   })
 })
 

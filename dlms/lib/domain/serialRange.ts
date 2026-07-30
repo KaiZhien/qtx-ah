@@ -1,5 +1,14 @@
 import { normalizeSerial } from '@/lib/domain/normalize'
 
+/*
+ * This module has a deliberate twin in the ops platform:
+ * modules/manufacturing/domain/serialRange.ts, copied rather than imported
+ * because the platform module may not reach into frozen /legacy code. A
+ * BEHAVIOURAL fix here — range notation, padding, the guards — belongs in both
+ * files, or the two import paths silently start expanding the same sheet
+ * differently.
+ */
+
 /**
  * Expand a serial or range string into individual normalized serials.
  *

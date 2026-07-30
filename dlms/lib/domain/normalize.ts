@@ -2,6 +2,13 @@
  * Single source of truth for serial normalization and date parsing (§5.1.5).
  * Used by BOTH the form/edit path and the CSV import path.
  * Any change here applies everywhere automatically.
+ *
+ * ...within the legacy app only. This file has a deliberate twin in the ops
+ * platform: modules/manufacturing/domain/sheetValues.ts, copied rather than
+ * imported because the platform module may not reach into frozen /legacy code.
+ * A BEHAVIOURAL fix here — date parsing, serial normalization — belongs in both
+ * files, or the two paths silently start reading the same spreadsheet
+ * differently.
  */
 
 /**

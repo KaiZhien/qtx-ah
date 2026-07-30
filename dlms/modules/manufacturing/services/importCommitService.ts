@@ -6,6 +6,7 @@ import type { ImportDeviceDraft } from '@/modules/manufacturing/domain/importMap
 import {
   IMPORT_ROW_PAGE_LIMIT, type ImportRowStatus,
 } from '@/modules/manufacturing/domain/importUi'
+import { DEVICE_FIELD_LIMITS } from '@/modules/manufacturing/services/deviceWriteService'
 
 // Declared in the domain module (a client component needs the list and must not
 // import this file), re-exported here so this service stays the one import site
@@ -21,7 +22,24 @@ export type ImportBatchSummary = {
 export type ImportRowView = {
   id: string; sourceRowNo: number; unitNo: number
   status: ImportRowStatus; errors: string[]
-  raw: Record<string, string>; deviceId: string | null
+  /**
+   * What the sheet said, verbatim and unexpanded — so `raw.pcba_a_sn` on a row
+   * that read "…0001 to 0015" is that whole range, shared by all fifteen units
+   * the row produced. Deliberately kept: the reviewer has to be able to see the
+   * cell they typed.
+   */
+  raw: Record<string, string>
+  /**
+   * What this unit will actually create: the serial of the draft's first
+   * component, i.e. the *expanded* PCBA-A serial that becomes the permanent
+   * component_unit.serial_no. Range expansion is the transformation most in
+   * need of a human eye in a traceability registry, and it is invisible in
+   * `raw`. Null whenever there is no draft to read it from — `parsed` is NULL
+   * unless the row is 'valid' (the column's contract) — or a stored draft is
+   * malformed.
+   */
+  derivedSerialNo: string | null
+  deviceId: string | null
 }
 
 const ZERO_COUNTS: Record<ImportRowStatus, number> = {
@@ -75,16 +93,91 @@ export async function listImportRows(
   return withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
       id: string; source_row_no: number; unit_no: number; status: ImportRowStatus
-      errors: string[]; raw: Record<string, string>; device_id: string | null
+      errors: string[]; raw: Record<string, string>; parsed: ImportDeviceDraft | null
+      device_id: string | null
     }>(
-      `SELECT id, source_row_no, unit_no, status, errors, raw, device_id
+      `SELECT id, source_row_no, unit_no, status, errors, raw, parsed, device_id
          FROM import_row
         WHERE batch_id = $1 AND ($2::text IS NULL OR status = $2)
         ORDER BY source_row_no, unit_no
         LIMIT $3`, [batchId, status ?? null, IMPORT_ROW_PAGE_LIMIT])
     return rows.map((r) => ({
       id: r.id, sourceRowNo: r.source_row_no, unitNo: r.unit_no, status: r.status,
-      errors: r.errors, raw: r.raw, deviceId: r.device_id,
+      errors: r.errors, raw: r.raw, derivedSerialNo: firstComponentSerial(r.parsed),
+      deviceId: r.device_id,
+    }))
+  })
+}
+
+/**
+ * The serial of a stored draft's first component, or null.
+ *
+ * Read defensively for the same reason readComponents is: `parsed` is jsonb an
+ * earlier pass wrote, and a review screen must render a malformed draft as a
+ * blank cell rather than throw the whole page away.
+ */
+function firstComponentSerial(parsed: ImportDeviceDraft | null): string | null {
+  const first = parsed?.components?.[0]
+  return first && typeof first.serialNo === 'string' ? first.serialNo : null
+}
+
+export type ImportBatchListItem = {
+  batchId: string; filename: string; status: string
+  createdAt: Date
+  /** Staged rows in total, and how many of them are still pending / already devices. */
+  rowCount: number; pendingCount: number; committedCount: number
+}
+
+/** How many batches the listing shows unless a caller asks for more. */
+const IMPORT_BATCH_LIST_LIMIT = 20
+
+const listLimitSchema = z.number().int().min(1).max(100).default(IMPORT_BATCH_LIST_LIMIT)
+
+/**
+ * The most recently uploaded batches, newest first.
+ *
+ * Exists so a batch is not lost with its URL. Everything about the commit path
+ * — `retryFailedRows`, MAX_COMMIT_PASSES, the 'committing' status, SKIP LOCKED —
+ * assumes someone can come back to a half-committed batch; without a listing,
+ * closing the tab mid-commit left it sitting at 'committing' with valid rows and
+ * no way to reach, resume or cancel it.
+ *
+ * Not scoped to the actor's own uploads: any importer may need to finish a batch
+ * the person who started it walked away from, which is the whole point.
+ *
+ * One query. The row counts come from a LEFT JOIN over the *already-limited*
+ * batches (so the aggregate never sweeps the whole staging table) rather than a
+ * count per batch, which would be one round trip per row rendered.
+ */
+export async function listImportBatches(
+  actor: Actor, limit?: number,
+): Promise<ImportBatchListItem[]> {
+  authorize(actor, 'import_data', 'manufacturing')
+  const n = listLimitSchema.parse(limit)
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{
+      id: string; source_filename: string; status: string; created_at: Date
+      total_n: string; pending_n: string; committed_n: string
+    }>(
+      `WITH recent AS (
+         SELECT id, source_filename, status, created_at
+           FROM import_batch
+          ORDER BY created_at DESC
+          LIMIT $1
+       )
+       SELECT b.id, b.source_filename, b.status, b.created_at,
+              count(r.id)::text                                     AS total_n,
+              count(r.id) FILTER (WHERE r.status='valid')::text      AS pending_n,
+              count(r.id) FILTER (WHERE r.status='committed')::text  AS committed_n
+         FROM recent b
+         LEFT JOIN import_row r ON r.batch_id = b.id
+        GROUP BY b.id, b.source_filename, b.status, b.created_at
+        ORDER BY b.created_at DESC`, [n])
+    return rows.map((r) => ({
+      batchId: r.id, filename: r.source_filename, status: r.status, createdAt: r.created_at,
+      rowCount: parseInt(r.total_n, 10),
+      pendingCount: parseInt(r.pending_n, 10),
+      committedCount: parseInt(r.committed_n, 10),
     }))
   })
 }
@@ -319,6 +412,87 @@ export async function commitImportBatch(
 type RowOutcome = 'committed' | 'not_pending'
 
 /**
+ * A staged draft the interactive write path would itself refuse. Its message is
+ * written here (a column label plus a limit), so it is safe to show a reviewer
+ * verbatim — see classifyRowError.
+ */
+class DraftValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DraftValidationError'
+  }
+}
+
+const TOO_LONG = (n: number) => `must be ${n.toLocaleString('en-US')} characters or fewer`
+
+/**
+ * What `device` will accept, applied to a draft read back out of jsonb.
+ *
+ * The interactive path caps every one of these columns (deviceWriteService's
+ * createSchema) while commitOneRow used to insert whatever the staged draft
+ * carried, so the two write paths disagreed about what a valid device row is and
+ * the import could seat a 50 KB product name. The limits are imported, not
+ * copied, so they cannot drift apart again.
+ *
+ * Nothing is transformed: a draft is rejected, never quietly truncated, because
+ * a silently shortened serial or customer name is a permanent traceability lie.
+ * Every text field is `nullish` rather than required — a draft is stored data
+ * that an older build may have written with a key missing, and that is a shape
+ * problem for readComponents/the insert to surface, not a length one.
+ *
+ * `components` is deliberately absent: readComponents already validates it, per
+ * row, before this point.
+ */
+const DRAFT_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must read YYYY-MM-DD')
+
+const draftSchema = z.object({
+  variantCode: z.string().min(1, 'is required'),
+  deviceSn: z.string().max(DEVICE_FIELD_LIMITS.deviceSn,
+    TOO_LONG(DEVICE_FIELD_LIMITS.deviceSn)).nullish(),
+  phase: z.string().max(DEVICE_FIELD_LIMITS.phase,
+    TOO_LONG(DEVICE_FIELD_LIMITS.phase)).nullish(),
+  productName: z.string().max(DEVICE_FIELD_LIMITS.productName,
+    TOO_LONG(DEVICE_FIELD_LIMITS.productName)).nullish(),
+  modelNo: z.string().max(DEVICE_FIELD_LIMITS.modelNo,
+    TOO_LONG(DEVICE_FIELD_LIMITS.modelNo)).nullish(),
+  customer: z.string().max(DEVICE_FIELD_LIMITS.customer,
+    TOO_LONG(DEVICE_FIELD_LIMITS.customer)).nullish(),
+  destination: z.string().max(DEVICE_FIELD_LIMITS.destination,
+    TOO_LONG(DEVICE_FIELD_LIMITS.destination)).nullish(),
+  remarks: z.string().max(DEVICE_FIELD_LIMITS.remarks,
+    TOO_LONG(DEVICE_FIELD_LIMITS.remarks)).nullish(),
+  buildDate: DRAFT_DATE.nullish(),
+  shipDate: DRAFT_DATE.nullish(),
+})
+
+/** Draft key → the sheet column a reviewer would go and fix. */
+const DRAFT_FIELD_LABELS: Record<string, string> = {
+  variantCode: 'Variant', deviceSn: 'Device S/N', phase: 'Phase',
+  productName: 'Product Name', modelNo: 'Model No.', customer: 'Customer',
+  destination: 'Destination', remarks: 'Remarks',
+  buildDate: 'Build Date', shipDate: 'Ship Date',
+}
+
+/**
+ * Check one staged draft against the device columns' own limits, or throw a
+ * DraftValidationError naming the offending sheet column.
+ *
+ * Row-level by construction: the throw happens inside commitOneRow's
+ * transaction, so it fails that row and nothing else (spec §7.5's per-row
+ * atomicity) — the pass carries on with the rest of the batch.
+ */
+function validateDraft(draft: ImportDeviceDraft): void {
+  const result = draftSchema.safeParse(draft)
+  if (result.success) return
+  const named = result.error.issues.map((issue) => {
+    const key = String(issue.path[0] ?? '')
+    return `${DRAFT_FIELD_LABELS[key] ?? key} ${issue.message}`
+  })
+  throw new DraftValidationError(
+    `This row's values are out of range: ${[...new Set(named)].join('; ')}`)
+}
+
+/**
  * One row → one device, its component units, and one open installation each —
  * atomically, including the staging row's own status stamp. If anything throws,
  * the device never existed.
@@ -352,6 +526,10 @@ async function commitOneRow(
     if (lockRows.length === 0) return 'not_pending'
     if (lockRows[0].status !== 'valid') return 'not_pending'
     if (!OPEN_BATCH_STATUSES.includes(lockRows[0].batch_status)) return 'not_pending'
+
+    // The staged draft must clear the same limits createDevice enforces before
+    // any of it reaches `device` — see validateDraft.
+    validateDraft(draft)
 
     const { rows: vRows } = await tx.query<{ id: string }>(
       `SELECT id FROM device_variant WHERE code=$1 AND active`, [draft.variantCode])
@@ -604,6 +782,10 @@ function classifyRowError(err: unknown): RowErrorOutcome {
   if (err instanceof PermissionError) {
     return { status: 'failed', unexpected: false,
              message: "You don't have permission to import a device at that status" }
+  }
+  // Message written by validateDraft: a sheet column and a limit, nothing internal.
+  if (err instanceof DraftValidationError) {
+    return { status: 'failed', unexpected: false, message: err.message }
   }
   if (err instanceof Error &&
       /Unknown or inactive|No initial device status|Unknown component type/.test(err.message)) {

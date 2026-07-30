@@ -4,22 +4,9 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { uploadImportAction } from '@/app/(platform)/manufacturing/import/actions'
 import type { VocabOption } from '@/modules/manufacturing/services/deviceReadService'
+import { MAX_UPLOAD_LABEL } from '@/modules/manufacturing/domain/importLimits'
+import { callFailed } from '@/components/manufacturing/importCallFailed'
 import { Button } from '@/components/ui/button'
-
-/**
- * A rejected action *invocation*: uploadImportAction never throws, but the call
- * itself can fail — a body-size rejection from the framework, a dropped
- * connection, a stale action id after a redeploy. Left uncaught, a rejection
- * inside startTransition's async callback is rethrown when the transition
- * unwraps it and escalates to the error boundary, replacing the whole page.
- * Logged structured and once, the way the actions log.
- */
-function callFailed(err: unknown): string {
-  console.error(JSON.stringify({
-    level: 'error', msg: 'import upload call failed', err: String(err),
-  }))
-  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
-}
 
 /**
  * The upload step. Deliberately a plain <form> posting FormData to a server
@@ -59,7 +46,7 @@ export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
             }
             setError(res.error)
           } catch (err) {
-            setError(callFailed(err))
+            setError(callFailed('upload', err))
           }
           setUploading(false)
         })
@@ -70,7 +57,12 @@ export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
         <input id="file" name="file" type="file" required
                accept=".xlsx,.csv"
                className="block w-full text-sm" />
-        <p className="text-muted-foreground text-xs">.xlsx or .csv, up to 4 MB.</p>
+        {/* The cap itself lives in importLimits.ts, which uploadImportAction
+            enforces — so this text cannot advertise a limit the action does not
+            apply. */}
+        <p className="text-muted-foreground text-xs">
+          .xlsx or .csv, up to {MAX_UPLOAD_LABEL}.
+        </p>
       </div>
 
       <div className="space-y-1">

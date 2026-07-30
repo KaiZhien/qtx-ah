@@ -10,18 +10,11 @@ import {
   commitImportBatch, skipImportRow, cancelImportBatch, retryFailedRows,
   type CommitResult,
 } from '@/modules/manufacturing/services/importCommitService'
+import {
+  MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL,
+} from '@/modules/manufacturing/domain/importLimits'
 
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string }
-
-/**
- * The upload cap, and the only place this number is decided. It is deliberately
- * the same 4 MB as `experimental.serverActions.bodySizeLimit` in
- * next.config.mjs and as ImportUploadForm's helper text: Next's own default is
- * 1 MB and Vercel's platform request limit is around 4.5 MB, so anything larger
- * here would advertise a cap the request could never actually reach. A few
- * thousand traceability rows is well under it.
- */
-const MAX_BYTES = 4 * 1024 * 1024
 
 /**
  * Single sanitization contract for every import action (mirrors
@@ -58,8 +51,14 @@ export async function uploadImportAction(
     if (!(file instanceof File) || file.size === 0) {
       return { ok: false, error: 'Choose a file to import.' }
     }
-    if (file.size > MAX_BYTES) {
-      return { ok: false, error: 'That file is larger than 4 MB — split it and import in parts.' }
+    // The cap and its wording both come from importLimits.ts, which the form's
+    // helper text reads too — so the advertised limit and the enforced one are
+    // one value.
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return {
+        ok: false,
+        error: `That file is larger than ${MAX_UPLOAD_LABEL} — split it and import in parts.`,
+      }
     }
     const lower = file.name.toLowerCase()
     const kind = lower.endsWith('.xlsx') ? 'xlsx' : lower.endsWith('.csv') ? 'csv' : null

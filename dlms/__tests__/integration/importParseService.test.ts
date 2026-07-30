@@ -806,4 +806,76 @@ describe('stageImportFile', () => {
     expect(rows[0].parsed.remarks).toBe('首批出货\nfirst batch')   // verbatim, newline kept
     expect(rows[1].parsed.remarks).toBe('second batch')
   })
+
+  // ── Fix wave F1: every documented header alias finds the header row ──
+
+  it('accepts documented header aliases and any casing of them', async () => {
+    const t = tag()
+    // Header detection used to require a cell to *contain* one of four
+    // hardcoded, case-sensitive literals ('Device S/N', 'PCBA-A S/N' and their
+    // Chinese forms) on top of resolving through COLUMN_ALIASES. Every sheet
+    // below carries a column this importer documents as an alias, and every one
+    // of them was rejected with "the sheet needs a 'Device S/N' or 'PCBA-A S/N'
+    // column header" — about a sheet that has exactly that column. Bilingual
+    // files passed only because the Chinese marker happened to match, which is
+    // why no earlier test caught it.
+    const noSlash = await stageImportFile(mgr(userId), {
+      filename: 'alias-pcba.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['PCBA-A SN'], [`EE-A-${t}-1901`]]),
+    })
+    expect([noSlash.rowCount, noSlash.valid]).toEqual([1, 1])
+
+    // 'Device SN' alone: the row is invalid (it carries no PCBA-A serial), which
+    // is the point — the header row itself was recognised rather than the whole
+    // sheet rejected as headerless.
+    const deviceNoSlash = await stageImportFile(mgr(userId), {
+      filename: 'alias-device.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['Device SN'], [`EE-D-${t}-1902`]]),
+    })
+    expect([deviceNoSlash.rowCount, deviceNoSlash.invalid]).toEqual([1, 1])
+
+    const shouty = await stageImportFile(mgr(userId), {
+      filename: 'alias-caps.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([['DEVICE S/N'], [`EE-D-${t}-1903`]]),
+    })
+    expect([shouty.rowCount, shouty.invalid]).toEqual([1, 1])
+
+    // And end to end: a mixed-case sheet whose columns both map, producing a
+    // committable draft rather than merely an accepted header row.
+    const mixed = await stageImportFile(mgr(userId), {
+      filename: 'alias-mixed.xlsx', kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([
+        ['device s/n', 'PCBA-A Sn'], [`EE-D-${t}-1904`, `EE-A-${t}-1904`]]),
+    })
+    expect([mixed.rowCount, mixed.valid]).toEqual([1, 1])
+    const { rows } = await db.query<{
+      parsed: { deviceSn: string; components: Array<{ serialNo: string }> } }>(
+      `SELECT parsed FROM import_row WHERE batch_id=$1`, [mixed.batchId])
+    expect(rows[0].parsed.deviceSn).toBe(`EE-D-${t}-1904`)
+    expect(rows[0].parsed.components[0].serialNo).toBe(`EE-A-${t}-1904`.toUpperCase())
+  })
+
+  // ── Fix wave F3: staging is bounded ──
+
+  it('refuses a file that expands past the staged-row cap, staging nothing', async () => {
+    const t = tag()
+    const filename = `toobig-${t}.xlsx`
+    // 11 rows at the largest expandable range (expandSerialRange caps one range
+    // at 5000 units) is 55,000 drafts — past MAX_STAGED_ROWS. Unbounded, a file
+    // like this is ~175 MB of live objects and then one transaction inserting all
+    // of them: a function timeout mid-commit rather than anything the uploader
+    // could act on. The cap trips during accumulation, so the memory is never
+    // spent, and it says what to do about it.
+    const rows = Array.from({ length: 11 }, (_, i) =>
+      ['', `EE-A-${t}-${i}-0001 to 5000`, 'V1', 'B1', '1.0', 'in_stock', 'production'])
+    await expect(stageImportFile(mgr(userId), {
+      filename, kind: 'xlsx', defaultVariantCode: 'pro',
+      bytes: await sheetBytes([HEADERS, ...rows]),
+    })).rejects.toThrow(/expands to more than 50,000 device rows/i)
+
+    const { rows: batches } = await db.query(
+      `SELECT 1 FROM import_batch WHERE source_filename=$1`, [filename])
+    expect(batches).toHaveLength(0)   // thrown before any transaction opened
+  })
+
 })
