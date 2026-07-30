@@ -1,14 +1,25 @@
 import { describe, it, expect } from 'vitest'
 import {
-  resolveHeader, mapHeaders, validateSheetRow,
+  resolveHeader, mapHeaders, resolveVocab, validateSheetRow,
   type ValidationContext,
 } from '@/modules/manufacturing/domain/importMapping'
 
 const ctx: ValidationContext = {
   defaultVariantCode: 'pro',
-  validVariantCodes: ['pro', 'basic'],
-  validStatusCodes: ['in_production', 'in_stock', 'shipped'],
-  validPhaseCodes: ['production', 'validation'],
+  variants: [
+    { code: 'pro', labels: ['Pro', 'Pro Model', '专业版'] },
+    { code: 'basic', labels: ['Basic', '基础版'] },
+  ],
+  statuses: [
+    { code: 'in_production', labels: ['In Production', '生产中'] },
+    { code: 'in_stock', labels: ['In Stock', '库存'] },
+    { code: 'shipped', labels: ['Shipped', '已发货'] },
+    { code: 'under_repair', labels: ['Under Repair', '维修中'] },
+  ],
+  phases: [
+    { code: 'production', labels: ['Production', '量产'] },
+    { code: 'validation', labels: ['Validation', '验证'] },
+  ],
 }
 
 const goodRow = () => ({
@@ -34,8 +45,28 @@ describe('resolveHeader', () => {
     expect(resolveHeader('Build Date (生产日期)')).toBe('build_date')
     expect(resolveHeader('Build Date（生产日期）')).toBe('build_date')
   })
+  it('matches a parenthesised alias followed by a fullwidth translation', () => {
+    expect(resolveHeader('HW Rev (A)（硬件版本）')).toBe('pcba_a_hw_rev')
+    expect(resolveHeader('BOM Rev (B)（BOM版本）')).toBe('pcba_b_bom_rev')
+    expect(resolveHeader('FW Ver (A)（固件版本）')).toBe('pcba_a_fw_ver')
+  })
+  it('matches a parenthesised alias above its translation', () => {
+    expect(resolveHeader('HW Rev (A)\n硬件版本(A)')).toBe('pcba_a_hw_rev')
+    expect(resolveHeader('FW Ver (B)\n固件版本(B)')).toBe('pcba_b_fw_ver')
+  })
   it('ignores whitespace around a header', () => {
     expect(resolveHeader('  Status  ')).toBe('status')
+  })
+  it('ignores header casing', () => {
+    expect(resolveHeader('status')).toBe('status')
+    expect(resolveHeader('STATUS')).toBe('status')
+    expect(resolveHeader('pcba-a s/n')).toBe('pcba_a_sn')
+    expect(resolveHeader('hw rev (a)（硬件版本）')).toBe('pcba_a_hw_rev')
+  })
+  it('recognises the Qty column in both languages', () => {
+    expect(resolveHeader('Qty')).toBe('qty')
+    expect(resolveHeader('数量')).toBe('qty')
+    expect(resolveHeader('Qty (数量)')).toBe('qty')
   })
   it('returns null for an unknown header', () => {
     expect(resolveHeader('Internal Notes')).toBeNull()
@@ -48,6 +79,37 @@ describe('mapHeaders', () => {
     const r = mapHeaders(['Device S/N', 'Internal Notes', 'Status'])
     expect(r.columns).toEqual(['device_sn', null, 'status'])
     expect(r.unmapped).toEqual(['Internal Notes'])
+  })
+})
+
+describe('resolveVocab', () => {
+  const statuses = ctx.statuses
+
+  it('matches a code exactly', () => {
+    expect(resolveVocab('in_stock', statuses)).toBe('in_stock')
+  })
+  it('matches a code case-insensitively', () => {
+    expect(resolveVocab('IN_STOCK', statuses)).toBe('in_stock')
+    expect(resolveVocab('In_Stock', statuses)).toBe('in_stock')
+  })
+  it('treats spaces and underscores as equivalent in a code', () => {
+    expect(resolveVocab('in stock', statuses)).toBe('in_stock')
+    expect(resolveVocab('IN STOCK', statuses)).toBe('in_stock')
+    expect(resolveVocab('  under repair  ', statuses)).toBe('under_repair')
+  })
+  it('matches a human label and returns the code', () => {
+    expect(resolveVocab('In Stock', statuses)).toBe('in_stock')
+    expect(resolveVocab('Under Repair', statuses)).toBe('under_repair')
+    expect(resolveVocab('under repair', statuses)).toBe('under_repair')
+    expect(resolveVocab('生产中', statuses)).toBe('in_production')
+  })
+  it('matches a multi-word label the code does not resemble', () => {
+    expect(resolveVocab('Pro Model', ctx.variants)).toBe('pro')
+  })
+  it('returns null when nothing matches', () => {
+    expect(resolveVocab('Teleported', statuses)).toBeNull()
+    expect(resolveVocab('', statuses)).toBeNull()
+    expect(resolveVocab('in_stock', [])).toBeNull()
   })
 })
 
@@ -117,6 +179,69 @@ describe('validateSheetRow — happy paths', () => {
   })
 })
 
+describe('validateSheetRow — vocabulary resolution', () => {
+  it('stores the status code when the sheet carries the human label', () => {
+    const [out] = validateSheetRow({ ...goodRow(), status: 'In Stock' }, ctx)
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.status).toBe('in_stock')
+  })
+
+  it('stores the phase code when the sheet carries the human label', () => {
+    const [out] = validateSheetRow({ ...goodRow(), phase: 'Validation' }, ctx)
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.phase).toBe('validation')
+  })
+
+  it('stores the variant code when the sheet carries the human label', () => {
+    const [out] = validateSheetRow({ ...goodRow(), variant: 'Pro Model' }, ctx)
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.variantCode).toBe('pro')
+  })
+
+  it('never stores the raw sheet text as a code', () => {
+    const [out] = validateSheetRow({ ...goodRow(), status: 'UNDER REPAIR' }, ctx)
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.status).toBe('under_repair')
+  })
+
+  it('resolves the context default variant through the vocabulary too', () => {
+    const [out] = validateSheetRow(goodRow(), { ...ctx, defaultVariantCode: 'Pro Model' })
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.variantCode).toBe('pro')
+  })
+
+  it('quotes the sheet text, not the normalized form, in the error', () => {
+    const [out] = validateSheetRow({ ...goodRow(), status: 'In Orbit' }, ctx)
+    expect(out.status).toBe('invalid')
+    expect(out.errors).toContain('Status "In Orbit" is not in the vocabulary')
+  })
+})
+
+describe('validateSheetRow — device serial', () => {
+  it('takes the device serial when the row produces one unit', () => {
+    const [out] = validateSheetRow({ ...goodRow(), device_sn: 'DEV-0001' }, ctx)
+    if (out.status !== 'valid') throw new Error('expected valid')
+    expect(out.parsed.deviceSn).toBe('DEV-0001')
+  })
+
+  it('leaves the device serial null on a fanned row that has no device_sn cell', () => {
+    const outs = validateSheetRow({ ...goodRow(), pcba_a_sn: 'A-0001 to 0002' }, ctx)
+    expect(outs).toHaveLength(2)
+    expect(outs.every((o) => o.status === 'valid' && o.parsed.deviceSn === null)).toBe(true)
+  })
+
+  it('routes a fanned row carrying a device serial to needs_review', () => {
+    const outs = validateSheetRow(
+      { ...goodRow(), pcba_a_sn: 'A-0001 to 0003', device_sn: 'DEV-0001' }, ctx)
+    expect(outs).toHaveLength(1)
+    const [out] = outs
+    expect(out.status).toBe('needs_review')
+    expect(out.unitNo).toBe(1)
+    expect(out.errors[0]).toBe(
+      'Device S/N "DEV-0001" cannot describe 3 devices — split this row into one per device, or clear the device serial')
+  })
+})
+
 describe('validateSheetRow — HMI screen handling', () => {
   it('componentises the screen when a serial is supplied', () => {
     const [out] = validateSheetRow({
@@ -141,6 +266,86 @@ describe('validateSheetRow — HMI screen handling', () => {
     const [out] = validateSheetRow({ ...goodRow(), remarks: 'note', screen_model: 'TK-070' }, ctx)
     if (out.status !== 'valid') throw new Error('expected valid')
     expect(out.parsed.remarks).toBe('note\nHMI: TK-070')
+  })
+
+  it('expands a ranged screen serial and zips it with the PCBA-A units', () => {
+    const outs = validateSheetRow({
+      ...goodRow(),
+      pcba_a_sn: 'A-0001 to 0003',
+      screen_sn: 'SCR-0001 to 0003',
+      screen_model: 'TK-070',
+      hmi_ver: '3.2',
+    }, ctx)
+    expect(outs).toHaveLength(3)
+    expect(outs.map((o) => (o.status === 'valid'
+      ? o.parsed.components.find((c) => c.typeCode === 'hmi_screen')?.serialNo
+      : null))).toEqual(['SCR-0001', 'SCR-0002', 'SCR-0003'])
+    const [first] = outs
+    if (first.status !== 'valid') throw new Error('expected valid')
+    expect(first.parsed.remarks).toBeNull()
+  })
+
+  it('marks the row needs_review when the screen and PCBA-A counts differ', () => {
+    const outs = validateSheetRow(
+      { ...goodRow(), pcba_a_sn: 'A-0001 to 0003', screen_sn: 'SCR-0001' }, ctx)
+    expect(outs).toHaveLength(1)
+    const [out] = outs
+    expect(out.status).toBe('needs_review')
+    expect(out.errors[0]).toBe(
+      'Screen (1) and PCBA-A (3) counts differ — fix this row manually')
+  })
+
+  it('marks the row needs_review when a wider screen range outnumbers PCBA-A', () => {
+    const [out] = validateSheetRow({ ...goodRow(), screen_sn: 'SCR-0001 to 0003' }, ctx)
+    expect(out.status).toBe('needs_review')
+    expect(out.errors[0]).toBe(
+      'Screen (3) and PCBA-A (1) counts differ — fix this row manually')
+  })
+
+  it('marks the row needs_review when the screen serial notation is ambiguous', () => {
+    const [out] = validateSheetRow(
+      { ...goodRow(), pcba_a_sn: 'A-0001 to 0003', screen_sn: 'SCR-1 and SCR-2' }, ctx)
+    expect(out.status).toBe('needs_review')
+    expect(out.errors[0]).toMatch(/^Screen: /)
+    expect(out.errors[0]).toMatch(/cannot be auto-expanded/)
+  })
+
+  it('keeps the remarks fallback on a fanned row with no screen serial', () => {
+    const outs = validateSheetRow({
+      ...goodRow(), pcba_a_sn: 'A-0001 to 0002', screen_model: 'TK-070', hmi_ver: '3.2',
+    }, ctx)
+    expect(outs).toHaveLength(2)
+    for (const out of outs) {
+      if (out.status !== 'valid') throw new Error('expected valid')
+      expect(out.parsed.components.map((c) => c.typeCode)).toEqual(['pcba_a'])
+      expect(out.parsed.remarks).toBe('HMI: TK-070 / 3.2')
+    }
+  })
+})
+
+describe('validateSheetRow — qty cross-check', () => {
+  it('accepts a qty that agrees with the expanded serial count', () => {
+    const outs = validateSheetRow(
+      { ...goodRow(), pcba_a_sn: 'A-0001 to 0003', qty: '3' }, ctx)
+    expect(outs).toHaveLength(3)
+    expect(outs.every((o) => o.status === 'valid')).toBe(true)
+  })
+
+  it('marks the row needs_review when qty disagrees with the expanded count', () => {
+    const outs = validateSheetRow(
+      { ...goodRow(), pcba_a_sn: 'A-0001 to 0003', qty: '2' }, ctx)
+    expect(outs).toHaveLength(1)
+    const [out] = outs
+    expect(out.status).toBe('needs_review')
+    expect(out.errors[0]).toBe('Qty (2) and expanded serial count (3) differ — fix this row manually')
+  })
+
+  it('ignores a blank, zero or non-numeric qty', () => {
+    for (const qty of ['', '   ', '0', 'many', '2 pcs']) {
+      const outs = validateSheetRow({ ...goodRow(), qty }, ctx)
+      expect(outs).toHaveLength(1)
+      expect(outs[0].status).toBe('valid')
+    }
   })
 })
 
@@ -196,6 +401,26 @@ describe('validateSheetRow — rejections', () => {
       { pcba_a_sn: 'A-1', status: 'Nope', phase: 'Nope' }, ctx)
     expect(out.status).toBe('invalid')
     expect(out.errors.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('reports the row errors alongside an unexpandable serial, expansion first', () => {
+    const [out] = validateSheetRow({
+      pcba_a_sn: 'A-1 and A-2', status: 'Nope', ship_date: '31/02/2026',
+    }, ctx)
+    expect(out.status).toBe('needs_review')
+    expect(out.errors).toHaveLength(3)
+    expect(out.errors[0]).toMatch(/cannot be auto-expanded/)
+    expect(out.errors).toContain('Status "Nope" is not in the vocabulary')
+    expect(out.errors.some((e) => e.startsWith('Ship Date: '))).toBe(true)
+  })
+
+  it('reports the row errors alongside a screen expansion failure too', () => {
+    const [out] = validateSheetRow({
+      ...goodRow(), screen_sn: 'SCR-1, SCR-2', phase: 'Nope',
+    }, ctx)
+    expect(out.status).toBe('needs_review')
+    expect(out.errors[0]).toMatch(/^Screen: /)
+    expect(out.errors).toContain('Phase "Nope" is not in the vocabulary')
   })
 
   it('returns nothing at all for a row with no serial and no content', () => {
