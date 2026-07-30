@@ -2078,6 +2078,39 @@ git add dlms/modules/manufacturing/services/importCommitService.ts dlms/__tests_
 git commit -m "feat(manufacturing): resumable per-row commit of staged imports"
 ```
 
+### Amendment after review: a `failed` row needs a way back
+
+Review established that the batch-state fixes make retrying *possible* but not *available*: the pending read selects `status = 'valid'`, so a row that failed for a fixable reason — the actor lacked `change_device_status`, or a status was deactivated between staging and commit — can never be re-attempted, even though the column's own comment documents `failed` as retryable. Widening the pending read to include `failed` is the wrong fix; it would silently re-attempt genuinely bad rows on every pass.
+
+Add one more export to `importCommitService.ts`, implemented as part of Task 6 (which builds the control that calls it):
+
+```ts
+/**
+ * Move a batch's failed rows back into the pending pool so a commit pass will
+ * retry them. Deliberately explicit rather than folded into the pending read:
+ * a row fails for a reason, and re-attempting it should be a decision someone
+ * makes after fixing that reason, not something every pass does automatically.
+ * Errors are cleared so a stale message can't outlive the condition it named.
+ */
+export async function retryFailedRows(
+  actor: Actor, batchId: string,
+): Promise<{ requeued: number }> {
+  authorize(actor, 'import_data', 'manufacturing')
+  if (!z.string().uuid().safeParse(batchId).success) return { requeued: 0 }
+  return withTransaction(actor.id, async (tx) => {
+    const { rowCount } = await tx.query(
+      `UPDATE import_row
+          SET status = 'valid', errors = '[]'::jsonb, updated_at = now()
+        WHERE batch_id = $1 AND status = 'failed' AND parsed IS NOT NULL`, [batchId])
+    return { requeued: rowCount ?? 0 }
+  })
+}
+```
+
+`parsed IS NOT NULL` matters: only a row that once validated can be committed, and it is the same precondition the pending read applies.
+
+Integration tests for it: a failed row is requeued and then commits on the next pass; `invalid`, `needs_review`, `skipped` and `committed` rows are left alone; and a malformed batch id returns `{ requeued: 0 }` rather than throwing.
+
 ---
 
 ## Task 6: Server actions and UI
@@ -2099,6 +2132,9 @@ git commit -m "feat(manufacturing): resumable per-row commit of staged imports"
   - `commitBatchAction(input: { batchId: string; limit?: number }): Promise<ActionResult<CommitResult>>`
   - `skipRowAction(input: { batchId: string; rowId: string }): Promise<ActionResult<null>>`
   - `cancelBatchAction(input: { batchId: string }): Promise<ActionResult<null>>`
+  - `retryFailedRowsAction(input: { batchId: string }): Promise<ActionResult<{ requeued: number }>>`
+
+  This task also implements `retryFailedRows` in `modules/manufacturing/services/importCommitService.ts` plus its integration tests — see the "Amendment after review" at the end of Task 5 for the exact code and test list. It is grouped here because this is the task that builds the control which calls it.
 
 **Constraints specific to this task:**
 - `actions.ts` is a `'use server'` file under `app/(platform)/`, so `__tests__/actionAalPinning.test.ts` will automatically include it: it **must** call `requireAal2Actor()` and must not mention `requireActor`.
@@ -2366,6 +2402,19 @@ export async function cancelBatchAction(
     return { ok: false, error: toMessage(err) }
   }
 }
+
+export async function retryFailedRowsAction(
+  input: { batchId: string },
+): Promise<ActionResult<{ requeued: number }>> {
+  try {
+    const actor = await requireAal2Actor()
+    const result = await retryFailedRows(actor, input.batchId)
+    revalidatePath(`/manufacturing/import/${input.batchId}`)
+    return { ok: true, data: result }
+  } catch (err) {
+    return { ok: false, error: toMessage(err) }
+  }
+}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -2525,6 +2574,7 @@ export default async function ImportBatchPage(
         batchId={batch.batchId}
         status={batch.status}
         pending={batch.counts.valid}
+        failed={batch.counts.failed}
       />
       <ImportReviewTable
         batchId={batch.batchId} rows={rows} active={active} counts={batch.counts} />
@@ -2540,11 +2590,15 @@ Create `components/manufacturing/ImportCommitPanel.tsx`:
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { commitBatchAction, cancelBatchAction } from '@/app/(platform)/manufacturing/import/actions'
+import {
+  commitBatchAction, cancelBatchAction, retryFailedRowsAction,
+} from '@/app/(platform)/manufacturing/import/actions'
 import { Button } from '@/components/ui/button'
 
 export function ImportCommitPanel(
-  { batchId, status, pending }: { batchId: string; status: string; pending: number },
+  { batchId, status, pending, failed }: {
+    batchId: string; status: string; pending: number; failed: number
+  },
 ) {
   const [message, setMessage] = useState<string | null>(null)
   const [busy, startTransition] = useTransition()
@@ -2579,6 +2633,24 @@ export function ImportCommitPanel(
       <Button onClick={runCommit} disabled={busy || done || pending === 0}>
         {busy ? 'Importing…' : `Import ${pending} device${pending === 1 ? '' : 's'}`}
       </Button>
+      {/* A row fails for a reason — a missing permission, a status deactivated
+          mid-import. Requeueing is explicit so it happens after someone fixes
+          that reason, rather than on every pass. */}
+      {failed > 0 && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => startTransition(async () => {
+            const res = await retryFailedRowsAction({ batchId })
+            setMessage(res.ok
+              ? `Requeued ${res.data.requeued} failed row${res.data.requeued === 1 ? '' : 's'} — import again to retry.`
+              : res.error)
+            router.refresh()
+          })}
+        >
+          Retry {failed} failed row{failed === 1 ? '' : 's'}
+        </Button>
+      )}
       <Button
         variant="outline"
         disabled={busy || done}
