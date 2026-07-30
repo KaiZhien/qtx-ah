@@ -1865,16 +1865,22 @@ export async function commitImportBatch(
 
   // Batched pre-check: serials already in the database are skipped without an
   // attempt, so an existing device never shows up as a scary "failed" row. One
-  // query for the whole page of rows, not one per row.
+  // query for the whole page of rows, not one per row. Keyed by component type
+  // as well as serial, because component_unit_sn is UNIQUE(component_type_id,
+  // serial_no) — the same serial under two different types is legal, and
+  // matching on the serial alone would wrongly skip a legitimate row.
   const alreadyPresent = await findExistingSerials(
-    actor, pending.flatMap((p) => p.parsed.components.map((c) => c.serialNo)))
+    actor,
+    pending.flatMap((p) => p.parsed.components.map(
+      (c) => ({ typeCode: c.typeCode, serialNo: c.serialNo }))))
 
   let committed = 0, failed = 0, skipped = 0
   for (const row of pending) {
-    const clash = row.parsed.components.find((c) => alreadyPresent.has(c.serialNo))
+    const clash = row.parsed.components.find(
+      (c) => alreadyPresent.has(`${c.typeCode}:${c.serialNo}`))
     if (clash) {
       await markRow(actor, row.id, 'skipped',
-        [`A component with serial "${clash.serialNo}" already exists`])
+        [`A ${clash.typeCode} component with serial "${clash.serialNo}" already exists`])
       skipped++
       continue
     }
@@ -1996,13 +2002,25 @@ async function resolveStatus(
   return requested
 }
 
-async function findExistingSerials(actor: Actor, serials: string[]): Promise<Set<string>> {
-  if (serials.length === 0) return new Set()
+/**
+ * Which of these (component type, serial) pairs already exist. Returns a set of
+ * `typeCode:serialNo` keys. Type-scoped on purpose: component_unit_sn is
+ * UNIQUE(component_type_id, serial_no), so a PCBA-B carrying the same serial as
+ * an existing PCBA-A is perfectly legal and must not be skipped.
+ */
+async function findExistingSerials(
+  actor: Actor, pairs: Array<{ typeCode: string; serialNo: string }>,
+): Promise<Set<string>> {
+  if (pairs.length === 0) return new Set()
   return withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{ serial_no: string }>(
-      `SELECT serial_no FROM component_unit
-        WHERE serial_no = ANY($1::text[]) AND deleted_at IS NULL`, [serials])
-    return new Set(rows.map((r) => r.serial_no))
+    const { rows } = await tx.query<{ code: string; serial_no: string }>(
+      `SELECT ct.code, cu.serial_no
+         FROM component_unit cu
+         JOIN component_type ct ON ct.id = cu.component_type_id
+        WHERE cu.deleted_at IS NULL
+          AND (ct.code, cu.serial_no) IN (SELECT * FROM unnest($1::text[], $2::text[]))`,
+      [pairs.map((p) => p.typeCode), pairs.map((p) => p.serialNo)])
+    return new Set(rows.map((r) => `${r.code}:${r.serial_no}`))
   })
 }
 
