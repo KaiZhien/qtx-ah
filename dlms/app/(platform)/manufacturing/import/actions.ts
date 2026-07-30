@@ -13,7 +13,15 @@ import {
 
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
-const MAX_BYTES = 10 * 1024 * 1024
+/**
+ * The upload cap, and the only place this number is decided. It is deliberately
+ * the same 4 MB as `experimental.serverActions.bodySizeLimit` in
+ * next.config.mjs and as ImportUploadForm's helper text: Next's own default is
+ * 1 MB and Vercel's platform request limit is around 4.5 MB, so anything larger
+ * here would advertise a cap the request could never actually reach. A few
+ * thousand traceability rows is well under it.
+ */
+const MAX_BYTES = 4 * 1024 * 1024
 
 /**
  * Single sanitization contract for every import action (mirrors
@@ -51,7 +59,7 @@ export async function uploadImportAction(
       return { ok: false, error: 'Choose a file to import.' }
     }
     if (file.size > MAX_BYTES) {
-      return { ok: false, error: 'That file is larger than 10 MB — split it and import in parts.' }
+      return { ok: false, error: 'That file is larger than 4 MB — split it and import in parts.' }
     }
     const lower = file.name.toLowerCase()
     const kind = lower.endsWith('.xlsx') ? 'xlsx' : lower.endsWith('.csv') ? 'csv' : null

@@ -472,6 +472,81 @@ describe('retryFailedRows', () => {
     expect(rows[0].status).toBe('shipped')
   })
 
+  it('re-opens a batch that a mixed pass had already stamped committed', async () => {
+    // The shape the retry route exists for, and the one a single-row batch can
+    // never reach: one row commits, another fails for a fixable reason, so no
+    // 'valid' rows remain AND something committed — which is exactly what earns
+    // the batch 'committed'. Requeueing alone left the row stranded: 'committed'
+    // is not an open status, so the next commit pass early-exits, the Import
+    // button is disabled and the row sits at 'valid' forever under a header that
+    // claims it is ready. The requeue must re-open the batch too.
+    //
+    // An empty Status cell seats the initial status, which importerNoStatus may
+    // set; 'shipped' is the one it may not.
+    const shippedSn = sn('A')
+    const { batchId } = await stage([
+      [sn('A'), 'V1', 'B1', '1.0', '', '', 'production'],
+      [shippedSn, 'V1', 'B1', '1.0', '', 'shipped', 'production'],
+    ])
+    expect(await commitImportBatch(importerNoStatus(), { batchId }))
+      .toMatchObject({ committed: 1, failed: 1, skipped: 0, remaining: 0 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('committed')
+
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 1 })
+    const after = (await getImportBatch(mgr(), batchId))!
+    expect(after.status).toBe('committing')      // open again: Import re-enables
+    expect(after.counts).toMatchObject({ valid: 1, committed: 1, failed: 0 })
+
+    // And the pass that follows actually commits the requeued row rather than
+    // early-exiting on a closed batch.
+    expect(await commitImportBatch(mgr(), { batchId }))
+      .toMatchObject({ committed: 1, failed: 0, skipped: 0, remaining: 0 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('committed')
+    const { rows } = await db.query<{ status: string }>(
+      `SELECT d.status FROM device d
+         JOIN component_installation ci ON ci.device_id = d.id
+         JOIN component_unit cu ON cu.id = ci.component_unit_id
+        WHERE cu.serial_no=$1`, [shippedSn])
+    expect(rows.map((r) => r.status)).toEqual(['shipped'])
+  })
+
+  it('does not re-open a cancelled batch', async () => {
+    // A retry must never resurrect a batch someone deliberately closed: the rows
+    // go back in the pending pool, but the batch stays cancelled and the commit
+    // pass still refuses it.
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'shipped', 'production']])
+    expect(await commitImportBatch(importerNoStatus(), { batchId }))
+      .toMatchObject({ committed: 0, failed: 1 })
+    await cancelImportBatch(mgr(), batchId)
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('cancelled')
+
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 1 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('cancelled')
+    expect(await commitImportBatch(mgr(), { batchId }))
+      .toMatchObject({ committed: 0, failed: 0, skipped: 0, remaining: 0 })
+  })
+
+  it('leaves a draft batch in draft when it requeues rows', async () => {
+    // The re-open is scoped to 'committed'. A batch that committed nothing stays
+    // 'draft' — still cancellable, and already open to a commit pass.
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'shipped', 'production']])
+    expect(await commitImportBatch(importerNoStatus(), { batchId }))
+      .toMatchObject({ committed: 0, failed: 1 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('draft')
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 1 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('draft')
+  })
+
+  it('leaves the batch status alone when there is nothing to requeue', async () => {
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    expect(await commitImportBatch(mgr(), { batchId })).toMatchObject({ committed: 1 })
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('committed')
+    expect(await retryFailedRows(mgr(), batchId)).toEqual({ requeued: 0 })
+    // No failed rows, so no re-open: a finished batch must not be dragged back
+    // to 'committing' by a Retry click on a batch with nothing to retry.
+    expect((await getImportBatch(mgr(), batchId))!.status).toBe('committed')
+  })
+
   it('leaves invalid, needs_review, skipped and committed rows alone', async () => {
     const { batchId } = await stage([
       [sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production'],        // → committed

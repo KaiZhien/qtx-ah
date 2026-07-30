@@ -54,6 +54,18 @@ describe('uploadImportAction', () => {
       filename: 'sheet.xlsx', kind: 'xlsx', defaultVariantCode: 'pro' }))
   })
 
+  it('hands the file\'s actual bytes to the service', async () => {
+    // objectContaining on filename/kind alone passes for an implementation that
+    // forwards empty bytes, which would stage an empty batch off a real file.
+    stageImportFile.mockResolvedValue({ batchId: 'b1', rowCount: 1, valid: 1,
+                                       invalid: 0, needsReview: 0, unmappedHeaders: [] })
+    const { uploadImportAction } = await load()
+    await uploadImportAction(fileForm('sheet.csv', 40))
+    const [, arg] = stageImportFile.mock.calls[0] as [unknown, { bytes: Uint8Array }]
+    expect(arg.bytes).toBeInstanceOf(Uint8Array)
+    expect(new TextDecoder().decode(arg.bytes)).toBe('x'.repeat(40))
+  })
+
   it('recognises a csv upload', async () => {
     stageImportFile.mockResolvedValue({ batchId: 'b2', rowCount: 1, valid: 1,
                                         invalid: 0, needsReview: 0, unmappedHeaders: [] })
@@ -69,18 +81,43 @@ describe('uploadImportAction', () => {
     expect(stageImportFile).not.toHaveBeenCalled()
   })
 
-  it('rejects a file over 10 MB without calling the service', async () => {
+  it('rejects a file over 4 MB without calling the service', async () => {
+    // 4 MB is the number next.config.mjs's serverActions.bodySizeLimit and the
+    // form's helper text both carry; asserting the copy pins all three together.
     const { uploadImportAction } = await load()
-    const res = await uploadImportAction(fileForm('big.xlsx', 10 * 1024 * 1024 + 1))
-    expect(res.ok).toBe(false)
+    const res = await uploadImportAction(fileForm('big.xlsx', 4 * 1024 * 1024 + 1))
+    expect(res).toEqual({
+      ok: false, error: 'That file is larger than 4 MB — split it and import in parts.' })
     expect(stageImportFile).not.toHaveBeenCalled()
+  })
+
+  it('accepts a file just under 4 MB', async () => {
+    stageImportFile.mockResolvedValue({ batchId: 'b1', rowCount: 1, valid: 1,
+                                       invalid: 0, needsReview: 0, unmappedHeaders: [] })
+    const { uploadImportAction } = await load()
+    expect((await uploadImportAction(fileForm('big.xlsx', 4 * 1024 * 1024))).ok).toBe(true)
   })
 
   it('rejects a missing file', async () => {
     const form = new FormData()
     form.set('variantCode', 'pro')
     const { uploadImportAction } = await load()
-    expect((await uploadImportAction(form)).ok).toBe(false)
+    expect(await uploadImportAction(form))
+      .toEqual({ ok: false, error: 'Choose a file to import.' })
+    expect(stageImportFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty file', async () => {
+    // A picked-then-emptied file, or a truncated upload: it has a name and a
+    // valid extension, so only the size arm catches it.
+    const form = new FormData()
+    form.set('variantCode', 'pro')
+    form.set('file', new File([], 'sheet.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+    const { uploadImportAction } = await load()
+    expect(await uploadImportAction(form))
+      .toEqual({ ok: false, error: 'Choose a file to import.' })
+    expect(stageImportFile).not.toHaveBeenCalled()
   })
 
   it('rejects a missing variant without calling the service', async () => {
@@ -171,15 +208,63 @@ describe('commitBatchAction / skipRowAction / cancelBatchAction', () => {
     expect(revalidatePath).toHaveBeenCalledWith('/manufacturing/import/b1')
   })
 
-  it('reports an expired MFA session in plain language', async () => {
+  // One MFA-expiry test per action, deliberately not one shared test.
+  // requireAal2Actor() must sit INSIDE each action's try so its MfaRequiredError
+  // becomes the friendly message rather than a throw that reaches the error
+  // boundary — this project has shipped that regression before, and
+  // actionAalPinning.test.ts only greps for the identifier, never its placement.
+  // Without a case per action, moving the guard above the try in any of these
+  // leaves the suite green.
+  const expireMfa = async () => {
     const { MfaRequiredError } = await import('@/modules/shared/auth/session')
     requireAal2Actor.mockRejectedValue(new MfaRequiredError())
+  }
+
+  it('reports an expired MFA session in plain language: commitBatchAction', async () => {
+    await expireMfa()
     const { commitBatchAction } = await load()
     const res = await commitBatchAction({ batchId: 'b1' })
     expect(res.ok).toBe(false)
     if (res.ok) throw new Error('unreachable')
     expect(res.error).toMatch(/Two-factor/)
     expect(commitImportBatch).not.toHaveBeenCalled()
+  })
+
+  it('reports an expired MFA session in plain language: skipRowAction', async () => {
+    await expireMfa()
+    const { skipRowAction } = await load()
+    const res = await skipRowAction({ batchId: 'b1', rowId: 'r1' })
+    expect(res.ok).toBe(false)
+    if (res.ok) throw new Error('unreachable')
+    expect(res.error).toMatch(/Two-factor/)
+    expect(skipImportRow).not.toHaveBeenCalled()
+  })
+
+  it('reports an expired MFA session in plain language: cancelBatchAction', async () => {
+    await expireMfa()
+    const { cancelBatchAction } = await load()
+    const res = await cancelBatchAction({ batchId: 'b1' })
+    expect(res.ok).toBe(false)
+    if (res.ok) throw new Error('unreachable')
+    expect(res.error).toMatch(/Two-factor/)
+    expect(cancelImportBatch).not.toHaveBeenCalled()
+  })
+
+  it('turns a skip permission failure into a friendly message, never a throw', async () => {
+    const { PermissionError } = await import('@/modules/shared/authz/authorize')
+    skipImportRow.mockRejectedValue(new PermissionError('import_data', 'manufacturing'))
+    const { skipRowAction } = await load()
+    expect(await skipRowAction({ batchId: 'b1', rowId: 'r1' }))
+      .toEqual({ ok: false, error: "You don't have permission to do that." })
+  })
+
+  it('never leaks an unexpected cancel error', async () => {
+    cancelImportBatch.mockRejectedValue(new Error('connect ECONNREFUSED 10.0.0.4:5432'))
+    const { cancelBatchAction } = await load()
+    const res = await cancelBatchAction({ batchId: 'b1' })
+    expect(res.ok).toBe(false)
+    if (res.ok) throw new Error('unreachable')
+    expect(res.error).not.toMatch(/ECONNREFUSED/)
   })
 })
 
@@ -208,5 +293,18 @@ describe('retryFailedRowsAction', () => {
     expect(res.ok).toBe(false)
     if (res.ok) throw new Error('unreachable')
     expect(res.error).not.toMatch(/ECONNREFUSED/)
+  })
+
+  // See the note above the commit/skip/cancel MFA cases: this pins
+  // requireAal2Actor INSIDE this action's try, which no grep-based test can.
+  it('reports an expired MFA session in plain language', async () => {
+    const { MfaRequiredError } = await import('@/modules/shared/auth/session')
+    requireAal2Actor.mockRejectedValue(new MfaRequiredError())
+    const { retryFailedRowsAction } = await load()
+    const res = await retryFailedRowsAction({ batchId: 'b1' })
+    expect(res.ok).toBe(false)
+    if (res.ok) throw new Error('unreachable')
+    expect(res.error).toMatch(/Two-factor/)
+    expect(retryFailedRows).not.toHaveBeenCalled()
   })
 })

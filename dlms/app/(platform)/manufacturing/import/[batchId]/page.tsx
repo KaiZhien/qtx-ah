@@ -2,21 +2,18 @@ import { notFound } from 'next/navigation'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import {
-  getImportBatch, listImportRows, type ImportRowStatus,
+  getImportBatch, listImportRows,
 } from '@/modules/manufacturing/services/importCommitService'
+import { resolveRowStatus } from '@/modules/manufacturing/domain/importUi'
 import { ImportReviewTable } from '@/components/manufacturing/ImportReviewTable'
 import { ImportCommitPanel } from '@/components/manufacturing/ImportCommitPanel'
 
 export const dynamic = 'force-dynamic'
 
-const ROW_STATUSES = [
-  'valid', 'needs_review', 'invalid', 'committed', 'skipped', 'failed',
-] as const satisfies readonly ImportRowStatus[]
-
 export default async function ImportBatchPage(
   { params, searchParams }: {
     params: { batchId: string }
-    searchParams: { status?: string }
+    searchParams: { status?: string | string[] }
   },
 ) {
   const actor = await requireActor()
@@ -25,13 +22,13 @@ export default async function ImportBatchPage(
   const batch = await getImportBatch(actor, params.batchId)
   if (!batch) notFound()
 
-  // One status at a time, filtered in SQL. listImportRows caps at 2000 rows, so
+  // One status at a time, filtered in SQL. listImportRows caps its page, so
   // loading the whole batch and filtering client-side would silently hide rows
   // on a large file — and the counts the tabs show come from getImportBatch's
-  // GROUP BY, which is exact regardless of the cap.
-  const active = (ROW_STATUSES as readonly string[]).includes(searchParams.status ?? '')
-    ? (searchParams.status as (typeof ROW_STATUSES)[number])
-    : 'valid'
+  // GROUP BY, which is exact regardless of the cap. resolveRowStatus owns the
+  // allowlist-plus-fallback (unit-tested; the parameter is attacker-controlled
+  // and Next hands back an array for a repeated key).
+  const active = resolveRowStatus(searchParams.status)
   const rows = await listImportRows(actor, params.batchId, active)
 
   return (

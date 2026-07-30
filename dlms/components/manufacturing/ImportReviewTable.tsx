@@ -1,10 +1,13 @@
 'use client'
 
-import { useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { skipRowAction } from '@/app/(platform)/manufacturing/import/actions'
 import type { ImportRowView } from '@/modules/manufacturing/services/importCommitService'
+import {
+  IMPORT_ROW_PAGE_LIMIT, type ImportRowStatus,
+} from '@/modules/manufacturing/domain/importUi'
 import { Button } from '@/components/ui/button'
 
 const TABS = [
@@ -14,17 +17,37 @@ const TABS = [
   { key: 'committed', label: 'Imported' },
   { key: 'skipped', label: 'Skipped' },
   { key: 'failed', label: 'Failed' },
-] as const
+] as const satisfies readonly { key: ImportRowStatus; label: string }[]
+
+/**
+ * A rejected action *invocation*: skipRowAction never throws, but the call
+ * itself can fail — a dropped connection, a stale action id after a redeploy.
+ * Left uncaught, a rejection inside startTransition's async callback is rethrown
+ * when the transition unwraps it and escalates to the error boundary, replacing
+ * the whole review page. Logged structured and once, the way the actions log.
+ */
+function callFailed(err: unknown): string {
+  console.error(JSON.stringify({
+    level: 'error', msg: 'import skip call failed', err: String(err),
+  }))
+  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
+}
 
 export function ImportReviewTable(
   { batchId, rows, active, counts }: {
     batchId: string
     rows: ImportRowView[]
-    active: string
-    counts: Record<string, number>
+    // Typed as the status union rather than string, so a typo'd tab key is a
+    // compile error instead of a tab that quietly renders "(0)".
+    active: ImportRowStatus
+    counts: Record<ImportRowStatus, number>
   },
 ) {
   const [, startTransition] = useTransition()
+  // Skip is the only write this table has, so swallowing its result made an
+  // expired MFA session, a revoked permission or a validation refusal all look
+  // like "nothing happened".
+  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
   const shown = rows
 
@@ -40,17 +63,22 @@ export function ImportReviewTable(
             className={`rounded-md border px-3 py-1 text-sm ${
               active === t.key ? 'bg-muted font-medium' : 'bg-white'}`}
           >
-            {t.label} ({counts[t.key] ?? 0})
+            {t.label} ({counts[t.key]})
           </Link>
         ))}
       </div>
-      {/* listImportRows caps at 2000; the counts are exact, so say so rather
-          than letting the table quietly look like the whole story. */}
-      {counts[active] > shown.length && (
+      {/* Keyed off the row count hitting listImportRows' cap, NOT off
+          counts[active] > shown.length: the counts and the rows come from two
+          separate transactions, so a concurrent skip landing between them makes
+          the count larger than the rows on a batch of three and the note fires
+          claiming a truncation that never happened. */}
+      {shown.length >= IMPORT_ROW_PAGE_LIMIT && (
         <p className="text-muted-foreground text-sm">
           Showing the first {shown.length} of {counts[active]} rows.
         </p>
       )}
+
+      {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
 
       <div className="overflow-x-auto rounded-lg border bg-white">
         <table className="w-full text-sm">
@@ -72,6 +100,8 @@ export function ImportReviewTable(
             {shown.map((r) => (
               <tr key={r.id} className="border-t">
                 <td className="p-2">{r.sourceRowNo}{r.unitNo > 1 ? `.${r.unitNo}` : ''}</td>
+                {/* `||`, not `??`: raw cells are strings, and a blank one should
+                    render the dash rather than an empty column. */}
                 <td className="p-2 font-mono text-xs">{r.raw.pcba_a_sn || '—'}</td>
                 <td className="p-2">{r.raw.status || '—'}</td>
                 <td className="p-2">
@@ -85,10 +115,18 @@ export function ImportReviewTable(
                   {r.status !== 'committed' && r.status !== 'skipped' && (
                     <Button
                       variant="ghost" size="sm"
-                      onClick={() => startTransition(async () => {
-                        await skipRowAction({ batchId, rowId: r.id })
-                        router.refresh()
-                      })}
+                      onClick={() => {
+                        setError(null)
+                        startTransition(async () => {
+                          try {
+                            const res = await skipRowAction({ batchId, rowId: r.id })
+                            if (!res.ok) { setError(res.error); return }
+                            router.refresh()
+                          } catch (err) {
+                            setError(callFailed(err))
+                          }
+                        })
+                      }}
                     >
                       Skip
                     </Button>

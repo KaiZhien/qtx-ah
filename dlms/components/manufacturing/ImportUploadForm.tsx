@@ -7,6 +7,21 @@ import type { VocabOption } from '@/modules/manufacturing/services/deviceReadSer
 import { Button } from '@/components/ui/button'
 
 /**
+ * A rejected action *invocation*: uploadImportAction never throws, but the call
+ * itself can fail — a body-size rejection from the framework, a dropped
+ * connection, a stale action id after a redeploy. Left uncaught, a rejection
+ * inside startTransition's async callback is rethrown when the transition
+ * unwraps it and escalates to the error boundary, replacing the whole page.
+ * Logged structured and once, the way the actions log.
+ */
+function callFailed(err: unknown): string {
+  console.error(JSON.stringify({
+    level: 'error', msg: 'import upload call failed', err: String(err),
+  }))
+  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
+}
+
+/**
  * The upload step. Deliberately a plain <form> posting FormData to a server
  * action: the file bytes are parsed server-side, so the browser never needs a
  * spreadsheet parser and never decides what a row means.
@@ -16,10 +31,14 @@ import { Button } from '@/components/ui/button'
  */
 export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
   const [error, setError] = useState<string | null>(null)
-  // React 18's useTransition drops isPending as soon as the callback's first
-  // await yields, so it cannot keep the button disabled while the file is being
-  // parsed server-side. An explicit flag can — and must, because a second
-  // submit would stage the same spreadsheet as a second batch.
+  // An explicit busy flag on top of useTransition's isPending, because the two
+  // stop being true at different moments. isPending is held across the async
+  // callback and drops when it settles — but on success it settles while
+  // router.push is still in flight, with the file still sitting in the input, so
+  // Submit would re-enable inside the very window this flag exists to close and
+  // a second click would stage the same spreadsheet as a second batch. This flag
+  // is therefore cleared only on the failure path; a successful navigation
+  // unmounts the form and takes it with it.
   const [uploading, setUploading] = useState(false)
   const [transitioning, startTransition] = useTransition()
   const pending = uploading || transitioning
@@ -34,11 +53,15 @@ export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
         startTransition(async () => {
           try {
             const res = await uploadImportAction(form)
-            if (res.ok) router.push(`/manufacturing/import/${res.data.batchId}`)
-            else setError(res.error)
-          } finally {
-            setUploading(false)
+            if (res.ok) {
+              router.push(`/manufacturing/import/${res.data.batchId}`)
+              return              // see `uploading` above: deliberately still set
+            }
+            setError(res.error)
+          } catch (err) {
+            setError(callFailed(err))
           }
+          setUploading(false)
         })
       }}
     >
@@ -47,7 +70,7 @@ export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
         <input id="file" name="file" type="file" required
                accept=".xlsx,.csv"
                className="block w-full text-sm" />
-        <p className="text-muted-foreground text-xs">.xlsx or .csv, up to 10 MB.</p>
+        <p className="text-muted-foreground text-xs">.xlsx or .csv, up to 4 MB.</p>
       </div>
 
       <div className="space-y-1">

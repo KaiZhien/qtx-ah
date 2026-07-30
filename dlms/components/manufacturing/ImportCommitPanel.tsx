@@ -5,7 +5,40 @@ import { useRouter } from 'next/navigation'
 import {
   commitBatchAction, cancelBatchAction, retryFailedRowsAction,
 } from '@/app/(platform)/manufacturing/import/actions'
+import {
+  advanceCommit, ZERO_COMMIT_TOTALS, MAX_COMMIT_PASSES,
+  type CommitTotals, type CommitStop,
+} from '@/modules/manufacturing/domain/importUi'
 import { Button } from '@/components/ui/button'
+
+/**
+ * A rejected action *invocation*: the actions never throw, but the call itself
+ * can fail — a dropped connection mid-loop, a stale action id after a redeploy.
+ * Left uncaught, a rejection inside startTransition's async callback is rethrown
+ * when the transition unwraps it and escalates to the error boundary, which
+ * would replace the page halfway through a commit. Logged structured and once,
+ * the way the actions log.
+ */
+function callFailed(err: unknown): string {
+  console.error(JSON.stringify({
+    level: 'error', msg: 'import commit call failed', err: String(err),
+  }))
+  return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
+}
+
+const tally = (t: CommitTotals) =>
+  `Imported ${t.committed} · skipped ${t.skipped} · failed ${t.failed}`
+
+/** What the loop says when it finishes on its own terms. */
+function stopMessage(stop: CommitStop, totals: CommitTotals): string {
+  if (stop === 'complete') return tally(totals)
+  if (stop === 'stalled') {
+    return `${tally(totals)}. Some rows are still pending — another import may be `
+      + 'running on this batch. Refresh and try again.'
+  }
+  return `${tally(totals)}. Stopped after ${MAX_COMMIT_PASSES} passes with rows still `
+    + 'pending — start the import again to continue.'
+}
 
 export function ImportCommitPanel(
   { batchId, status, pending, failed }: {
@@ -13,14 +46,18 @@ export function ImportCommitPanel(
   },
 ) {
   const [message, setMessage] = useState<string | null>(null)
-  // React 18's useTransition drops isPending at the callback's first await, so
-  // it cannot hold these buttons disabled across a multi-pass commit. An
-  // explicit flag can: without it the Import button re-enables one round trip
-  // in and a second click starts an overlapping pass, whose interleaved counts
-  // would be reported as one confusing total.
+  // An explicit busy flag on top of useTransition's isPending: isPending is held
+  // across an async transition callback, but a multi-pass commit is several
+  // sequential action calls and this flag is what keeps all three controls
+  // disabled for the whole run rather than per call. Without it a second click
+  // starts an overlapping pass, whose interleaved counts get reported as one
+  // confusing total.
   const [inFlight, setInFlight] = useState(false)
   const [transitioning, startTransition] = useTransition()
   const busy = inFlight || transitioning
+  // Cancelling is a one-way transition on a single click, so it takes two: the
+  // first click arms the button, the second fires it.
+  const [cancelArmed, setCancelArmed] = useState(false)
   const router = useRouter()
 
   const done = status === 'committed' || status === 'cancelled'
@@ -40,20 +77,32 @@ export function ImportCommitPanel(
 
   // Commit in pages of 200 and keep going while rows remain: one round trip per
   // page keeps each server action well inside its time budget on a large file.
+  // What to accumulate and when to stop is advanceCommit's decision — pure, and
+  // unit-tested for the terminate-on-no-progress and pass-cap arms.
   const runCommit = () => {
     setMessage(null)
+    setCancelArmed(false)
     run(async () => {
-      let committed = 0, failedRows = 0, skipped = 0
+      let totals = ZERO_COMMIT_TOTALS
       for (;;) {
-        const res = await commitBatchAction({ batchId, limit: 200 })
-        if (!res.ok) { setMessage(res.error); break }
-        committed += res.data.committed
-        failedRows += res.data.failed
-        skipped += res.data.skipped
-        if (res.data.remaining === 0 ||
-            res.data.committed + res.data.failed + res.data.skipped === 0) {
-          setMessage(`Imported ${committed} · skipped ${skipped} · failed ${failedRows}`)
-          break
+        let res: Awaited<ReturnType<typeof commitBatchAction>>
+        try {
+          res = await commitBatchAction({ batchId, limit: 200 })
+        } catch (err) {
+          // Whatever already committed is committed — say so, or 400 imported
+          // rows read as "nothing happened".
+          setMessage(`${callFailed(err)} ${tally(totals)} before this.`)
+          return
+        }
+        if (!res.ok) {
+          setMessage(`${res.error} ${tally(totals)} before this.`)
+          return
+        }
+        const step = advanceCommit(totals, res.data)
+        totals = step.totals
+        if (step.stop !== null) {
+          setMessage(stopMessage(step.stop, totals))
+          return
         }
       }
     })
@@ -73,27 +122,47 @@ export function ImportCommitPanel(
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() => run(async () => {
-            const res = await retryFailedRowsAction({ batchId })
-            setMessage(res.ok
-              ? `Requeued ${res.data.requeued} failed row${res.data.requeued === 1 ? '' : 's'} — import again to retry.`
-              : res.error)
-          })}
+          onClick={() => {
+            setCancelArmed(false)
+            run(async () => {
+              try {
+                const res = await retryFailedRowsAction({ batchId })
+                setMessage(res.ok
+                  ? `Requeued ${res.data.requeued} failed row${res.data.requeued === 1 ? '' : 's'} — import again to retry.`
+                  : res.error)
+              } catch (err) {
+                setMessage(callFailed(err))
+              }
+            })
+          }}
         >
           Retry {failed} failed row{failed === 1 ? '' : 's'}
         </Button>
       )}
       <Button
-        variant="outline"
+        variant="destructive"
         disabled={busy || done}
-        onClick={() => run(async () => {
-          const res = await cancelBatchAction({ batchId })
-          if (!res.ok) setMessage(res.error)
-        })}
+        onClick={() => {
+          if (!cancelArmed) {
+            setCancelArmed(true)
+            setMessage('Cancelling closes this batch for good — click again to confirm.')
+            return
+          }
+          setCancelArmed(false)
+          setMessage(null)
+          run(async () => {
+            try {
+              const res = await cancelBatchAction({ batchId })
+              if (!res.ok) setMessage(res.error)
+            } catch (err) {
+              setMessage(callFailed(err))
+            }
+          })
+        }}
       >
-        Cancel batch
+        {cancelArmed ? 'Confirm cancel' : 'Cancel batch'}
       </Button>
-      {message && <p className="text-sm">{message}</p>}
+      {message && <p role="alert" className="text-sm">{message}</p>}
     </div>
   )
 }

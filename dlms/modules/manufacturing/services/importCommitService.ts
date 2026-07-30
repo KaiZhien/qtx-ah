@@ -3,9 +3,14 @@ import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize, PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import type { ImportDeviceDraft } from '@/modules/manufacturing/domain/importMapping'
+import {
+  IMPORT_ROW_PAGE_LIMIT, type ImportRowStatus,
+} from '@/modules/manufacturing/domain/importUi'
 
-export type ImportRowStatus =
-  'valid' | 'invalid' | 'needs_review' | 'committed' | 'skipped' | 'failed'
+// Declared in the domain module (a client component needs the list and must not
+// import this file), re-exported here so this service stays the one import site
+// callers already use.
+export type { ImportRowStatus }
 
 export type ImportBatchSummary = {
   batchId: string; filename: string; status: string
@@ -76,7 +81,7 @@ export async function listImportRows(
          FROM import_row
         WHERE batch_id = $1 AND ($2::text IS NULL OR status = $2)
         ORDER BY source_row_no, unit_no
-        LIMIT 2000`, [batchId, status ?? null])
+        LIMIT $3`, [batchId, status ?? null, IMPORT_ROW_PAGE_LIMIT])
     return rows.map((r) => ({
       id: r.id, sourceRowNo: r.source_row_no, unitNo: r.unit_no, status: r.status,
       errors: r.errors, raw: r.raw, deviceId: r.device_id,
@@ -130,6 +135,16 @@ export async function cancelImportBatch(actor: Actor, batchId: string): Promise<
  * a row fails for a reason, and re-attempting it should be a decision someone
  * makes after fixing that reason, not something every pass does automatically.
  * Errors are cleared so a stale message can't outlive the condition it named.
+ *
+ * Requeueing also re-opens a batch that had already been stamped 'committed',
+ * in this same transaction. A mixed pass — some rows committed, one refused for
+ * a missing permission — leaves no 'valid' rows and at least one committed row,
+ * which is exactly the shape that earns 'committed'. Without this the requeued
+ * row was stranded: 'committed' is not an open status, so commitImportBatch
+ * early-exits, the Import button is disabled, and the row sits at 'valid'
+ * forever while the header claims it is ready. Scoped to 'committed' on purpose
+ * — a 'cancelled' batch must never be resurrected by a retry, and draft /
+ * committing batches are already open.
  */
 export async function retryFailedRows(
   actor: Actor, batchId: string,
@@ -143,7 +158,14 @@ export async function retryFailedRows(
       `UPDATE import_row
           SET status = 'valid', errors = '[]'::jsonb, updated_at = now()
         WHERE batch_id = $1 AND status = 'failed' AND parsed IS NOT NULL`, [batchId])
-    return { requeued: rowCount ?? 0 }
+    const requeued = rowCount ?? 0
+    if (requeued > 0) {
+      await tx.query(
+        `UPDATE import_batch
+            SET status='committing', updated_at=now(), updated_by=$1, version=version+1
+          WHERE id=$2 AND status='committed'`, [actor.id, batchId])
+    }
+    return { requeued }
   })
 }
 
