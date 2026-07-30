@@ -89,3 +89,15 @@ SELECT 'reetmitra8@gmail.com', 'Reet Mitra', r.id, 'Engineering',
        true
 FROM role r WHERE r.key = 'super_admin'
 ON CONFLICT DO NOTHING;
+
+-- The outbox drain's automation principal (spec §5.5) — the second of the function's
+-- two required call sites. It MUST stay here and not be inlined: 20260731000000_platform_outbox.sql
+-- defines and also calls fn_seed_system_actor(), but that call is a no-op on a
+-- from-scratch database because migrations are applied before this seed and the
+-- function's `operator` role does not exist yet. This call is what actually creates the
+-- principal in dev, CI and any rebuilt database; the migration's call covers the cloud
+-- project, where the roles below already existed when it applied. Both are idempotent,
+-- so whichever runs second does nothing. See that migration's header before removing
+-- either one. Must stay AFTER the role_permission inserts above: the function derives
+-- the principal's revocation rows from the operator role's grants.
+SELECT fn_seed_system_actor();
