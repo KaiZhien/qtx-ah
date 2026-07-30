@@ -8,7 +8,9 @@ const TITLE_MAX = 200
 const DESCRIPTION_MAX = 5000
 
 const ctx = (over: Partial<HandoffContext> = {}): HandoffContext => ({
+  deviceId: '11111111-1111-4111-8111-111111111111',
   deviceSn: 'QTX-P-00412',
+  pcbaASnLegacy: null,
   fromStatus: 'ready_for_delivery',
   toStatus: 'shipped',
   reason: null,
@@ -46,19 +48,68 @@ describe('logistics_prepare_delivery', () => {
     expect(task.description.trim().endsWith('.')).toBe(true)
   })
 
-  it('falls back to a usable identity when device_sn is null — never renders "null"', () => {
-    const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(ctx({ deviceSn: null }))
-    expect(task.title.toLowerCase()).not.toContain('null')
-    expect(task.title.toLowerCase()).not.toContain('undefined')
-    expect(task.title.length).toBeGreaterThan(0)
-    expect(task.description.toLowerCase()).not.toContain('null')
-    expect(task.description.toLowerCase()).not.toContain('undefined')
-  })
+  describe('device identity fallback (deviceSn -> pcbaASnLegacy -> deviceId)', () => {
+    it('tier 1: uses deviceSn when present, even if pcbaASnLegacy is also present', () => {
+      const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ deviceSn: 'QTX-P-00412', pcbaASnLegacy: 'EE-02A-2603-0001' }),
+      )
+      expect(task.title).toContain('QTX-P-00412')
+      expect(task.title).not.toContain('EE-02A-2603-0001')
+    })
 
-  it('falls back the same way when device_sn is an empty/blank string', () => {
-    const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(ctx({ deviceSn: '   ' }))
-    expect(task.title.toLowerCase()).not.toContain('null')
-    expect(task.title.trim().length).toBeGreaterThan(0)
+    it('tier 2: falls back to pcbaASnLegacy, rendered verbatim, when deviceSn is null', () => {
+      const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ deviceSn: null, pcbaASnLegacy: 'EE-02A-2603-0001 to 0015' }),
+      )
+      expect(task.title).toContain('EE-02A-2603-0001 to 0015')
+      expect(task.description).toContain('EE-02A-2603-0001 to 0015')
+    })
+
+    it('tier 2 also applies when deviceSn is blank/whitespace rather than null', () => {
+      const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ deviceSn: '   ', pcbaASnLegacy: 'EE-02A-2603-0001' }),
+      )
+      expect(task.title).toContain('EE-02A-2603-0001')
+    })
+
+    it('tier 3: falls back to a short prefix of deviceId when neither serial is present — never renders "null"', () => {
+      const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ deviceId: '11111111-1111-4111-8111-111111111111', deviceSn: null, pcbaASnLegacy: null }),
+      )
+      expect(task.title.toLowerCase()).not.toContain('null')
+      expect(task.title.toLowerCase()).not.toContain('undefined')
+      expect(task.title.length).toBeGreaterThan(0)
+      expect(task.title).toContain('11111111')
+      expect(task.description.toLowerCase()).not.toContain('null')
+      expect(task.description.toLowerCase()).not.toContain('undefined')
+    })
+
+    it('tier 3 also applies when both deviceSn and pcbaASnLegacy are blank/whitespace strings', () => {
+      const task = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ deviceSn: '   ', pcbaASnLegacy: '  ' }),
+      )
+      expect(task.title.toLowerCase()).not.toContain('null')
+      expect(task.title.trim().length).toBeGreaterThan(0)
+    })
+
+    it('two devices with no serial of any kind still produce different titles — the property this fix exists for', () => {
+      // Every other field matches, only deviceId differs. Before this fix, both
+      // would render the identical fixed literal ('device with no serial on
+      // file'), making a logistics queue of such tasks indistinguishable at a
+      // glance even though each task links to a different device.
+      const shared = {
+        deviceSn: null, pcbaASnLegacy: null, fromStatus: 'ready_for_delivery',
+        toStatus: 'shipped', reason: null, changedByName: 'Alice Tan',
+      } as const
+      const taskA = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ ...shared, deviceId: 'aaaaaaaa-1111-4111-8111-111111111111' }),
+      )
+      const taskB = HANDOFF_TEMPLATES.logistics_prepare_delivery(
+        ctx({ ...shared, deviceId: 'bbbbbbbb-2222-4222-8222-222222222222' }),
+      )
+      expect(taskA.title).not.toBe(taskB.title)
+      expect(taskA.description).not.toBe(taskB.description)
+    })
   })
 
   it('never exceeds the title length createTask enforces (1-200), even with a long serial', () => {

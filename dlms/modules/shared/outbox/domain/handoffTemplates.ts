@@ -26,7 +26,9 @@ export type HandoffTask = {
 }
 
 export type HandoffContext = {
+  deviceId: string
   deviceSn: string | null
+  pcbaASnLegacy: string | null
   fromStatus: string
   toStatus: string
   reason: string | null
@@ -60,14 +62,30 @@ function truncate(text: string, max: number): string {
 }
 
 /**
- * Legacy device rows frequently have no `device_sn` — `pcba_a_sn_legacy` is
- * their de-facto identity instead, but that field isn't part of this event's
- * context, so the best a pure template can do is name the device by what it
- * DOES know without ever rendering "null" or a blank identifier.
+ * Three tiers, in order, so a queue of handoff tasks stays distinguishable
+ * even for legacy-migrated rows:
+ *
+ * 1. `deviceSn` — the canonical identity when present.
+ * 2. `pcbaASnLegacy` — the de-facto identity for legacy-migrated rows that
+ *    never got a `device_sn`. May hold a preserved range such as
+ *    `"EE-02A-2603-0001 to 0015"`; rendered verbatim, never parsed.
+ * 3. A short prefix of the device's UUID (`deviceId`), which every row has
+ *    regardless of serial data. This is the tier that matters most: without
+ *    it, two serial-less devices would both render the same fixed literal,
+ *    and a logistics queue full of character-for-character identical titles
+ *    is effectively useless even though each task links to a different
+ *    device.
+ *
+ * Never renders "null" or a blank identifier at any tier.
  */
 function deviceLabel(ctx: HandoffContext): string {
   const sn = ctx.deviceSn?.trim()
-  return sn && sn.length > 0 ? sn : 'device with no serial on file'
+  if (sn) return sn
+
+  const legacy = ctx.pcbaASnLegacy?.trim()
+  if (legacy) return legacy
+
+  return `device ${ctx.deviceId.slice(0, 8)}`
 }
 
 /** e.g. 'ready_for_delivery' -> 'ready for delivery'. */
