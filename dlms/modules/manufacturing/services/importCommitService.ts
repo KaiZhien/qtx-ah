@@ -72,13 +72,20 @@ export async function listImportRows(
   })
 }
 
-export async function skipImportRow(actor: Actor, rowId: string): Promise<void> {
+export async function skipImportRow(
+  actor: Actor, batchId: string, rowId: string,
+): Promise<void> {
   authorize(actor, 'import_data', 'manufacturing')
+  z.string().uuid().parse(batchId)
   z.string().uuid().parse(rowId)
   await withTransaction(actor.id, async (tx) => {
     await tx.query(
+      // Scoped to batch_id as well as id: the caller always knows which batch
+      // it's looking at, and a row id from one batch must not be skippable
+      // through another batch's page.
       `UPDATE import_row SET status='skipped', updated_at=now()
-        WHERE id=$1 AND status IN ('valid','invalid','needs_review','failed')`, [rowId])
+        WHERE id=$1 AND batch_id=$2
+          AND status IN ('valid','invalid','needs_review','failed')`, [rowId, batchId])
   })
 }
 
@@ -302,7 +309,15 @@ async function markRow(
 ): Promise<void> {
   await withTransaction(actor.id, async (tx) => {
     await tx.query(
-      `UPDATE import_row SET status=$1, errors=$2, updated_at=now() WHERE id=$3`,
+      // Scoped to status='valid': both call sites only ever mark a row they
+      // just read as 'valid', so this is behaviour-neutral for them. It
+      // guards against the case where a concurrent commit pass raced ahead,
+      // already committed this row, and this pass's re-check in
+      // commitOneRow lost the race — without the scope, this UPDATE would
+      // stamp 'failed' over a row that already has a device sitting in the
+      // registry. Do not remove this scope.
+      `UPDATE import_row SET status=$1, errors=$2, updated_at=now()
+        WHERE id=$3 AND status='valid'`,
       [status, JSON.stringify(errors), rowId])
   })
 }

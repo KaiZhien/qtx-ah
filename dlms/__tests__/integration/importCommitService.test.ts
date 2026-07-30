@@ -164,6 +164,35 @@ describe('commitImportBatch', () => {
     expect(rows).toHaveLength(1)
   })
 
+  it('never lets a losing overlapping commit pass stamp failed over a row the other already committed', async () => {
+    const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+
+    // Two commit passes on the same batch, launched together: both see the
+    // row as 'valid' in their own pending-row read, then both attempt to
+    // lock and commit it. Postgres's row lock (the FOR UPDATE in
+    // commitOneRow) serializes the two — one wins and commits the row, the
+    // other blocks until the winner's transaction ends, then re-checks the
+    // row's status and finds it's no longer 'valid'. Before markRow's
+    // UPDATE was scoped to status='valid', the loser's catch handler would
+    // stamp 'failed' straight over the winner's already-committed row.
+    const [a, b] = await Promise.all([
+      commitImportBatch(mgr(), { batchId }),
+      commitImportBatch(mgr(), { batchId }),
+    ])
+    expect(a.committed + b.committed).toBe(1)
+
+    const { rows } = await db.query<{
+      status: string; device_id: string | null
+      committed_at: Date | null; errors: string[]
+    }>(`SELECT status, device_id, committed_at, errors FROM import_row WHERE batch_id=$1`,
+      [batchId])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe('committed')
+    expect(rows[0].device_id).not.toBeNull()
+    expect(rows[0].committed_at).not.toBeNull()
+    expect(rows[0].errors).toEqual([])
+  })
+
   it('leaves invalid and needs_review rows alone', async () => {
     const { batchId } = await stage([
       [sn('A'), 'V1', 'B1', '1.0', '', 'Teleported', 'production'],
@@ -192,9 +221,23 @@ describe('listImportRows / skipImportRow / cancelImportBatch', () => {
   it('skips a row so a commit pass ignores it', async () => {
     const { batchId } = await stage([[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
     const [row] = await listImportRows(mgr(), batchId, 'valid')
-    await skipImportRow(mgr(), row.id)
+    await skipImportRow(mgr(), batchId, row.id)
     const res = await commitImportBatch(mgr(), { batchId })
     expect(res.committed).toBe(0)
+  })
+
+  it('is a no-op when the row id belongs to a different batch', async () => {
+    const { batchId: batchA } = await stage(
+      [[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    const { batchId: batchB } = await stage(
+      [[sn('A'), 'V1', 'B1', '1.0', '', 'in_stock', 'production']])
+    const [rowA] = await listImportRows(mgr(), batchA, 'valid')
+
+    await skipImportRow(mgr(), batchB, rowA.id)
+
+    const [rowAAfter] = await listImportRows(mgr(), batchA, 'valid')
+    expect(rowAAfter.id).toBe(rowA.id)
+    expect(rowAAfter.status).toBe('valid')
   })
 
   it('refuses to commit a cancelled batch', async () => {
