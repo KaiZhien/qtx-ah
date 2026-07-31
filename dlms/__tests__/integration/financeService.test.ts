@@ -18,9 +18,20 @@ import {
 import {
   listInvoices, getInvoice, createInvoice, updateInvoice, changeInvoiceStatus,
   listAllowedInvoiceTransitions, getInvoiceStatusCounts,
+  requestInvoiceApproval, getInvoiceApprovalState,
   InvoiceNotFoundError, DuplicateInvoiceNoError,
 } from '@/modules/finance/services/invoiceService'
 import { InvalidInvoiceStatusChangeError } from '@/modules/finance/domain/invoiceStatus'
+import {
+  InvoiceApprovalError, buildInvoiceApprovalSnapshot,
+} from '@/modules/finance/domain/invoiceApproval'
+import { snapshotsAgree } from '@/modules/shared/approvals/domain/approvalDecision'
+import {
+  decideApproval, ApprovalAlreadyPendingError,
+} from '@/modules/shared/approvals/services/approvalService'
+import {
+  FINANCE_APPROVAL_THRESHOLD_SGD, SettingUnavailableError,
+} from '@/modules/shared/settings/services/settingService'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -71,11 +82,11 @@ async function makeBuyer(name = `Buyer ${runTag}-${createdBuyerIds.length}`): Pr
 }
 
 async function makeInvoice(
-  buyerId: string, invoiceNo: string, opts: { taxSgd?: number } = {},
+  buyerId: string, invoiceNo: string, opts: { taxSgd?: number; unitPriceSgd?: number } = {},
 ): Promise<{ invoiceId: string; version: number }> {
   const res = await createInvoice(fin(), {
     invoiceNo, buyerId, taxSgd: opts.taxSgd,
-    lines: [{ description: 'Widget', quantity: 1, unitPriceSgd: 10 }],
+    lines: [{ description: 'Widget', quantity: 1, unitPriceSgd: opts.unitPriceSgd ?? 10 }],
   })
   createdInvoiceIds.push(res.invoiceId)
   const { rows } = await db.query<{ version: number }>(
@@ -83,13 +94,84 @@ async function makeInvoice(
   return { invoiceId: res.invoiceId, version: rows[0].version }
 }
 
+// ── Threshold-approval fixtures ─────────────────────────────────────────────
+
+/**
+ * A DIFFERENT app_user from `fin()`, because the pure domain refuses a decider who
+ * is the requester — an approver sharing the bootstrap id could never approve
+ * anything this file requests, and every gated test would pass for the wrong reason.
+ */
+let approverId: string
+const approver = (): Actor => ({
+  id: approverId, roleKey: 'manager',
+  permissions: new Set(['view_records', 'view_finance', 'approve_requests']),
+  moduleAccess: new Set(['finance']), active: true,
+})
+
+/** Every approval this file's SERVICE calls create, so afterAll can find them. */
+const createdApprovalIds: string[] = []
+const track = <T extends { approvalId: string }>(r: T): T => {
+  createdApprovalIds.push(r.approvalId)
+  return r
+}
+
+const approvalRow = async (id: string) => (await db.query<{
+  status: string; snapshot: Record<string, unknown>; module: string; kind: string
+  entity_type: string; entity_id: string
+}>(`SELECT * FROM approval WHERE id = $1`, [id])).rows[0]
+
+/** Runs `body` with the threshold temporarily set to `value`, then puts it back. */
+async function withThreshold<T>(value: string | null, body: () => Promise<T>): Promise<T> {
+  const { rows } = await db.query<{ value: string }>(
+    `SELECT value::text AS value FROM app_setting WHERE key = $1`,
+    [FINANCE_APPROVAL_THRESHOLD_SGD])
+  const original = rows[0]?.value ?? null
+  try {
+    if (value === null) {
+      await db.query(`DELETE FROM app_setting WHERE key = $1`, [FINANCE_APPROVAL_THRESHOLD_SGD])
+    } else {
+      await db.query(
+        `INSERT INTO app_setting (key, value) VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, version = app_setting.version + 1`,
+        [FINANCE_APPROVAL_THRESHOLD_SGD, value])
+    }
+    return await body()
+  } finally {
+    if (original === null) {
+      await db.query(`DELETE FROM app_setting WHERE key = $1`, [FINANCE_APPROVAL_THRESHOLD_SGD])
+    } else {
+      await db.query(
+        `INSERT INTO app_setting (key, value) VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [FINANCE_APPROVAL_THRESHOLD_SGD, original])
+    }
+  }
+}
+
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await db.connect()
   userId = (await db.query(`SELECT id FROM app_user WHERE email='reetmitra8@gmail.com'`)).rows[0].id
+  approverId = (await db.query<{ id: string }>(
+    `INSERT INTO app_user (email, full_name, role_id, department, module_access, active)
+     SELECT 'finance-approver@test.local', 'Ava Approver', r.id, 'Finance',
+            ARRAY['finance']::text[], true
+       FROM role r WHERE r.key = 'manager'
+     ON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name
+     RETURNING id`)).rows[0].id
 })
 afterAll(async () => {
+  if (createdApprovalIds.length) {
+    const { rows: outboxIds } = await db.query<{ id: string }>(
+      `SELECT id FROM outbox WHERE aggregate_id = ANY($1)`, [createdApprovalIds])
+    await db.query(`DELETE FROM outbox WHERE aggregate_id = ANY($1)`, [createdApprovalIds])
+    await db.query(`DELETE FROM audit_log WHERE table_name='outbox' AND row_id = ANY($1)`,
+      [outboxIds.map((r) => r.id)])
+    await db.query(`DELETE FROM approval WHERE id = ANY($1)`, [createdApprovalIds])
+    await db.query(`DELETE FROM audit_log WHERE table_name='approval' AND row_id = ANY($1)`,
+      [createdApprovalIds])
+  }
   if (createdInvoiceIds.length) {
     await db.query(`DELETE FROM sales_invoice_line WHERE invoice_id = ANY($1)`, [createdInvoiceIds])
     await db.query(`DELETE FROM sales_invoice WHERE id = ANY($1)`, [createdInvoiceIds])
@@ -370,6 +452,380 @@ describe('invoiceService', () => {
       const counts = await getInvoiceStatusCounts(fin())
       expect(counts.map((c) => c.status)).toEqual(['draft', 'issued', 'paid', 'void'])
       for (const c of counts) expect(c.count).toBeGreaterThanOrEqual(0)
+    })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The Finance threshold gate (spec BR-4) — the approvals engine's first real
+// consumer. Every test here goes through the SERVICE; the raw client is used only
+// to set the admin knob, to read back what was stored, and to prove a refusal
+// wrote nothing.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('invoice threshold approval', () => {
+  describe('the threshold comes from app_setting, never from a constant', () => {
+    it('gates a SMALL invoice once an admin lowers the threshold beneath it', async () => {
+      const b = await makeBuyer()
+      // S$10.00 — an order of magnitude below the seeded 5000.
+      const { invoiceId, version } = await makeInvoice(b.id, `INV-${runTag}-KNOBDOWN`)
+      await withThreshold('5', async () => {
+        await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+          .rejects.toThrow(InvoiceApprovalError)
+      })
+      const row = await db.query(`SELECT status FROM sales_invoice WHERE id=$1`, [invoiceId])
+      expect(row.rows[0].status).toBe('draft')
+    })
+
+    it('frees a LARGE invoice once an admin raises the threshold above it', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-KNOBUP`, { unitPriceSgd: 12000 })
+      await withThreshold('999999', async () => {
+        const res = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version })
+        expect(res.status).toBe('issued')
+      })
+    })
+
+    it('refuses to issue at all when the knob is missing — fail closed, and loudly', async () => {
+      // A control that silently switches itself off when its setting is deleted is
+      // worse than no control: nothing in the UI would ever say so.
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(b.id, `INV-${runTag}-NOKNOB`)
+      await withThreshold(null, async () => {
+        await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+          .rejects.toThrow(SettingUnavailableError)
+      })
+      const row = await db.query(`SELECT status FROM sales_invoice WHERE id=$1`, [invoiceId])
+      expect(row.rows[0].status).toBe('draft')
+    })
+
+    it('refuses to issue when the knob holds something that is not a number', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(b.id, `INV-${runTag}-BADKNOB`)
+      await withThreshold('"lots"', async () => {
+        await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+          .rejects.toThrow(SettingUnavailableError)
+      })
+    })
+  })
+
+  describe('below the threshold, nothing changes', () => {
+    it('issues without an approval and without creating one', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(b.id, `INV-${runTag}-BELOW`)
+      const res = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version })
+      expect(res.status).toBe('issued')
+      const { rows } = await db.query(`SELECT id FROM approval WHERE entity_id = $1`, [invoiceId])
+      expect(rows).toEqual([])
+    })
+
+    it('refuses a pointless approval request rather than queueing a decision that changes nothing',
+      async () => {
+        const b = await makeBuyer()
+        const { invoiceId, version } = await makeInvoice(b.id, `INV-${runTag}-NOTNEEDED`)
+        await expect(requestInvoiceApproval(fin(), { invoiceId, version }))
+          .rejects.toMatchObject({ name: 'InvoiceApprovalError', code: 'below_threshold' })
+      })
+  })
+
+  describe('at or above the threshold', () => {
+    it('refuses draft → issued when no approval was ever requested', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-NOAPV`, { unitPriceSgd: 12000 })
+      await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+        .rejects.toMatchObject({ name: 'InvoiceApprovalError', code: 'approval_missing' })
+      const row = await db.query(`SELECT status, version FROM sales_invoice WHERE id=$1`, [invoiceId])
+      expect(row.rows[0]).toMatchObject({ status: 'draft', version })
+    })
+
+    it('gates an invoice sitting EXACTLY on the threshold ("at or above")', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-EXACT`, { unitPriceSgd: 5000 })
+      await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+        .rejects.toMatchObject({ code: 'approval_missing' })
+    })
+
+    it('leaves draft → void alone: the gate is on issuing, not on abandoning', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-VOID`, { unitPriceSgd: 12000 })
+      const res = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'void', version })
+      expect(res.status).toBe('void')
+    })
+  })
+
+  describe('requestInvoiceApproval', () => {
+    it('records a snapshot of the total, the currency and the buyer — not just the id', async () => {
+      const b = await makeBuyer('Snapshot Buyer ' + runTag)
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-SNAP`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+
+      const row = await approvalRow(approvalId)
+      expect(row).toMatchObject({
+        status: 'pending', module: 'finance', kind: 'invoice',
+        entity_type: 'sales_invoice', entity_id: invoiceId,
+      })
+      expect(row.snapshot).toEqual({
+        invoiceNo: `INV-${runTag}-SNAP`,
+        buyerId: b.id,
+        buyerName: 'Snapshot Buyer ' + runTag,
+        currency: 'SGD',
+        totalSgd: '12000.00',
+      })
+    })
+
+    it('stores the total as the DRIVER returned it, and it still agrees on re-read', async () => {
+      // The trap this pins: numeric(12,2) comes back from node-postgres as a STRING,
+      // and snapshotsAgree compares two STRINGS as text — never numerically. So a
+      // snapshot holding "12000" would NOT agree with a re-read "12000.00". Both
+      // sides must come from the same column read the same way.
+      const b = await makeBuyer()
+      // A total whose text form does NOT survive a trip through Number(): 12345.60
+      // becomes "12345.6", which snapshotsAgree would compare as text and refuse.
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-ROUNDTRIP`, { unitPriceSgd: 12000, taxSgd: 345.6 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+
+      const stored = (await approvalRow(approvalId)).snapshot
+      expect(typeof stored.totalSgd).toBe('string')
+      expect(stored.totalSgd).toBe('12345.60')
+
+      const { rows } = await db.query<{
+        total_sgd: string; invoice_no: string; currency: string; buyer_name: string
+      }>(
+        `SELECT i.total_sgd, i.invoice_no, i.currency, b.name AS buyer_name
+           FROM sales_invoice i JOIN buyer b ON b.id = i.buyer_id WHERE i.id=$1`, [invoiceId])
+      const rebuilt = buildInvoiceApprovalSnapshot({
+        invoiceNo: rows[0].invoice_no, buyerId: b.id, buyerName: rows[0].buyer_name,
+        currency: rows[0].currency, totalSgd: rows[0].total_sgd,
+      })
+      expect(rebuilt.totalSgd).toBe('12345.60')
+      expect(snapshotsAgree(stored, rebuilt)).toBe(true)
+    })
+
+    it('writes the approval and its outbox event in ONE transaction', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-OUTBOX`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      const { rows } = await db.query<{ event_type: string; payload: Record<string, unknown> }>(
+        `SELECT event_type, payload FROM outbox WHERE aggregate_id = $1`, [approvalId])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].event_type).toBe('approval_requested')
+      expect(rows[0].payload).toMatchObject({
+        kind: 'invoice', module: 'finance', entityType: 'sales_invoice',
+        entityId: invoiceId, label: `INV-${runTag}-OUTBOX`,
+      })
+    })
+
+    it('refuses an actor without manage_finance', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-APVDENY`, { unitPriceSgd: 12000 })
+      await expect(requestInvoiceApproval(mgrView(), { invoiceId, version }))
+        .rejects.toThrow(PermissionError)
+    })
+
+    it('refuses a stale version — the requester attests to numbers they were shown', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-APVSTALE`, { unitPriceSgd: 12000 })
+      await expect(requestInvoiceApproval(fin(), { invoiceId, version: version + 99 }))
+        .rejects.toThrow(OptimisticLockError)
+    })
+
+    it('refuses an invoice that has already left draft', async () => {
+      const b = await makeBuyer()
+      const seed = await makeInvoice(b.id, `INV-${runTag}-APVISSUED`)
+      const issued = await changeInvoiceStatus(fin(), {
+        invoiceId: seed.invoiceId, toStatus: 'issued', version: seed.version })
+      await expect(requestInvoiceApproval(fin(), {
+        invoiceId: seed.invoiceId, version: issued.version,
+      })).rejects.toMatchObject({ name: 'InvoiceApprovalError', code: 'not_draft' })
+    })
+
+    it('refuses an unknown invoice', async () => {
+      await expect(requestInvoiceApproval(fin(), {
+        invoiceId: '00000000-0000-0000-0000-000000000000', version: 1,
+      })).rejects.toThrow(InvoiceNotFoundError)
+    })
+
+    it('refuses a second request while one is still pending', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-DOUBLE`, { unitPriceSgd: 12000 })
+      track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await expect(requestInvoiceApproval(fin(), { invoiceId, version }))
+        .rejects.toThrow(ApprovalAlreadyPendingError)
+    })
+
+    it('authorizes and validates before it ever acquires a connection', async () => {
+      const previous = process.env.DATABASE_URL
+      vi.resetModules()
+      process.env.DATABASE_URL = 'postgresql://nobody:nobody@127.0.0.1:1/unreachable'
+      try {
+        const svc = await import('@/modules/finance/services/invoiceService')
+        const authz = await import('@/modules/shared/authz/authorize')
+        await expect(svc.requestInvoiceApproval(viewer(), {
+          invoiceId: '00000000-0000-0000-0000-000000000000', version: 1,
+        })).rejects.toThrow(authz.PermissionError)
+        await expect(svc.requestInvoiceApproval(fin(), {
+          invoiceId: 'not-a-uuid', version: 1,
+        })).rejects.toThrow(/uuid/i)
+      } finally {
+        process.env.DATABASE_URL = previous
+        vi.resetModules()
+      }
+    })
+  })
+
+  describe('issuing against a decision', () => {
+    it('refuses while the request is still pending', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-PENDING`, { unitPriceSgd: 12000 })
+      track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+        .rejects.toMatchObject({ code: 'approval_pending' })
+    })
+
+    it('issues once an APPROVED, unchanged invoice is decided', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-OK`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+
+      const res = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version })
+      expect(res.status).toBe('issued')
+    })
+
+    it('refuses on a rejection, repeating the note the approver left', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-REJECT`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), {
+        approvalId, decision: 'rejected', note: 'The 20% discount was never agreed.' })
+
+      await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version }))
+        .rejects.toThrow(/never agreed/)
+    })
+
+    // THE test the whole engine exists for.
+    it('refuses an invoice EDITED after approval, and the refusal names the total', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-DRIFT`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+
+      // Tax is the one lever that moves total_sgd in this build (there is no
+      // line-edit path), and updateInvoice recomputes the total from it.
+      const { version: bumped } = await updateInvoice(fin(), {
+        invoiceId, version, taxSgd: 6500 })
+      const after = await db.query<{ total_sgd: string }>(
+        `SELECT total_sgd FROM sales_invoice WHERE id=$1`, [invoiceId])
+      expect(after.rows[0].total_sgd).toBe('18500.00')
+
+      const err = await changeInvoiceStatus(fin(), {
+        invoiceId, toStatus: 'issued', version: bumped }).catch((e) => e)
+      expect(err).toBeInstanceOf(InvoiceApprovalError)
+      expect(err.code).toBe('approval_drifted')
+      expect(err.message).toContain('totalSgd')
+      expect(err.message).toContain('12000.00')
+      expect(err.message).toContain('18500.00')
+
+      const row = await db.query(`SELECT status FROM sales_invoice WHERE id=$1`, [invoiceId])
+      expect(row.rows[0].status).toBe('draft')
+    })
+
+    it('refuses when the BUYER was swapped after approval', async () => {
+      const b = await makeBuyer('Original Buyer ' + runTag)
+      const other = await makeBuyer('Replacement Buyer ' + runTag)
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-BUYERDRIFT`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+
+      const { version: bumped } = await updateInvoice(fin(), {
+        invoiceId, version, buyerId: other.id })
+      const err = await changeInvoiceStatus(fin(), {
+        invoiceId, toStatus: 'issued', version: bumped }).catch((e) => e)
+      expect(err.code).toBe('approval_drifted')
+      expect(err.message).toContain('buyerId')
+    })
+
+    it('issues once the drift is PUT BACK — the check is on the state, not on the edit', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-RESTORED`, { unitPriceSgd: 12000, taxSgd: 100 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+
+      const v2 = (await updateInvoice(fin(), { invoiceId, version, taxSgd: 900 })).version
+      await expect(changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version: v2 }))
+        .rejects.toMatchObject({ code: 'approval_drifted' })
+
+      const v3 = (await updateInvoice(fin(), { invoiceId, version: v2, taxSgd: 100 })).version
+      const res = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version: v3 })
+      expect(res.status).toBe('issued')
+    })
+
+    it('does not re-gate issued → paid', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-PAID`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+      const issued = await changeInvoiceStatus(fin(), { invoiceId, toStatus: 'issued', version })
+      const paid = await changeInvoiceStatus(fin(), {
+        invoiceId, toStatus: 'paid', version: issued.version })
+      expect(paid.status).toBe('paid')
+    })
+  })
+
+  describe('getInvoiceApprovalState', () => {
+    it('reports the live threshold and that a small invoice needs nothing', async () => {
+      const b = await makeBuyer()
+      const { invoiceId } = await makeInvoice(b.id, `INV-${runTag}-STATE1`)
+      const state = await getInvoiceApprovalState(fin(), invoiceId)
+      expect(state).toMatchObject({ thresholdSgd: '5000', requiresApproval: false, approval: null })
+      expect(state!.drift).toEqual([])
+    })
+
+    it('surfaces the pending request and its requester', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-STATE2`, { unitPriceSgd: 12000 })
+      track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      const state = await getInvoiceApprovalState(fin(), invoiceId)
+      expect(state!.requiresApproval).toBe(true)
+      expect(state!.approval).toMatchObject({ status: 'pending', kind: 'invoice' })
+      expect(state!.drift).toEqual([])
+    })
+
+    it('warns about drift BEFORE the user clicks Issue', async () => {
+      const b = await makeBuyer()
+      const { invoiceId, version } = await makeInvoice(
+        b.id, `INV-${runTag}-STATE3`, { unitPriceSgd: 12000 })
+      const { approvalId } = track(await requestInvoiceApproval(fin(), { invoiceId, version }))
+      await decideApproval(approver(), { approvalId, decision: 'approved' })
+      await updateInvoice(fin(), { invoiceId, version, taxSgd: 42 })
+
+      const state = await getInvoiceApprovalState(fin(), invoiceId)
+      expect(state!.approval!.status).toBe('approved')
+      expect(state!.drift.join(' ')).toContain('totalSgd')
+    })
+
+    it('returns null for an unknown invoice, and refuses a Viewer', async () => {
+      expect(await getInvoiceApprovalState(fin(), '00000000-0000-0000-0000-000000000000'))
+        .toBeNull()
+      await expect(getInvoiceApprovalState(viewer(), '00000000-0000-0000-0000-000000000000'))
+        .rejects.toThrow(PermissionError)
     })
   })
 })

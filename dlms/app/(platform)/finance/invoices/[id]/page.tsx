@@ -2,12 +2,15 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
-import { getInvoice, listAllowedInvoiceTransitions } from '@/modules/finance/services/invoiceService'
+import {
+  getInvoice, listAllowedInvoiceTransitions, getInvoiceApprovalState,
+} from '@/modules/finance/services/invoiceService'
 import { listBuyerOptions } from '@/modules/finance/services/buyerService'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { InvoiceStatusPill } from '@/components/finance/InvoiceStatusPill'
 import { InvoiceStatusChangeControl } from '@/components/finance/InvoiceStatusChangeControl'
 import { InvoiceEditDialog } from '@/components/finance/InvoiceEditDialog'
+import { InvoiceApprovalPanel } from '@/components/finance/InvoiceApprovalPanel'
 
 type PageProps = { params: { id: string } }
 
@@ -29,9 +32,12 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
   if (!invoice) notFound()
 
   const canEdit = can(actor, 'manage_finance', 'finance')
-  const [transitions, buyerOptions] = await Promise.all([
+  const [transitions, buyerOptions, approvalState] = await Promise.all([
     canEdit ? listAllowedInvoiceTransitions(actor, invoice.status) : Promise.resolve([]),
     canEdit ? listBuyerOptions(actor) : Promise.resolve([]),
+    // Read for every view_finance actor, not only editors: whether this invoice is
+    // blocked on someone else's decision is part of reading it.
+    getInvoiceApprovalState(actor, invoice.id),
   ])
 
   return (
@@ -57,6 +63,26 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {approvalState && (
+        <InvoiceApprovalPanel
+          invoiceId={invoice.id}
+          version={invoice.version}
+          invoiceStatus={invoice.status}
+          canManage={canEdit}
+          thresholdSgd={approvalState.thresholdSgd}
+          requiresApproval={approvalState.requiresApproval}
+          drift={approvalState.drift}
+          approval={approvalState.approval && {
+            status: approvalState.approval.status,
+            requestedByName: approvalState.approval.requestedByName,
+            requestedAt: approvalState.approval.requestedAt.toISOString(),
+            decidedByName: approvalState.approval.decidedByName,
+            decidedAt: approvalState.approval.decidedAt?.toISOString() ?? null,
+            decisionNote: approvalState.approval.decisionNote,
+          }}
+        />
+      )}
 
       <dl className="grid grid-cols-1 gap-x-8 gap-y-4 rounded-md border p-4 sm:grid-cols-2">
         <div>

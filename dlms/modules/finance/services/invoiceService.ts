@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { withTransaction, OptimisticLockError } from '@/lib/db/tx'
+import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { BuyerNotFoundError } from '@/modules/finance/services/buyerService'
@@ -7,6 +7,19 @@ import {
   evaluateInvoiceStatusChange, allowedInvoiceTransitions, InvalidInvoiceStatusChangeError,
   messageForInvoiceStatusChangeError, INVOICE_STATUSES, type InvoiceStatus,
 } from '@/modules/finance/domain/invoiceStatus'
+import {
+  INVOICE_APPROVAL_ENTITY_TYPE, INVOICE_APPROVAL_KIND,
+  buildInvoiceApprovalSnapshot, evaluateInvoiceIssue,
+  InvoiceApprovalError, messageForInvoiceApprovalError,
+  type InvoiceApprovalSnapshot,
+} from '@/modules/finance/domain/invoiceApproval'
+import {
+  requestApprovalInTx, getApprovalForInTx, type ApprovalRecord,
+} from '@/modules/shared/approvals/services/approvalService'
+import { describeSnapshotDrift } from '@/modules/shared/approvals/domain/approvalDecision'
+import {
+  getNumericSettingInTx, FINANCE_APPROVAL_THRESHOLD_SGD,
+} from '@/modules/shared/settings/services/settingService'
 
 export class InvoiceNotFoundError extends Error {
   constructor(invoiceId: string) {
@@ -327,6 +340,194 @@ export async function updateInvoice(
   })
 }
 
+// ── The threshold approval gate (spec BR-4) ─────────────────────────────────
+
+/**
+ * The projection an approval is granted for, plus the answer to "does the gate
+ * apply?", from ONE row read inside the caller's transaction.
+ *
+ * The threshold comparison happens IN SQL, against the same numeric(12,2) column
+ * the money lives in. createInvoice's header states the principle — "Postgres
+ * numeric arithmetic — not JS floats — owns the money math" — and it matters most
+ * exactly here, on the invoice that sits on the boundary: `>=` in Postgres answers
+ * "at or above" for 5000.00 vs 5000 without a float ever existing.
+ *
+ * COALESCE is cast back to numeric(12,2) so a null total renders "0.00" rather than
+ * "0": the snapshot compares as TEXT (see below), and two spellings of zero would
+ * be reported as drift by a comparison that is doing exactly what it should.
+ */
+type InvoiceApprovalProjection = {
+  snapshot: InvoiceApprovalSnapshot
+  requiresApproval: boolean
+}
+
+async function loadApprovalProjection(
+  tx: Tx, invoiceId: string, thresholdSgd: string,
+): Promise<InvoiceApprovalProjection | null> {
+  const { rows } = await tx.query<{
+    invoice_no: string; buyer_id: string; buyer_name: string; currency: string
+    total_sgd: string; at_or_above: boolean
+  }>(
+    `SELECT i.invoice_no, i.buyer_id, b.name AS buyer_name, i.currency,
+            COALESCE(i.total_sgd, 0)::numeric(12,2) AS total_sgd,
+            (COALESCE(i.total_sgd, 0) >= $2::numeric) AS at_or_above
+       FROM sales_invoice i JOIN buyer b ON b.id = i.buyer_id
+      WHERE i.id = $1 AND i.deleted_at IS NULL`, [invoiceId, thresholdSgd])
+  const r = rows[0]
+  if (!r) return null
+  return {
+    // The SAME builder that stores the snapshot builds the projection it is later
+    // compared against — see its header for why two builders would drift.
+    snapshot: buildInvoiceApprovalSnapshot({
+      invoiceNo: r.invoice_no, buyerId: r.buyer_id, buyerName: r.buyer_name,
+      currency: r.currency, totalSgd: r.total_sgd,
+    }),
+    requiresApproval: r.at_or_above,
+  }
+}
+
+/**
+ * The gate on draft → issued, run inside the transaction that already locked the
+ * invoice FOR UPDATE.
+ *
+ * IN the transaction, deliberately. `getApprovalFor` (the public read) opens a
+ * connection of its own, which leaves a window between checking the approval and
+ * acting on it — long enough for a decision, an edit or a soft-delete to land
+ * between the two. `getApprovalForInTx` reads under the same lock that established
+ * which invoice is being issued.
+ *
+ * The threshold is read on EVERY issue, even for an invoice that turns out to be
+ * far below it, because "is this invoice gated?" is not answerable without it. A
+ * missing or non-numeric knob therefore refuses every issue rather than waving
+ * every invoice through — SettingUnavailableError's header has the argument.
+ */
+async function assertIssuableInTx(tx: Tx, actor: Actor, invoiceId: string): Promise<void> {
+  const thresholdSgd = await getNumericSettingInTx(tx, FINANCE_APPROVAL_THRESHOLD_SGD)
+  const projection = await loadApprovalProjection(tx, invoiceId, thresholdSgd)
+  if (!projection) throw new InvoiceNotFoundError(invoiceId)
+
+  // Below the threshold nothing about this invoice changes — no approval read, no
+  // extra permission demanded, no behaviour difference from before the gate existed.
+  if (!projection.requiresApproval) return
+
+  const approval = await getApprovalForInTx(
+    tx, actor, INVOICE_APPROVAL_ENTITY_TYPE, invoiceId, INVOICE_APPROVAL_KIND)
+  const decision = evaluateInvoiceIssue({
+    requiresApproval: true,
+    thresholdSgd,
+    current: projection.snapshot,
+    approval: approval && {
+      status: approval.status, snapshot: approval.snapshot, decisionNote: approval.decisionNote,
+    },
+  })
+  if (!decision.ok) throw new InvoiceApprovalError(decision.code, decision.message)
+}
+
+const requestApprovalSchema = z.object({
+  invoiceId: z.string().uuid(),
+  version: z.number().int().nonnegative(),
+})
+export type RequestInvoiceApprovalInput = z.input<typeof requestApprovalSchema>
+
+/**
+ * Send an invoice for a second pair of eyes.
+ *
+ * The `version` is not ceremony: the snapshot records what the requester was
+ * LOOKING AT, so a request raised against numbers that have since moved is a
+ * request for something nobody saw. Refusing it costs a reload; accepting it puts
+ * a stale total in front of an approver.
+ *
+ * requestApprovalInTx, not requestApproval, and the reason is the one its own
+ * header gives: the public entry point opens a transaction of its own, so the
+ * invoice would be read under one connection and the snapshot stored under
+ * another — describing a state that may already have moved. Here the row is locked,
+ * the snapshot is built from the locked row, and the approval plus its outbox event
+ * commit with it or not at all.
+ */
+export async function requestInvoiceApproval(
+  actor: Actor, input: RequestInvoiceApprovalInput,
+): Promise<{ approvalId: string }> {
+  authorize(actor, 'manage_finance', 'finance')
+  const data = requestApprovalSchema.parse(input)
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ status: InvoiceStatus; version: number }>(
+      `SELECT status, version FROM sales_invoice WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [data.invoiceId])
+    if (rows.length === 0) throw new InvoiceNotFoundError(data.invoiceId)
+    if (rows[0].version !== data.version) {
+      throw new OptimisticLockError('sales_invoice', data.invoiceId)
+    }
+
+    const thresholdSgd = await getNumericSettingInTx(tx, FINANCE_APPROVAL_THRESHOLD_SGD)
+    if (rows[0].status !== 'draft') {
+      throw new InvoiceApprovalError(
+        'not_draft', messageForInvoiceApprovalError('not_draft', thresholdSgd))
+    }
+
+    const projection = await loadApprovalProjection(tx, data.invoiceId, thresholdSgd)
+    if (!projection) throw new InvoiceNotFoundError(data.invoiceId)
+    if (!projection.requiresApproval) {
+      throw new InvoiceApprovalError(
+        'below_threshold', messageForInvoiceApprovalError('below_threshold', thresholdSgd))
+    }
+
+    return requestApprovalInTx(tx, actor, {
+      entityType: INVOICE_APPROVAL_ENTITY_TYPE,
+      entityId: data.invoiceId,
+      kind: INVOICE_APPROVAL_KIND,
+      // The REQUESTER's own gate, not the approver's — see approvalService's header.
+      permission: 'manage_finance',
+      label: projection.snapshot.invoiceNo,
+      snapshot: projection.snapshot,
+    })
+  })
+}
+
+export type InvoiceApprovalState = {
+  /** The live knob, so the UI can name the figure rather than invent one. */
+  thresholdSgd: string
+  requiresApproval: boolean
+  approval: ApprovalRecord | null
+  /** Empty unless an APPROVED snapshot no longer describes the invoice. */
+  drift: string[]
+}
+
+/**
+ * Everything the invoice screen needs to say something true about approval, in one
+ * read: whether the gate applies, what the threshold currently is, which request
+ * governs the record, and — the part a user cannot work out for themselves —
+ * whether an approval they already hold has been invalidated by a later edit.
+ *
+ * Surfacing the drift HERE rather than only at the moment of issue is the whole
+ * point: being told what changed while looking at the invoice is actionable, being
+ * told after clicking Issue is a dead end.
+ *
+ * Returns null for an unknown or soft-deleted invoice so the page can 404 without a
+ * thrown error path, exactly as getInvoice does.
+ */
+export async function getInvoiceApprovalState(
+  actor: Actor, invoiceId: string,
+): Promise<InvoiceApprovalState | null> {
+  authorize(actor, 'view_finance', 'finance')
+  const id = z.string().uuid().safeParse(invoiceId)
+  if (!id.success) return null
+
+  return withTransaction(actor.id, async (tx) => {
+    const thresholdSgd = await getNumericSettingInTx(tx, FINANCE_APPROVAL_THRESHOLD_SGD)
+    const projection = await loadApprovalProjection(tx, id.data, thresholdSgd)
+    if (!projection) return null
+
+    const approval = await getApprovalForInTx(
+      tx, actor, INVOICE_APPROVAL_ENTITY_TYPE, id.data, INVOICE_APPROVAL_KIND)
+    const drift = approval?.status === 'approved'
+      ? describeSnapshotDrift(approval.snapshot, projection.snapshot)
+      : []
+
+    return { thresholdSgd, requiresApproval: projection.requiresApproval, approval, drift }
+  })
+}
+
 const changeStatusSchema = z.object({
   invoiceId: z.string().uuid(),
   toStatus: z.enum(INVOICE_STATUSES),
@@ -339,6 +540,13 @@ export type ChangeInvoiceStatusInput = z.input<typeof changeStatusSchema>
  * invoiceStatus.ts). One transaction: lock the row, evaluate the pure
  * decision, then UPDATE under the same optimistic-lock discipline as
  * deviceWriteService.changeDeviceStatus. A rejected move writes nothing.
+ *
+ * ONE edge is gated further: draft → issued on an invoice at or above
+ * `app_setting.finance_approval_threshold_sgd` needs an approved, non-drifted
+ * approval (spec BR-4). The check runs INSIDE this transaction, under the lock
+ * that already fixed which invoice is moving — see assertIssuableInTx. Every other
+ * edge, including draft → void, is untouched: the gate is on issuing an invoice,
+ * not on abandoning one.
  */
 export async function changeInvoiceStatus(
   actor: Actor, input: ChangeInvoiceStatusInput,
@@ -358,6 +566,12 @@ export async function changeInvoiceStatus(
     if (!decision.ok) {
       throw new InvalidInvoiceStatusChangeError(
         decision.error, messageForInvoiceStatusChangeError(decision.error, current.status, data.toStatus))
+    }
+
+    // After the transition graph, not before it: "you cannot go from paid to issued"
+    // is a truer answer than "that needs an approval" for a move that was never legal.
+    if (current.status === 'draft' && data.toStatus === 'issued') {
+      await assertIssuableInTx(tx, actor, data.invoiceId)
     }
 
     const { rows: updated } = await tx.query<{ version: number }>(
