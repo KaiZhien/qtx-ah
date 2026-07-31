@@ -32,7 +32,9 @@
 --     completion" — a second terminal differing only in wording would be a
 --     state the graph has to route into and nobody can leave, for no gain.
 --     The service requires a note on cancel (repair's convention), which is
---     where "why" is recorded.
+--     where "why" is recorded — it lands in modification_status_history.note
+--     (added below), NOT in `reason`/`description`, which already mean why the
+--     change was wanted / what is being done.
 --   * NO `in_progress`. Nothing in spec §6.3 distinguishes approved-but-not-
 --     started from approved-and-underway — there is no started_on column to
 --     stamp — so it would be a state with no fact behind it.
@@ -194,6 +196,34 @@ END $$;
 CREATE TRIGGER trg_modification_assign_no BEFORE INSERT ON modification
   FOR EACH ROW EXECUTE FUNCTION fn_modification_assign_no();
 
+-- ── modification_status_history ─────────────────────────────────────────────
+-- Append-only status log, mirroring repair_status_history BYTE FOR BYTE in shape
+-- (20260720110000_platform_maintenance.sql). PARITY IS THE POINT — do not
+-- "simplify" one of the two away; __tests__/integration/modificationService.test.ts
+-- asserts the two column shapes are identical on purpose.
+--
+-- This table is also what makes this migration's own header true. That header
+-- says a request that is not approved simply stops, and "the service requires a
+-- note on cancel (repair's convention), which is where 'why' is recorded" — but
+-- until this table existed there was nowhere to put that note. `reason` and
+-- `description` on the modification row are already spoken for and mean
+-- different things (why the change was wanted / what is being done); neither is
+-- a place to record why the change was ABANDONED. The note lands here, in the
+-- same transaction as the status change, exactly as repair's does.
+CREATE TABLE modification_status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  modification_id uuid NOT NULL REFERENCES modification(id),
+  from_status text, to_status text NOT NULL,
+  note text,                             -- required for cancelled (service-enforced); free text otherwise
+  changed_by uuid NOT NULL REFERENCES app_user(id),
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE modification_status_history IS
+  'Append-only modification status-change log (spec §6.3/§6.2), mirroring repair_status_history and device_status_history. Written in the same transaction as each modification status change / sign-off / creation. The modification row holds only the CURRENT status for querying; this is the audit-grade timeline the modification detail page renders, and the only place a cancellation''s reason is recorded.';
+COMMENT ON COLUMN modification_status_history.note IS
+  'Free text; REQUIRED when to_status is ''cancelled'' — enforced by the service via the pure domain (evaluateModificationTransition''s note_required), not by a CHECK here, for the same reason repair_status_history.note is service-enforced: the rule belongs to the transition graph, which lives in TypeScript.';
+CREATE INDEX msh_modification ON modification_status_history(modification_id, changed_at DESC);
+
 -- ── repair.parts_replaced ───────────────────────────────────────────────────
 -- A CLAIM, not a fact. Nothing in this migration verifies it; the verification
 -- is a sign-off precondition landing with the §14 replacement wiring.
@@ -210,18 +240,22 @@ ALTER TABLE component_installation
   ADD CONSTRAINT component_installation_modification_fk
   FOREIGN KEY (modification_id) REFERENCES modification(id);
 
--- Audit on both new tables (spec §6). The vocabulary is audited as well as the
--- record: a modification type going inactive, or being renamed, changes how every
--- record that references it reads, and that is worth a trail.
-SELECT fn_attach_audit(t) FROM unnest(ARRAY['modification','modification_type']) AS t;
+-- Audit on all three new tables (spec §6). The vocabulary is audited as well as
+-- the record: a modification type going inactive, or being renamed, changes how
+-- every record that references it reads, and that is worth a trail. The history
+-- table is append-only in practice — its INSERT is exactly the event worth
+-- trailing (same reasoning as repair_status_history's).
+SELECT fn_attach_audit(t)
+  FROM unnest(ARRAY['modification','modification_status_history','modification_type']) AS t;
 
 -- RLS deny-via-REST (R1 pattern, per 20260720000000_platform_rls.sql): the app
 -- reaches these only via the owner pool (withTransaction) / service_role, both of
 -- which bypass RLS; no anon/authenticated policy = PostgREST denies all. NOT FORCE
 -- (FORCE would also gate the owner connection and fn_audit's SECURITY DEFINER
 -- writes — the one path this must leave alone).
-ALTER TABLE modification      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE modification_type ENABLE ROW LEVEL SECURITY;
+ALTER TABLE modification                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE modification_status_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE modification_type           ENABLE ROW LEVEL SECURITY;
 -- No CREATE POLICY statements follow, by design — see above.
 
 REVOKE EXECUTE ON FUNCTION fn_modification_assign_no() FROM PUBLIC, anon, authenticated;
