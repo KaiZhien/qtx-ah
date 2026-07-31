@@ -61,7 +61,9 @@ git commit -m "feat(maintenance): modification records and the parts-replaced cl
 
 **Service.** `listModifications`, `getModification`, `createModification`, `updateModification`, `changeModificationStatus`, following `repairService.ts`'s shape function-for-function — same permissions (`view_records`/`create_records`/`edit_records` in `maintenance`), same optimistic-lock discipline, same error types, same 404-not-403 read behaviour.
 
-A modification may reference an `eng_change` (a retrofit spawned by an ECO) and/or a `repair`. Both are optional; validate that a referenced row exists rather than trusting the id.
+A modification may reference an **`eco`** (a retrofit spawned by an engineering change order) and/or a `repair`. Both are optional; validate that a referenced row exists rather than trusting the id.
+
+> **Correction found during implementation:** there is no `eng_change` table. `20260720100000_platform_engineering.sql` deliberately split spec §6.3's staged `eng_change` into `ecr` (the request) and `eco` (the order), and says so in its header. The FK is `eco_id REFERENCES eco(id)` — the ERD's "spawns retrofit" edge hangs off the *order*, not the request. Every later task uses `eco_id`.
 
 ```bash
 git commit -m "feat(maintenance): modification lifecycle domain and service"
