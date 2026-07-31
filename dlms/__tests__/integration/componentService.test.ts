@@ -5,6 +5,7 @@ import {
   getDeviceComponents, installComponent, replaceComponentInstallation,
 } from '@/modules/manufacturing/services/componentService'
 import { InvalidReplacementError } from '@/modules/manufacturing/domain/componentInstallation'
+import { InvalidAttributionError } from '@/modules/maintenance/services/attributionService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 
@@ -12,6 +13,11 @@ vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 
 let db: Client
 let userId: string, deviceId: string, pcbaTypeId: string, unitA: string, unitB: string
+// A SECOND device with its own repair + modification, so "same device" can be
+// told apart from "any live record" — the whole point of the attribution rule.
+let otherDeviceId: string, unitC: string, unitD: string
+let repairHere: string, repairElsewhere: string
+let modHere: string, modElsewhere: string
 
 const op = (): Actor => ({
   id: userId, roleKey: 'operator',
@@ -43,6 +49,26 @@ beforeAll(async () => {
     VALUES ($1,$2,$3,$3) RETURNING id`, [pcbaTypeId, `PCBA-A-001-${runTag}`, userId])).rows[0].id
   unitB = (await db.query(`INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
     VALUES ($1,$2,$3,$3) RETURNING id`, [pcbaTypeId, `PCBA-A-002-${runTag}`, userId])).rows[0].id
+  unitC = (await db.query(`INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
+    VALUES ($1,$2,$3,$3) RETURNING id`, [pcbaTypeId, `PCBA-A-003-${runTag}`, userId])).rows[0].id
+  unitD = (await db.query(`INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
+    VALUES ($1,$2,$3,$3) RETURNING id`, [pcbaTypeId, `PCBA-A-004-${runTag}`, userId])).rows[0].id
+
+  otherDeviceId = (await db.query(`
+    INSERT INTO device (variant_id, status, created_by, updated_by)
+    VALUES ((SELECT id FROM device_variant WHERE code='pro'),'in_stock',$1,$1) RETURNING id`,
+    [userId])).rows[0].id
+  const modTypeId = (await db.query(
+    `SELECT id FROM modification_type ORDER BY sort LIMIT 1`)).rows[0].id
+  const mkRepair = async (dev: string) => (await db.query(
+    `INSERT INTO repair (device_id, created_by) VALUES ($1,$2) RETURNING id`, [dev, userId])).rows[0].id
+  const mkMod = async (dev: string) => (await db.query(
+    `INSERT INTO modification (device_id, modification_type_id, created_by)
+     VALUES ($1,$2,$3) RETURNING id`, [dev, modTypeId, userId])).rows[0].id
+  repairHere = await mkRepair(deviceId)
+  repairElsewhere = await mkRepair(otherDeviceId)
+  modHere = await mkMod(deviceId)
+  modElsewhere = await mkMod(otherDeviceId)
 })
 afterAll(async () => { await db.end(); await getPool().end() })
 
@@ -130,5 +156,101 @@ describe('replaceComponentInstallation (the §14 primitive)', () => {
     const pcbaHistory = history.filter((h) => h.componentTypeCode === 'pcba_a')
     expect(pcbaHistory.length).toBeGreaterThanOrEqual(2)   // original + replacement
     expect(pcbaHistory.some((h) => h.unit?.serialNo === `PCBA-A-001-${runTag}`)).toBe(true)
+  })
+})
+
+// ── Attribution (spec §5.4) ────────────────────────────────────────────────
+// A repairId/modificationId on a replacement is a traceability CLAIM: "this
+// swap happened because of that record". A claim naming another device's
+// repair is a lie, and the FK alone cannot catch it — both rows are perfectly
+// real. Enforced inside the primitive's transaction, under the lock that
+// already established which device the installation belongs to, so no caller
+// can route around it.
+describe('replacement attribution', () => {
+  const openInstallation = async () => (await db.query<{ id: string }>(
+    `SELECT id FROM component_installation
+      WHERE device_id=$1 AND component_type_id=$2 AND removed_at IS NULL`,
+    [deviceId, pcbaTypeId])).rows[0].id
+
+  it('stamps the repair on BOTH the closed row and the row it opens', async () => {
+    const open = await openInstallation()
+    const res = await replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'PCBA-A failed burn-in',
+      replacementUnitId: unitC, repairId: repairHere,
+    })
+    const { rows } = await db.query<{ repair_id: string | null }>(
+      `SELECT repair_id FROM component_installation WHERE id = ANY($1)`,
+      [[res.closedId, res.newId]])
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.repair_id === repairHere)).toBe(true)
+  })
+
+  it("refuses a repair belonging to ANOTHER device, and rolls the whole swap back", async () => {
+    const open = await openInstallation()
+    const beforeVer = (await db.query(`SELECT version FROM device WHERE id=$1`, [deviceId]))
+      .rows[0].version
+
+    await expect(replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'x', replacementUnitId: unitD,
+      repairId: repairElsewhere,
+    })).rejects.toMatchObject({
+      name: 'InvalidAttributionError', kind: 'repair', code: 'device_mismatch',
+    })
+
+    // nothing closed, nothing opened, no version bump
+    const still = await db.query(`SELECT removed_at FROM component_installation WHERE id=$1`, [open])
+    expect(still.rows[0].removed_at).toBeNull()
+    const afterVer = (await db.query(`SELECT version FROM device WHERE id=$1`, [deviceId]))
+      .rows[0].version
+    expect(afterVer).toBe(beforeVer)
+    const orphan = await db.query(
+      `SELECT count(*)::int n FROM component_installation WHERE repair_id=$1`, [repairElsewhere])
+    expect(orphan.rows[0].n).toBe(0)
+  })
+
+  it('refuses a repairId that does not exist at all', async () => {
+    const open = await openInstallation()
+    await expect(replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'x', replacementUnitId: unitD,
+      repairId: '00000000-0000-0000-0000-000000000000',
+    })).rejects.toMatchObject({ name: 'InvalidAttributionError', code: 'not_found' })
+  })
+
+  it('refuses a soft-deleted repair (existence means LIVE, as everywhere else)', async () => {
+    const dead = (await db.query(
+      `INSERT INTO repair (device_id, created_by, deleted_at) VALUES ($1,$2,now()) RETURNING id`,
+      [deviceId, userId])).rows[0].id
+    const open = await openInstallation()
+    await expect(replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'x', replacementUnitId: unitD, repairId: dead,
+    })).rejects.toThrow(InvalidAttributionError)
+  })
+
+  it('refuses a modification belonging to another device, and accepts one for this device', async () => {
+    const open = await openInstallation()
+    await expect(replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'x', replacementUnitId: unitD,
+      modificationId: modElsewhere,
+    })).rejects.toMatchObject({
+      name: 'InvalidAttributionError', kind: 'modification', code: 'device_mismatch',
+    })
+
+    const res = await replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'ECO retrofit', replacementUnitId: unitD,
+      modificationId: modHere,
+    })
+    const { rows } = await db.query<{ modification_id: string | null }>(
+      `SELECT modification_id FROM component_installation WHERE id=$1`, [res.newId])
+    expect(rows[0].modification_id).toBe(modHere)
+  })
+
+  it('leaves an unattributed replacement alone (both ids optional)', async () => {
+    const open = await openInstallation()
+    const res = await replaceComponentInstallation(op(), {
+      removedInstallationId: open, reason: 'no linked record', replacementUnitId: unitC,
+    })
+    const { rows } = await db.query<{ repair_id: string | null; modification_id: string | null }>(
+      `SELECT repair_id, modification_id FROM component_installation WHERE id=$1`, [res.newId])
+    expect(rows[0]).toEqual({ repair_id: null, modification_id: null })
   })
 })

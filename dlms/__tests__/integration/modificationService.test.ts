@@ -505,6 +505,36 @@ describe('createModification', () => {
     expect(rows[0]).toMatchObject({ eco_id: ecoId, repair_id: repairId })
   })
 
+  // A modification on device A citing a repair on device B is the same
+  // traceability lie a cross-device component attribution would be: both rows
+  // are real, so the FK is silent, and only a same-device rule catches it.
+  it("refuses a repair belonging to a DIFFERENT device", async () => {
+    const otherDeviceId = (await db.query(
+      `INSERT INTO device (variant_id, status, created_by, updated_by)
+       VALUES ((SELECT id FROM device_variant WHERE code='pro'),'active',$1,$1) RETURNING id`,
+      [userId])).rows[0].id
+    createdDeviceIds.push(otherDeviceId)
+    const elsewhere = (await db.query(
+      `INSERT INTO repair (device_id, created_by) VALUES ($1,$2) RETURNING id`,
+      [otherDeviceId, userId])).rows[0].id
+    createdRepairIds.push(elsewhere)
+
+    await expect(createModification(op(), {
+      deviceId, modificationTypeId: typeId, repairId: elsewhere,
+    })).rejects.toMatchObject({
+      name: 'InvalidAttributionError', kind: 'repair', code: 'device_mismatch',
+    })
+
+    // …and the same rule on update, which Task 2 validated for existence only.
+    const { modificationId } = await openModification()
+    await expect(updateModification(op(), {
+      modificationId, version: 1, repairId: elsewhere,
+    })).rejects.toMatchObject({ name: 'InvalidAttributionError', code: 'device_mismatch' })
+    const { rows } = await db.query(
+      `SELECT repair_id, version FROM modification WHERE id=$1`, [modificationId])
+    expect(rows[0]).toMatchObject({ repair_id: null, version: 1 })   // rolled back whole
+  })
+
   it('refuses a soft-deleted device (existence means LIVE, as everywhere else)', async () => {
     const dead = (await db.query(
       `INSERT INTO device (variant_id, status, created_by, updated_by, deleted_at)

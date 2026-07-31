@@ -20,12 +20,25 @@ import type {
 } from '@/modules/manufacturing/services/componentService'
 import type { ComponentTypeRow } from '@/modules/manufacturing/services/componentCatalogueService'
 
+/**
+ * The maintenance record a replacement made from this surface is attributed to
+ * (spec §5.4). Present when the panel is rendered from inside a repair or a
+ * modification; absent on the device profile, where a swap stands alone.
+ */
+export type ReplacementAttribution = {
+  repairId?: string
+  modificationId?: string
+  /** Human label of that record ("REP-2026-0012") for the dialog's confirmation line. */
+  label: string
+}
+
 type DeviceComponentsPanelProps = {
   deviceId: string
   canEdit: boolean
   current: CurrentComponent[]
   history: InstallationHistoryItem[]
   types: ComponentTypeRow[]
+  attribution?: ReplacementAttribution
 }
 
 function formatDate(d: Date | string): string {
@@ -63,9 +76,18 @@ function groupHistory(history: InstallationHistoryItem[]): HistoryGroup[] {
  * Client panel behind DeviceComponentsTab. Replace/Add controls render only
  * when canEdit; viewing current + history needs nothing beyond the page's
  * existing view_records gate.
+ *
+ * ONE panel serves both the device profile and the repair detail page — the
+ * §5.4 promise is "the engineer performs one action; the system fans out", and
+ * a second replacement dialog to keep in step with this one would be exactly
+ * the double entry that rule exists to remove. The only difference in
+ * attributed mode is which extra ids ride along on the replace call, plus:
+ * Add-component is hidden, because installComponent takes no repair/
+ * modification id, so an install started from a repair would silently lose the
+ * attribution the technician came here to record.
  */
 export function DeviceComponentsPanel({
-  deviceId, canEdit, current, history, types,
+  deviceId, canEdit, current, history, types, attribution,
 }: DeviceComponentsPanelProps) {
   const router = useRouter()
   const [replaceTarget, setReplaceTarget] = useState<CurrentComponent | null>(null)
@@ -87,7 +109,7 @@ export function DeviceComponentsPanel({
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-900">Current components</h3>
-          {canEdit && (
+          {canEdit && !attribution && (
             <Button size="sm" onClick={() => setAddOpen(true)}>
               <Plus className="mr-1.5 h-4 w-4" />
               Add component
@@ -180,6 +202,7 @@ export function DeviceComponentsPanel({
           target={replaceTarget}
           trackingMode={typeByCode.get(replaceTarget.componentTypeCode)?.trackingMode ?? 'serialized'}
           componentTypeId={typeByCode.get(replaceTarget.componentTypeCode)?.id ?? ''}
+          attribution={attribution}
           onClose={() => setReplaceTarget(null)}
           onDone={() => handleDone('Component replaced')}
         />
@@ -202,12 +225,13 @@ type ReplaceDialogProps = {
   target: CurrentComponent
   trackingMode: 'serialized' | 'batch'
   componentTypeId: string
+  attribution?: ReplacementAttribution
   onClose: () => void
   onDone: () => void
 }
 
 function ReplaceDialog({
-  deviceId, target, trackingMode, componentTypeId, onClose, onDone,
+  deviceId, target, trackingMode, componentTypeId, attribution, onClose, onDone,
 }: ReplaceDialogProps) {
   const [reason, setReason] = useState('')
   const [unitId, setUnitId] = useState('')
@@ -228,6 +252,8 @@ function ReplaceDialog({
         reason: reason.trim(),
         replacementUnitId: trackingMode === 'serialized' ? unitId : undefined,
         replacementBatchNo: trackingMode === 'batch' ? batchNo.trim() : undefined,
+        repairId: attribution?.repairId,
+        modificationId: attribution?.modificationId,
       })
       if (!res.ok) {
         setError(res.error)
@@ -253,6 +279,11 @@ function ReplaceDialog({
           <p className="text-sm text-muted-foreground">
             Removing {serialOrBatch(target)}, installed {formatDate(target.installedAt)}.
           </p>
+          {attribution && (
+            <p className="rounded-md bg-muted px-3 py-2 text-sm text-slate-700">
+              This replacement will be recorded against <strong>{attribution.label}</strong>.
+            </p>
+          )}
 
           <UnitOrBatchField
             trackingMode={trackingMode}

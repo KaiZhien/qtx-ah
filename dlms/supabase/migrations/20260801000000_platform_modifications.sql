@@ -240,6 +240,15 @@ ALTER TABLE component_installation
   ADD CONSTRAINT component_installation_modification_fk
   FOREIGN KEY (modification_id) REFERENCES modification(id);
 
+-- Attribution lookups: "which component changes does this repair/modification
+-- account for?" — read on every repair detail page and, decisively, inside
+-- signOffRepair's transaction, where the §5.4 precondition counts the rows
+-- backing a parts-replaced claim. Partial, like modification_repair_idx: the
+-- vast majority of installations carry neither id.
+CREATE INDEX ci_repair_idx ON component_installation(repair_id) WHERE repair_id IS NOT NULL;
+CREATE INDEX ci_modification_idx ON component_installation(modification_id)
+  WHERE modification_id IS NOT NULL;
+
 -- Audit on all three new tables (spec §6). The vocabulary is audited as well as
 -- the record: a modification type going inactive, or being renamed, changes how
 -- every record that references it reads, and that is worth a trail. The history

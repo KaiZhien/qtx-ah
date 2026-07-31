@@ -10,6 +10,7 @@ import { RepairStatusControl } from '@/components/maintenance/RepairStatusContro
 import { RepairSignOffButton } from '@/components/maintenance/RepairSignOffButton'
 import { RepairEditForm } from '@/components/maintenance/RepairEditForm'
 import { DeviceStatusPill } from '@/components/manufacturing/StatusPill'
+import { DeviceComponentsTab } from '@/components/manufacturing/DeviceComponentsTab'
 
 type PageProps = { params: { id: string } }
 
@@ -35,6 +36,22 @@ export default async function RepairDetailPage({ params }: PageProps) {
   const canSignOff = can(actor, 'sign_off_repairs', 'maintenance')
   const transitions = canEdit ? allowedNextRepairStatuses(repair.status) : []
   const showSignOff = canSignOff && repair.status === 'awaiting_sign_off'
+
+  // The components panel reads and writes MANUFACTURING's component registry,
+  // under manufacturing's own permissions — a maintenance-only user simply does
+  // not see it (its services throw rather than degrade, so this is a gate, not
+  // a style choice).
+  const canViewComponents = can(actor, 'view_records', 'manufacturing')
+  const canReplaceComponents = can(actor, 'edit_records', 'manufacturing')
+
+  // The same facts evaluateSignOff decides on, in the same order — this only
+  // spares a doomed round-trip; signOffRepair re-reads them under its own lock.
+  const signOffBlockedReason = !repair.testingNotes?.trim()
+    ? 'Record testing notes before signing off.'
+    : repair.partsReplaced && repair.recordedReplacementCount === 0
+      ? 'This repair says parts were replaced, but no component change references it. '
+        + 'Replace the component below, or clear the parts-replaced claim.'
+      : null
 
   return (
     <div className="space-y-6">
@@ -69,7 +86,7 @@ export default async function RepairDetailPage({ params }: PageProps) {
             <RepairSignOffButton
               repairId={repair.id}
               version={repair.version}
-              hasTestingNotes={Boolean(repair.testingNotes && repair.testingNotes.trim())}
+              blockedReason={signOffBlockedReason}
             />
           </div>
         )}
@@ -87,6 +104,7 @@ export default async function RepairDetailPage({ params }: PageProps) {
             warrantyFlag: repair.warrantyFlag,
             warrantyJustification: repair.warrantyJustification,
             costSgd: repair.costSgd,
+            partsReplaced: repair.partsReplaced,
           }}
         />
       )}
@@ -98,6 +116,13 @@ export default async function RepairDetailPage({ params }: PageProps) {
         <Field label="Testing notes" value={repair.testingNotes} span />
         <Field label="Warranty" value={repair.warrantyFlag ? 'Covered' : 'Not covered'} />
         <Field label="Cost (SGD)" value={repair.costSgd} />
+        <Field
+          label="Parts replaced"
+          value={repair.partsReplaced
+            ? `Yes — ${repair.recordedReplacementCount} component record(s) reference this repair`
+            : 'No'}
+          span
+        />
         {repair.warrantyFlag && (
           <Field label="Warranty justification" value={repair.warrantyJustification} span />
         )}
@@ -113,6 +138,27 @@ export default async function RepairDetailPage({ params }: PageProps) {
           />
         )}
       </dl>
+
+      {/*
+        Spec §5.4 — the engineer performs ONE action and the system fans out.
+        This is the device profile's own replacement control, rendered here with
+        the repair attached, so a swap done from inside the repair writes
+        component_installation rows that reference it. No second dialog, no
+        double entry, and no way to "record the swap" as a separate chore that
+        gets skipped.
+      */}
+      {canViewComponents && (
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-slate-900">
+            Device components
+          </h2>
+          <DeviceComponentsTab
+            deviceId={repair.deviceId}
+            canEdit={canReplaceComponents}
+            attribution={{ repairId: repair.id, label: repair.repairNo }}
+          />
+        </div>
+      )}
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-slate-900">Status history</h2>

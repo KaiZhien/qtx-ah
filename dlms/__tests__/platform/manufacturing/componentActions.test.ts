@@ -15,6 +15,17 @@ vi.mock('@/modules/manufacturing/services/componentService', () => ({
 vi.mock('@/modules/manufacturing/domain/componentInstallation', () => ({
   InvalidReplacementError: class InvalidReplacementError extends Error {},
 }))
+// Stand-in for the real class: same 3-arg signature, and a message derived from
+// the arguments so the assertion below pins "the action surfaces err.message"
+// without restating the real wording (which repairStatus/attribution own).
+vi.mock('@/modules/maintenance/services/attributionService', () => ({
+  InvalidAttributionError: class InvalidAttributionError extends Error {
+    constructor(kind: string, code: string, _attributionId: string) {
+      super(`${kind}:${code}`)
+      this.name = 'InvalidAttributionError'
+    }
+  },
+}))
 vi.mock('@/modules/shared/authz/authorize', () => ({
   authorize: mockAuthorize,
   PermissionError: class PermissionError extends Error {},
@@ -23,7 +34,8 @@ vi.mock('@/lib/db/tx', () => ({
   OptimisticLockError: class OptimisticLockError extends Error {},
   withTransaction: mockWithTransaction,
 }))
-vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
+const mockRevalidatePath = vi.fn()
+vi.mock('next/cache', () => ({ revalidatePath: mockRevalidatePath }))
 
 const { replaceComponentAction, installComponentAction, listAvailableUnitsAction } = await import(
   '@/app/(platform)/manufacturing/devices/[id]/componentActions')
@@ -37,6 +49,7 @@ beforeEach(() => {
   mockInstall.mockReset()
   mockAuthorize.mockReset()
   mockWithTransaction.mockReset()
+  mockRevalidatePath.mockReset()
 })
 
 describe('replaceComponentAction', () => {
@@ -59,6 +72,39 @@ describe('replaceComponentAction', () => {
       replacementUnitId: 'u2' })
     expect(res.ok).toBe(false)
     expect((res as { error: string }).error).not.toContain('constraint')
+  })
+
+  it('maps a cross-device attribution to its own message, not the generic one', async () => {
+    const { InvalidAttributionError } = await import(
+      '@/modules/maintenance/services/attributionService')
+    mockReplace.mockRejectedValue(
+      new InvalidAttributionError('repair', 'device_mismatch', 'r-elsewhere'))
+    const res = await replaceComponentAction('dev1', { removedInstallationId: 'i1', reason: 'x',
+      replacementUnitId: 'u2', repairId: 'r-elsewhere' })
+    expect(res).toEqual({ ok: false, error: 'repair:device_mismatch' })
+  })
+
+  // The attributed record's page shows the same component set, so it has to be
+  // revalidated too — derived from the INPUT, never a path the client passes.
+  it('revalidates the attributed repair / modification page as well as the device', async () => {
+    mockReplace.mockResolvedValue({ closedId: 'a', newId: 'b', current: [] })
+    await replaceComponentAction('dev1', { removedInstallationId: 'i1', reason: 'x',
+      replacementUnitId: 'u2', repairId: 'r1' })
+    expect(mockRevalidatePath.mock.calls.flat()).toEqual(
+      expect.arrayContaining(['/manufacturing/devices/dev1', '/maintenance/repairs/r1']))
+
+    mockRevalidatePath.mockReset()
+    await replaceComponentAction('dev1', { removedInstallationId: 'i1', reason: 'x',
+      replacementUnitId: 'u2', modificationId: 'm1' })
+    expect(mockRevalidatePath.mock.calls.flat()).toEqual(
+      expect.arrayContaining(['/maintenance/modifications/m1']))
+  })
+
+  it('revalidates only the device page for an unattributed replacement', async () => {
+    mockReplace.mockResolvedValue({ closedId: 'a', newId: 'b', current: [] })
+    await replaceComponentAction('dev1', { removedInstallationId: 'i1', reason: 'x',
+      replacementUnitId: 'u2' })
+    expect(mockRevalidatePath.mock.calls).toEqual([['/manufacturing/devices/dev1']])
   })
 })
 

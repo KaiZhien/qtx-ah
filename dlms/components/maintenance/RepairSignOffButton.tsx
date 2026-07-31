@@ -10,17 +10,22 @@ import { signOffRepairAction } from '@/app/(platform)/maintenance/repairs/action
 type Props = {
   repairId: string
   version: number
-  /** Whether testing notes are present — the sign-off precondition (spec §5.3). */
-  hasTestingNotes: boolean
+  /**
+   * Why sign-off is not yet possible, or null when it is — the page derives it
+   * from the same facts evaluateSignOff decides on (spec §5.3/§5.4).
+   */
+  blockedReason: string | null
 }
 
 /**
- * Sign-off control (permission sign_off_repairs). Only rendered when the repair is
- * at awaiting_sign_off. Disabled with a hint when testing notes are missing — the
- * server enforces the same precondition (evaluateSignOff), so this only saves a
- * doomed round-trip; it is not the enforcement.
+ * Sign-off control (permission sign_off_repairs). Only rendered when the repair
+ * is at awaiting_sign_off. Disabled with a hint when a precondition is unmet —
+ * missing testing notes, or a parts-replaced claim with no component change
+ * recorded against the repair. The server enforces the same preconditions
+ * (evaluateSignOff, on facts read inside its own transaction), so this only
+ * saves a doomed round-trip; it is not the enforcement.
  */
-export function RepairSignOffButton({ repairId, version, hasTestingNotes }: Props) {
+export function RepairSignOffButton({ repairId, version, blockedReason }: Props) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -45,13 +50,11 @@ export function RepairSignOffButton({ repairId, version, hasTestingNotes }: Prop
 
   return (
     <>
-      <Button type="button" onClick={() => setOpen(true)} disabled={!hasTestingNotes}>
+      <Button type="button" onClick={() => setOpen(true)} disabled={blockedReason !== null}>
         Sign off
       </Button>
-      {!hasTestingNotes && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          Record testing notes before signing off.
-        </p>
+      {blockedReason && (
+        <p className="mt-1 max-w-prose text-xs text-muted-foreground">{blockedReason}</p>
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>

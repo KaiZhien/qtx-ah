@@ -6,6 +6,7 @@ import {
   replaceComponentInstallation, installComponent, type ReplaceInput,
 } from '@/modules/manufacturing/services/componentService'
 import { InvalidReplacementError } from '@/modules/manufacturing/domain/componentInstallation'
+import { InvalidAttributionError } from '@/modules/maintenance/services/attributionService'
 import { OptimisticLockError, withTransaction } from '@/lib/db/tx'
 import { authorize, PermissionError } from '@/modules/shared/authz/authorize'
 
@@ -14,20 +15,33 @@ export type ActionResult = { ok: true } | { ok: false; error: string }
 /**
  * Maps internal errors to user-facing text — a raw exception (Postgres
  * constraint violation, service internals) must never reach the browser.
- * Anything outside the three known cases is logged server-side only and
- * replaced with a generic message.
+ * Anything outside the known cases is logged server-side only and replaced
+ * with a generic message.
  */
 function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
   if (err instanceof InvalidReplacementError) return err.message
+  // The §5.4 attribution rule: its message already names the problem precisely
+  // ("that repair is for a different device"), so it surfaces as written.
+  if (err instanceof InvalidAttributionError) return err.message
   if (err instanceof OptimisticLockError) return 'Someone else changed this device. Reload and try again.'
   if (err instanceof PermissionError) return "You don't have permission to do that."
   console.error(JSON.stringify({ level: 'error', msg: 'component action failed', err: String(err) }))
   return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
 }
 
+/**
+ * The one replacement action, whether it is invoked from the device profile or
+ * from inside a repair (spec §5.4: "the engineer performs one action; the
+ * system fans out. No double entry."). Attribution rides along in `input`, so
+ * there is no second action and no second dialog to keep in step.
+ *
+ * The attributed record's page shows the same component set, so it is
+ * revalidated too — DERIVED from the validated input, never a path the client
+ * hands us.
+ */
 export async function replaceComponentAction(
   deviceId: string, input: ReplaceInput,
 ): Promise<ActionResult> {
@@ -35,6 +49,8 @@ export async function replaceComponentAction(
     const actor = await requireAal2Actor()
     await replaceComponentInstallation(actor, input)
     revalidatePath(`/manufacturing/devices/${deviceId}`)
+    if (input.repairId) revalidatePath(`/maintenance/repairs/${input.repairId}`)
+    if (input.modificationId) revalidatePath(`/maintenance/modifications/${input.modificationId}`)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: toMessage(err) }

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
+import { assertSameDevice } from '@/modules/maintenance/services/attributionService'
 import {
   MODIFICATION_STATUSES, modificationStatusLabel,
   evaluateModificationTransition, messageForModificationTransitionError,
@@ -23,8 +24,9 @@ import {
  * device out of service — §6.3 gives it no device-status semantics — so there is
  * no device write here at all, and the module's "read the shared device registry,
  * never write it" rule holds trivially. Component swaps a modification causes are
- * recorded by the §14 replacement primitive, which already accepts a
- * modificationId; wiring that control up is the next task's work.
+ * recorded by the §14 replacement primitive, which validates the modificationId
+ * against the installation's own device (attributionService); the modification
+ * detail page that surfaces that control is Task 4's work.
  */
 
 export class ModificationNotFoundError extends Error {
@@ -322,7 +324,15 @@ export async function createModification(
     await assertReferenceExists(tx, 'device', data.deviceId)
     await assertReferenceExists(tx, 'modification_type', data.modificationTypeId)
     if (data.ecoId) await assertReferenceExists(tx, 'eco', data.ecoId)
-    if (data.repairId) await assertReferenceExists(tx, 'repair', data.repairId)
+    // A repair link is SAME-DEVICE, not merely live: an ECO applies to a whole
+    // fleet, but "the repair this modification arose from" is a claim about
+    // this device's history, and one naming another device's repair is a
+    // traceability lie the FK cannot see. Existence is checked first so an
+    // unknown id still reports as a missing reference, not as a mismatch.
+    if (data.repairId) {
+      await assertReferenceExists(tx, 'repair', data.repairId)
+      await assertSameDevice(tx, 'repair', data.repairId, data.deviceId)
+    }
 
     const { rows } = await tx.query<{ id: string; modification_no: string }>(
       `INSERT INTO modification
@@ -389,8 +399,11 @@ export async function updateModification(
   const data = updateSchema.parse(input)
 
   return withTransaction(actor.id, async (tx) => {
-    const { rows: modRows } = await tx.query<{ version: number }>(
-      `SELECT version FROM modification WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    // device_id comes back from the lock because the repair link is validated
+    // against it below; the column itself is not editable (absent from
+    // UPDATE_COLUMNS), so the locked value is the whole truth.
+    const { rows: modRows } = await tx.query<{ version: number; device_id: string }>(
+      `SELECT version, device_id FROM modification WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [data.modificationId])
     if (modRows.length === 0) throw new ModificationNotFoundError(data.modificationId)
     if (modRows[0].version !== data.version) {
@@ -401,7 +414,10 @@ export async function updateModification(
       await assertReferenceExists(tx, 'modification_type', data.modificationTypeId)
     }
     if (data.ecoId) await assertReferenceExists(tx, 'eco', data.ecoId)
-    if (data.repairId) await assertReferenceExists(tx, 'repair', data.repairId)
+    if (data.repairId) {
+      await assertReferenceExists(tx, 'repair', data.repairId)
+      await assertSameDevice(tx, 'repair', data.repairId, modRows[0].device_id)
+    }
 
     const sets: string[] = []
     const params: unknown[] = []

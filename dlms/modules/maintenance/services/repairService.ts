@@ -3,6 +3,7 @@ import { withTransaction, OptimisticLockError } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { changeDeviceStatus } from '@/modules/manufacturing/services/deviceWriteService'
+import { countInstallationsForRepair } from '@/modules/manufacturing/services/componentService'
 import {
   REPAIR_STATUSES, repairStatusLabel,
   evaluateRepairTransition, messageForRepairTransitionError, InvalidRepairTransitionError,
@@ -155,6 +156,14 @@ export type RepairDetail = {
   warrantyFlag: boolean
   warrantyJustification: string | null
   costSgd: string | null
+  /** The technician's CLAIM that this repair involved a component change. */
+  partsReplaced: boolean
+  /**
+   * How many component_installation rows reference this repair — what BACKS
+   * the claim above. Exposed so the page can disable a sign-off that would be
+   * refused; the enforcement is signOffRepair's own in-transaction read.
+   */
+  recordedReplacementCount: number
   reportedByName: string | null
   assignedToName: string | null
   signedOffByName: string | null
@@ -178,14 +187,15 @@ export async function getRepair(actor: Actor, repairId: string): Promise<RepairD
       device_sn: string | null; device_status: string; device_status_label: string
       fault_description: string | null; diagnosis: string | null; corrective_action: string | null
       testing_notes: string | null; warranty_flag: boolean; warranty_justification: string | null
-      cost_sgd: string | null; reported_by_name: string | null; assigned_to_name: string | null
+      cost_sgd: string | null; parts_replaced: boolean
+      reported_by_name: string | null; assigned_to_name: string | null
       signed_off_by_name: string | null; signed_off_at: Date | null
       opened_at: Date; closed_at: Date | null; version: number
     }>(
       `SELECT r.id, r.repair_no, r.status, r.device_id, d.device_sn,
               d.status AS device_status, ds.label_en AS device_status_label,
               r.fault_description, r.diagnosis, r.corrective_action, r.testing_notes,
-              r.warranty_flag, r.warranty_justification, r.cost_sgd,
+              r.warranty_flag, r.warranty_justification, r.cost_sgd, r.parts_replaced,
               rep.full_name AS reported_by_name, asg.full_name AS assigned_to_name,
               so.full_name AS signed_off_by_name, r.signed_off_at,
               r.opened_at, r.closed_at, r.version
@@ -207,6 +217,10 @@ export async function getRepair(actor: Actor, repairId: string): Promise<RepairD
          FROM repair_status_history h JOIN app_user u ON u.id = h.changed_by
         WHERE h.repair_id = $1 ORDER BY h.changed_at DESC`, [repairId])
 
+    // Manufacturing owns component_installation, so the count comes from its
+    // service rather than a join into its table from here.
+    const recordedReplacementCount = await countInstallationsForRepair(tx, repairId)
+
     return {
       id: r.id, repairNo: r.repair_no, status: r.status, statusLabel: repairStatusLabel(r.status),
       deviceId: r.device_id, deviceSn: r.device_sn,
@@ -214,7 +228,8 @@ export async function getRepair(actor: Actor, repairId: string): Promise<RepairD
       faultDescription: r.fault_description, diagnosis: r.diagnosis,
       correctiveAction: r.corrective_action, testingNotes: r.testing_notes,
       warrantyFlag: r.warranty_flag, warrantyJustification: r.warranty_justification,
-      costSgd: r.cost_sgd, reportedByName: r.reported_by_name, assignedToName: r.assigned_to_name,
+      costSgd: r.cost_sgd, partsReplaced: r.parts_replaced, recordedReplacementCount,
+      reportedByName: r.reported_by_name, assignedToName: r.assigned_to_name,
       signedOffByName: r.signed_off_by_name, signedOffAt: r.signed_off_at,
       openedAt: r.opened_at, closedAt: r.closed_at, version: r.version,
       statusHistory: history.rows.map((h) => ({
@@ -342,6 +357,7 @@ const updateSchema = z.object({
   warrantyFlag: z.boolean().optional(),
   warrantyJustification: z.string().max(2000).nullish(),
   costSgd: z.number().nonnegative().nullish(),
+  partsReplaced: z.boolean().optional(),   // NOT NULL in the schema — never nullish
 })
 export type UpdateRepairInput = z.input<typeof updateSchema>
 
@@ -349,11 +365,18 @@ export type UpdateRepairInput = z.input<typeof updateSchema>
 // deliberately absent: it changes ONLY through changeRepairStatus / signOffRepair
 // so the transition graph and history log can never be bypassed. testing_notes is
 // editable here — it is the field the sign-off precondition reads.
+//
+// parts_replaced is editable for the same reason, and ONLY here. It is the
+// technician's assertion (see the column's COMMENT), so it must be typed in;
+// deriving it from the component record would make the §5.4 precondition
+// vacuous — the claim could never disagree with reality, which is precisely the
+// disagreement sign-off exists to catch.
 const UPDATE_COLUMNS: Record<string, string> = {
   faultDescription: 'fault_description', diagnosis: 'diagnosis',
   correctiveAction: 'corrective_action', testingNotes: 'testing_notes',
   assignedTo: 'assigned_to', warrantyFlag: 'warranty_flag',
   warrantyJustification: 'warranty_justification', costSgd: 'cost_sgd',
+  partsReplaced: 'parts_replaced',
 }
 
 /**
@@ -462,11 +485,19 @@ const signOffSchema = z.object({
 export type SignOffRepairInput = z.input<typeof signOffSchema>
 
 /**
- * Sign off a repair (spec §5.3, permission sign_off_repairs). One transaction:
- * lock the repair, enforce the pure precondition (must be awaiting_sign_off with
- * testing notes present), stamp signed_off_by/at, set status closed, append
- * history. THEN — as a second, non-atomic transaction (moveDevice) — return the
- * device Under Repair → Active when it is currently under repair.
+ * Sign off a repair (spec §5.3 + §5.4, permission sign_off_repairs). One
+ * transaction: lock the repair, enforce the pure precondition, stamp
+ * signed_off_by/at, set status closed, append history. THEN — as a second,
+ * non-atomic transaction (moveDevice) — return the device Under Repair → Active
+ * when it is currently under repair.
+ *
+ * The precondition now has three facts, not two: awaiting_sign_off, testing
+ * notes present, AND — when the repair CLAIMS parts were replaced — at least
+ * one component_installation referencing it. That last count is read INSIDE
+ * this transaction, after the FOR UPDATE lock, deliberately: a count taken
+ * before the transaction could be satisfied when asked and void by the time the
+ * repair closes, which would let exactly the failure §5.4 describes slip
+ * through under concurrency.
  */
 export async function signOffRepair(
   actor: Actor, input: SignOffRepairInput,
@@ -476,15 +507,21 @@ export async function signOffRepair(
 
   const deviceId = await withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
-      status: RepairStatus; testing_notes: string | null; version: number; device_id: string
+      status: RepairStatus; testing_notes: string | null; parts_replaced: boolean
+      version: number; device_id: string
     }>(
-      `SELECT status, testing_notes, version, device_id
+      `SELECT status, testing_notes, parts_replaced, version, device_id
          FROM repair WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.repairId])
     if (rows.length === 0) throw new RepairNotFoundError(data.repairId)
     const current = rows[0]
     if (current.version !== data.version) throw new OptimisticLockError('repair', data.repairId)
 
-    const decision = evaluateSignOff({ status: current.status, testingNotes: current.testing_notes })
+    const decision = evaluateSignOff({
+      status: current.status,
+      testingNotes: current.testing_notes,
+      partsReplaced: current.parts_replaced,
+      recordedReplacementCount: await countInstallationsForRepair(tx, data.repairId),
+    })
     if (!decision.ok) {
       throw new RepairSignOffError(decision.error, messageForSignOffError(decision.error))
     }

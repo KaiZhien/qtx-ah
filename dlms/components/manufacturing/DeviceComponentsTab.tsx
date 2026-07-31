@@ -1,11 +1,18 @@
 import { requireActor } from '@/modules/shared/auth/session'
 import { getDeviceComponents } from '@/modules/manufacturing/services/componentService'
 import { listComponentTypes } from '@/modules/manufacturing/services/componentCatalogueService'
-import { DeviceComponentsPanel } from './DeviceComponentsPanel'
+import { DeviceComponentsPanel, type ReplacementAttribution } from './DeviceComponentsPanel'
 
 type DeviceComponentsTabProps = {
   deviceId: string
   canEdit: boolean
+  /**
+   * Set when this tab is rendered from a repair (or, later, a modification) so
+   * every replacement made here carries that record. Absent on the device
+   * profile. The CALLER must have already checked view_records on
+   * manufacturing — the services below throw rather than degrade.
+   */
+  attribution?: ReplacementAttribution
 }
 
 /**
@@ -19,7 +26,9 @@ type DeviceComponentsTabProps = {
  * matching the page's existing view_records gate (Task 13 checks that before
  * this component is reached).
  */
-export async function DeviceComponentsTab({ deviceId, canEdit }: DeviceComponentsTabProps) {
+export async function DeviceComponentsTab({
+  deviceId, canEdit, attribution,
+}: DeviceComponentsTabProps) {
   const actor = await requireActor()
   const [{ current, history }, types] = await Promise.all([
     getDeviceComponents(actor, deviceId),
@@ -33,6 +42,7 @@ export async function DeviceComponentsTab({ deviceId, canEdit }: DeviceComponent
       current={current}
       history={history}
       types={types}
+      attribution={attribution}
     />
   )
 }

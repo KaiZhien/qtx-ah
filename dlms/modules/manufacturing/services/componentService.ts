@@ -3,6 +3,7 @@ import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { assertReplacementShape } from '@/modules/manufacturing/domain/componentInstallation'
+import { assertSameDevice } from '@/modules/maintenance/services/attributionService'
 
 export type CurrentComponent = {
   installationId: string; componentTypeCode: string; componentTypeName: string
@@ -92,8 +93,9 @@ export type ReplaceInput = z.input<typeof replaceSchema>
  * The §14 primitive. One transaction: close the open installation, open the new
  * one, flip the removed/installed unit dispositions, bump device.version. Either
  * all of it commits or none — a device can never show a replacement its history
- * lacks. The future Repair/Modification workflows call this with a repairId /
- * modificationId; today those columns are just recorded.
+ * lacks. The Repair/Modification workflows call this with a repairId /
+ * modificationId, which is VALIDATED here (see assertSameDevice) rather than
+ * merely recorded: the attributed record must be live and for this very device.
  */
 export async function replaceComponentInstallation(
   actor: Actor, input: ReplaceInput,
@@ -122,6 +124,17 @@ export async function replaceComponentInstallation(
       replacementUnitId: data.replacementUnitId ?? null,
       replacementBatchNo: data.replacementBatchNo ?? null,
     })
+
+    // Attribution rule (spec §5.4). Runs HERE, after the lock that established
+    // open.device_id and before any write, so no caller — action, script or a
+    // future service — can record a swap against another device's repair. A
+    // throw rolls the whole replacement back.
+    if (data.repairId) {
+      await assertSameDevice(tx, 'repair', data.repairId, open.device_id)
+    }
+    if (data.modificationId) {
+      await assertSameDevice(tx, 'modification', data.modificationId, open.device_id)
+    }
 
     // 1. Close the old installation (the append-only guard permits this one-time stamp).
     await tx.query(
@@ -156,6 +169,26 @@ export async function replaceComponentInstallation(
         ORDER BY ct.sort, ci.slot_no`, [open.device_id])
     return { closedId: data.removedInstallationId, newId, current: rows.map(toItem) }
   })
+}
+
+/**
+ * How many component_installation rows reference `repairId` — the fact behind
+ * the §5.4 sign-off precondition ("a parts-replaced claim must be backed").
+ *
+ * A `Tx`-accepting internal, not a service call: signOffRepair must read this
+ * INSIDE the transaction that holds the repair's row lock, or the count could
+ * be true when asked and false when the repair closes. It therefore opens no
+ * transaction and authorizes nothing — the caller has already done both.
+ *
+ * component_installation is a Manufacturing table, so the query lives here and
+ * Maintenance calls in, rather than reaching across into another module's
+ * tables. Note a single §14 replacement stamps TWO rows (the one it closes and
+ * the one it opens), which is why the domain rule is "at least one".
+ */
+export async function countInstallationsForRepair(tx: Tx, repairId: string): Promise<number> {
+  const { rows } = await tx.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM component_installation WHERE repair_id = $1`, [repairId])
+  return rows[0].n
 }
 
 async function insertInstallation(

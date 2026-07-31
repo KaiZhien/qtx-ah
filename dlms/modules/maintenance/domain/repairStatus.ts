@@ -101,28 +101,62 @@ export class InvalidRepairTransitionError extends Error {
 }
 
 // ── Sign-off precondition (signOffRepair) ───────────────────────────────────
-export type SignOffErrorCode = 'not_awaiting_sign_off' | 'testing_notes_required'
+export const SIGN_OFF_ERROR_CODES = [
+  'not_awaiting_sign_off', 'testing_notes_required', 'replacement_not_recorded',
+] as const
+export type SignOffErrorCode = (typeof SIGN_OFF_ERROR_CODES)[number]
 
 export type SignOffDecision = { ok: true } | { ok: false; error: SignOffErrorCode }
 
 /**
- * The sign-off precondition (spec §5.3): a repair may be signed off ONLY from
- * awaiting_sign_off AND only when testing notes are present. Sign-off then closes
- * the repair and returns the device to service — so both facts must hold before
- * any of that runs.
+ * The facts sign-off decides on. All four are REQUIRED — a caller that omitted
+ * the replacement facts would silently skip the §5.4 rule, so the type refuses
+ * to let it.
+ *
+ * `recordedReplacementCount` is how many component_installation rows reference
+ * this repair. A §14 replacement stamps two (the row it closes and the row it
+ * opens), so the rule below is "at least one", never "exactly one".
  */
-export function evaluateSignOff(
-  facts: { status: RepairStatus; testingNotes: string | null },
-): SignOffDecision {
+export type SignOffFacts = {
+  status: RepairStatus
+  testingNotes: string | null
+  partsReplaced: boolean
+  recordedReplacementCount: number
+}
+
+/**
+ * The sign-off precondition (spec §5.3 + §5.4): a repair may be signed off ONLY
+ * from awaiting_sign_off, only when testing notes are present, and — when the
+ * technician CLAIMED parts were replaced — only when the component record backs
+ * that claim. Sign-off then closes the repair and returns the device to service,
+ * so all three must hold before any of that runs.
+ *
+ * The third rule is the one that matters in a device registry. `parts_replaced`
+ * is an assertion about the world (see the column's COMMENT); without this check
+ * a technician can say a board was swapped, sign off, and leave the device's
+ * component set showing the old board forever. The converse is deliberately NOT
+ * an error: a replacement recorded against a repair that never claimed one is
+ * simply work that was done, not a contradiction.
+ */
+export function evaluateSignOff(facts: SignOffFacts): SignOffDecision {
   if (facts.status !== 'awaiting_sign_off') return { ok: false, error: 'not_awaiting_sign_off' }
   if (!facts.testingNotes?.trim()) return { ok: false, error: 'testing_notes_required' }
+  if (facts.partsReplaced && facts.recordedReplacementCount < 1) {
+    return { ok: false, error: 'replacement_not_recorded' }
+  }
   return { ok: true }
 }
 
+const SIGN_OFF_ERROR_MESSAGES: Record<SignOffErrorCode, string> = {
+  not_awaiting_sign_off: 'A repair can only be signed off while it is awaiting sign-off.',
+  testing_notes_required: 'Sign-off requires testing notes to be recorded first.',
+  replacement_not_recorded:
+    'This repair records that parts were replaced, but no component replacement references it. '
+    + 'Replace the component from this repair first, or clear the parts-replaced claim.',
+}
+
 export function messageForSignOffError(code: SignOffErrorCode): string {
-  return code === 'not_awaiting_sign_off'
-    ? 'A repair can only be signed off while it is awaiting sign-off.'
-    : 'Sign-off requires testing notes to be recorded first.'
+  return SIGN_OFF_ERROR_MESSAGES[code]
 }
 
 export class RepairSignOffError extends Error {

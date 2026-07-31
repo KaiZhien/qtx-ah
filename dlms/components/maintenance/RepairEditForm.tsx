@@ -20,6 +20,7 @@ type Props = {
     warrantyFlag: boolean
     warrantyJustification: string | null
     costSgd: string | null
+    partsReplaced: boolean
   }
 }
 
@@ -38,6 +39,7 @@ export function RepairEditForm({ repairId, version, initial }: Props) {
   const [warranty, setWarranty] = useState(initial.warrantyFlag)
   const [warrantyNote, setWarrantyNote] = useState(initial.warrantyJustification ?? '')
   const [cost, setCost] = useState(initial.costSgd ?? '')
+  const [partsReplaced, setPartsReplaced] = useState(initial.partsReplaced)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -59,6 +61,7 @@ export function RepairEditForm({ repairId, version, initial }: Props) {
         warrantyFlag: warranty,
         warrantyJustification: warranty ? warrantyNote.trim() || null : null,
         costSgd: parsedCost,
+        partsReplaced,
       })
       if (!res.ok) { setError(res.error); toast.error(res.error); return }
       toast.success('Repair updated')
@@ -99,6 +102,26 @@ export function RepairEditForm({ repairId, version, initial }: Props) {
           Testing notes <span className="text-muted-foreground">(required to sign off)</span>
         </Label>
         <Textarea id="edit-testing" value={testing} onChange={(e) => setTesting(e.target.value)} />
+      </div>
+      {/*
+        The parts-replaced CLAIM. Typed in, never derived: sign-off refuses to
+        close a repair that claims a swap the component record does not show
+        (spec §5.4), and a derived flag could never disagree.
+      */}
+      <div className="flex items-start gap-2">
+        <input
+          id="edit-parts-replaced" type="checkbox" checked={partsReplaced}
+          onChange={(e) => setPartsReplaced(e.target.checked)}
+          className="mt-1 h-4 w-4 rounded border-input"
+        />
+        <div>
+          <Label htmlFor="edit-parts-replaced" className="cursor-pointer">
+            Parts were replaced during this repair
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Sign-off requires at least one component replacement recorded against this repair.
+          </p>
+        </div>
       </div>
       <div className="flex items-center gap-2">
         <input

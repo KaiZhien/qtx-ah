@@ -3,8 +3,8 @@ import {
   REPAIR_STATUSES, REPAIR_STATUS_LABELS, repairStatusLabel,
   isValidRepairTransition, allowedNextRepairStatuses,
   evaluateRepairTransition, messageForRepairTransitionError,
-  evaluateSignOff, messageForSignOffError,
-  type RepairStatus,
+  evaluateSignOff, messageForSignOffError, SIGN_OFF_ERROR_CODES,
+  type RepairStatus, type SignOffDecision,
 } from '@/modules/maintenance/domain/repairStatus'
 
 describe('repair status vocabulary (spec §5.3 — six-state workflow)', () => {
@@ -144,34 +144,93 @@ describe('evaluateRepairTransition (ordinary changeRepairStatus)', () => {
   })
 })
 
-describe('evaluateSignOff (the sign-off precondition, spec §5.3)', () => {
+describe('evaluateSignOff (the sign-off precondition, spec §5.3/§5.4)', () => {
+  // The facts a repair that has done everything right presents. Individual
+  // tests override exactly the fact under examination.
+  const ready = {
+    status: 'awaiting_sign_off' as RepairStatus,
+    testingNotes: 'all tests pass',
+    partsReplaced: false,
+    recordedReplacementCount: 0,
+  }
+
   it('accepts only from awaiting_sign_off with testing notes present', () => {
-    expect(evaluateSignOff({ status: 'awaiting_sign_off', testingNotes: 'all tests pass' }))
-      .toEqual({ ok: true })
+    expect(evaluateSignOff(ready)).toEqual({ ok: true })
   })
 
   it('refuses from any non-awaiting_sign_off state', () => {
     for (const s of REPAIR_STATUSES) {
       if (s === 'awaiting_sign_off') continue
-      expect(evaluateSignOff({ status: s, testingNotes: 'x' }))
+      expect(evaluateSignOff({ ...ready, status: s }))
         .toEqual({ ok: false, error: 'not_awaiting_sign_off' })
     }
   })
 
   it('refuses when testing notes are missing or blank', () => {
-    expect(evaluateSignOff({ status: 'awaiting_sign_off', testingNotes: null }))
+    expect(evaluateSignOff({ ...ready, testingNotes: null }))
       .toEqual({ ok: false, error: 'testing_notes_required' })
-    expect(evaluateSignOff({ status: 'awaiting_sign_off', testingNotes: '   ' }))
+    expect(evaluateSignOff({ ...ready, testingNotes: '   ' }))
       .toEqual({ ok: false, error: 'testing_notes_required' })
   })
 
   it('checks the state before the testing-notes rule', () => {
-    expect(evaluateSignOff({ status: 'reported', testingNotes: null }))
+    expect(evaluateSignOff({ ...ready, status: 'reported', testingNotes: null }))
       .toEqual({ ok: false, error: 'not_awaiting_sign_off' })
+  })
+
+  // ── The parts-replaced claim must be BACKED (spec §5.4) ───────────────────
+  // The whole point: a technician asserts a board was swapped, signs off, and
+  // the component record never changed. Refused.
+  it('refuses sign-off when parts_replaced is claimed but nothing references the repair', () => {
+    expect(evaluateSignOff({ ...ready, partsReplaced: true, recordedReplacementCount: 0 }))
+      .toEqual({ ok: false, error: 'replacement_not_recorded' })
+  })
+
+  it('accepts once at least one installation references the repair', () => {
+    expect(evaluateSignOff({ ...ready, partsReplaced: true, recordedReplacementCount: 1 }))
+      .toEqual({ ok: true })
+    // A §14 replacement stamps BOTH the closed row and the new one, so two is
+    // the ordinary count for a single swap — the rule is "at least one".
+    expect(evaluateSignOff({ ...ready, partsReplaced: true, recordedReplacementCount: 2 }))
+      .toEqual({ ok: true })
+  })
+
+  it('has nothing to verify when no claim was made (the default for every repair)', () => {
+    expect(evaluateSignOff({ ...ready, partsReplaced: false, recordedReplacementCount: 0 }))
+      .toEqual({ ok: true })
+    // A replacement recorded WITHOUT the claim is not an error either — the
+    // rule backs a claim, it does not forbid unclaimed work.
+    expect(evaluateSignOff({ ...ready, partsReplaced: false, recordedReplacementCount: 3 }))
+      .toEqual({ ok: true })
+  })
+
+  it('checks state and testing notes before the replacement rule', () => {
+    expect(evaluateSignOff({
+      ...ready, status: 'in_repair', partsReplaced: true, recordedReplacementCount: 0,
+    })).toEqual({ ok: false, error: 'not_awaiting_sign_off' })
+    expect(evaluateSignOff({
+      ...ready, testingNotes: null, partsReplaced: true, recordedReplacementCount: 0,
+    })).toEqual({ ok: false, error: 'testing_notes_required' })
+  })
+
+  it('the full matrix of (partsReplaced × recordedReplacementCount) on an otherwise-ready repair', () => {
+    const matrix: [boolean, number, SignOffDecision][] = [
+      [false, 0, { ok: true }],
+      [false, 1, { ok: true }],
+      [true, 0, { ok: false, error: 'replacement_not_recorded' }],
+      [true, 1, { ok: true }],
+    ]
+    for (const [partsReplaced, recordedReplacementCount, expected] of matrix) {
+      expect(evaluateSignOff({ ...ready, partsReplaced, recordedReplacementCount }))
+        .toEqual(expected)
+    }
   })
 
   it('produces distinct human messages per error code', () => {
     expect(messageForSignOffError('not_awaiting_sign_off')).toMatch(/awaiting sign-off/i)
     expect(messageForSignOffError('testing_notes_required')).toMatch(/testing notes/i)
+    expect(messageForSignOffError('replacement_not_recorded')).toMatch(/replace/i)
+    const messages = new Set(SIGN_OFF_ERROR_CODES.map(messageForSignOffError))
+    expect(messages.size).toBe(SIGN_OFF_ERROR_CODES.length)
   })
 })
