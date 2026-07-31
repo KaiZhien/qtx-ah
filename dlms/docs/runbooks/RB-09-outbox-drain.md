@@ -11,6 +11,50 @@ handoff tasks (spec §5.5). The drain is the *only* thing that creates those tas
 > in the table until a drain runs. If a Logistics user asks why a shipped device
 > produced no task, this is the first thing to check, not last.
 
+## Deploy order — READ THIS FIRST
+
+**Apply `supabase/migrations/20260731000000_platform_outbox.sql` to the Supabase
+project BEFORE deploying the code to Vercel.** Not "at some point around the
+deploy" — strictly before.
+
+As of this branch the migration is **committed but not applied to cloud**, so the very
+next deploy is the one this applies to.
+
+Why the order is load-bearing: the **producer** depends on the table, not only the
+drain. `deviceWriteService.changeDeviceStatus` issues `INSERT INTO outbox …` *inside*
+the same transaction as the device update and the `device_status_history` row. Against
+a database without the table, that insert raises
+
+```
+relation "outbox" does not exist
+```
+
+which rolls the **whole transaction** back. The user-visible consequence is not "no
+handoff task" — it is:
+
+> **Every `ready_for_delivery → shipped` status change fails.** A manufacturing user
+> clicks the status control on a device profile, and the change is refused. The device
+> stays in `ready_for_delivery`. Nothing about the error mentions handoffs.
+
+That is a direct violation of the design's Global Constraint that a handoff must never
+break a status change, and it lasts until the migration is applied. Applying the
+migration first has no such hazard: an `outbox` table with no producer deployed simply
+stays empty, and the drain over it returns `claimed: 0`.
+
+```bash
+# 1. Apply the migration (Supabase MCP `apply_migration`, or the CLI). Committing the
+#    file does nothing by itself.
+# 2. Verify the table is really there before deploying:
+#    SELECT to_regclass('public.outbox');            -- must not be NULL
+#    SELECT id FROM app_user WHERE email = 'system@qtx.internal';   -- must return a row
+# 3. Only then:
+cd dlms && npx vercel deploy --prod --yes
+```
+
+If the order was reversed and status changes are already failing, the fix is to apply
+the migration — not to roll back the deploy. No data is lost either way: a rolled-back
+status-change transaction wrote nothing.
+
 ## What the outbox is, and why an event is never lost
 
 `deviceWriteService.changeDeviceStatus` writes the device row, the
@@ -53,8 +97,15 @@ runbook:
 - `__tests__/integration/outboxService.test.ts` — the drain end to end against real
   Postgres: exactly-once under a re-drain, an unknown template key recorded as a
   retryable failure rather than thrown, an unsupported `aggregate_type`/`event_type`
-  recorded rather than skipped, the attempts cap parking a row, and the automation
-  principal's resolved authority being exactly `create_records` + `view_records`.
+  recorded rather than skipped, the attempts cap parking a row, the automation
+  principal's resolved authority being exactly `create_records` + `view_records`, and
+  all four enforcement points that hold it there — including the console path
+  (`updateUserAccess` re-roling the principal to `super_admin`) being refused.
+- `__tests__/platform/shared/outboxDrainRoute.test.ts` — the HTTP trigger's gate: an
+  unset `OUTBOX_DRAIN_SECRET` refuses without draining, a wrong secret refuses, the
+  correct secret drains, a poison batch is still a `200`, and a convention pin that
+  `/api/outbox/drain` stays in `middleware.ts`'s `PUBLIC_PATHS` (without which every
+  request `307`s to `/login` before the handler runs, with the whole suite still green).
 - The whole suite green before this commit — see the report for the exact commands
   and counts.
 
@@ -64,7 +115,13 @@ runbook:
 - Trigger used (route / script): `___`
 - `claimed` / `processed` / `failed`: `___`
 - `parked`: `___`
-- Handoff tasks visible in the Logistics queue? `yes / no`: `___`
+- Handoff task visible on **`/tasks?scope=all`**? `yes / no`: `___`
+  (`scope=all`, not the default tab — see "Where the handoff task shows up". The
+  default is `scope=mine`, which filters on `assignee_id` and can never show an
+  unassigned handoff.)
+- Handoff task visible to a **Logistics user on `/tasks?scope=department`**? `yes / no`: `___`
+  (No, with `all` showing it, means the user's free-text `app_user.department` does not
+  equal the template's `'Logistics'` — a data mismatch, not a drain failure.)
 - Anything in `last_error`: `___`
 
 ## Safety
@@ -80,7 +137,9 @@ runbook:
   every module (a handoff crosses departments by definition) narrowed to exactly two
   permissions, `view_records` and `create_records`. It cannot assign tasks, cannot
   delete, cannot approve, and has no login path at all (a CHECK constraint forbids
-  linking an `auth.users` row to it).
+  linking an `auth.users` row to it). Its `role_id` and `module_access` are pinned by a
+  trigger, so the admin console cannot re-role it either. Those guards defend its
+  **ceiling**; its floor is a different matter — see "Investigating a parked event".
 - The created task is **unassigned**, on purpose. It belongs to the receiving
   department's queue, not to whoever an automation happened to pick — and the
   principal deliberately does not hold `assign_tasks`.
@@ -90,6 +149,42 @@ runbook:
 - Running the drain with **nothing to do is a no-op**: no candidates, no
   transactions, `claimed: 0`.
 
+## Where the handoff task shows up — and where it does not
+
+**A handoff task is NOT on the Tasks page's default tab.** This is the single most
+likely way to conclude "the drain didn't work" when it worked perfectly.
+
+`/tasks` defaults to `scope=mine`, which filters on `t.assignee_id = <you>`. Handoff
+tasks are created **unassigned**, on purpose (they belong to the receiving department's
+queue, not to whoever an automation happened to pick — and the principal deliberately
+does not hold `assign_tasks`). So `mine` will never show one, for anybody, until a human
+claims it.
+
+Look on:
+
+- **`/tasks?scope=department`** — the intended queue. Matches `task.department` against
+  the viewer's own `app_user.department`.
+- **`/tasks?scope=all`** — the fallback that always shows it (subject to the ordinary
+  visibility filter). Use this to answer "did the drain create anything?" before
+  debugging anyone's department string.
+
+**The department match is free text on both sides.** The template hardcodes
+`department: 'Logistics'` (`modules/shared/outbox/domain/handoffTemplates.ts`), and
+`app_user.department` has no vocabulary table, no CHECK and no normalization — it is
+whatever was typed when the user was invited. A Logistics user recorded as
+`logistics`, `Logistics Dept`, `LOGISTICS` or `NULL` will **not** see the task on the
+department tab, and nothing anywhere reports the mismatch. If `scope=all` shows the task
+and `scope=department` does not, this is why:
+
+```sql
+-- What the task says vs. what the people say.
+SELECT DISTINCT department FROM app_user WHERE deleted_at IS NULL ORDER BY 1;
+SELECT id, title, department FROM task WHERE department = 'Logistics';
+```
+
+Fix it on the user record (Admin → Users → the user's Department field), not on the
+template — the template's spelling is the one the code commits to.
+
 ## Prerequisites
 
 1. **`20260731000000_platform_outbox.sql` must be applied**, and `platform_seed.sql`
@@ -97,7 +192,8 @@ runbook:
    `fn_resolve_actor_by_user_id`, and the automation principal. If either the function
    or the principal is missing the drain throws before touching a single row — see "When
    the drain throws outright" for the two distinct messages. That is the intended
-   failure, not a defect.
+   failure, not a defect. **The migration is also a prerequisite of the *producer*, and
+   that one is not a graceful failure — see "Deploy order" at the top of this page.**
 2. **`DATABASE_URL` must connect as the owner of `fn_resolve_actor_by_user_id`.**
    This is the prerequisite most likely to be got wrong. That function has
    `EXECUTE` **revoked from `PUBLIC`, `anon` and `authenticated`**, and granted to
@@ -271,6 +367,52 @@ producer emits for any non-NULL key, and the payload schema requires a non-empty
 string, so `last_error` is a zod issue blob beginning
 `[ { "code": "too_small", ... "path": [ "taskTemplateKey" ] ... } ]`. Fix it by
 clearing the column to NULL, or by giving the edge a real key.
+
+**The second cause, and the one nobody guesses: somebody narrowed the `operator`
+role.** `last_error` reads exactly:
+
+```
+Permission denied: create_records in tasks
+```
+
+Nothing about that message mentions roles, the console, or the automation principal —
+so read it as what it is: *the drain lost a permission it used to have.* (`create_records`
+is the one the drain actually spends — `prepare()` in `taskService.ts` calls
+`authorize(actor, 'create_records', 'tasks')`. Un-ticking `view_records` strips it from
+the principal by the same coupling but breaks nothing today; restore it anyway, because
+the principal's asserted authority is exactly those two.)
+
+The cause is the reconciliation coupling, and it runs **both ways**.
+`fn_seed_system_actor()` derives the principal's authority from the `operator` role's
+*current* `role_permission` rows — the principal is "operator minus revocations", and it
+is revoked from everything except `view_records` and `create_records`. So a Super Admin
+un-ticking `create_records` for `operator` in the console's 24×6 role grid does not just
+narrow operators: `trg_reconcile_system_actor` fires on that same write and narrows the
+automation principal with it, in the same transaction. **Every handoff then fails**, and
+after five attempts the rows park.
+
+The obvious repair is unavailable **by design**: `trg_forbid_system_actor_grant` refuses
+any additive override on this principal, so you cannot grant the permission back to it
+directly. The guards defend the principal's *ceiling*; its *floor* is undefended and
+cannot be defended without breaking the derivation that keeps it narrow.
+
+*The fix is to restore the permission on the `operator` role* — Admin → Roles, re-tick
+the box (or `INSERT INTO role_permission` for `operator` × that permission). The
+reconciliation runs on that write too and the principal recovers immediately. Then
+un-park the affected rows (step 4) and drain.
+
+```sql
+-- Is the principal actually short a permission? Expect exactly two rows:
+-- create_records and view_records.
+SELECT unnest(role_permissions) AS perm FROM fn_resolve_actor_by_user_id(
+         '22222222-2222-2222-2222-222222222222')
+EXCEPT
+SELECT unnest(revoked_overrides) FROM fn_resolve_actor_by_user_id(
+         '22222222-2222-2222-2222-222222222222');
+```
+
+If that returns fewer than two rows, this is your cause. Do **not** try to fix it by
+granting the principal an override; the trigger will refuse you, and correctly.
 
 **1 — list what is parked.**
 

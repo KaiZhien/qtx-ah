@@ -10,6 +10,7 @@ import {
   SYSTEM_ACTOR_ID as EXPORTED_SYSTEM_ACTOR_ID, loadSystemActor,
 } from '@/modules/shared/authz/actor'
 import { drainOutbox, MAX_ATTEMPTS } from '@/modules/shared/outbox/services/outboxService'
+import { updateUserAccess } from '@/modules/admin/services/userService'
 
 // actor.ts imports the Supabase server client for the HUMAN login path (loadActor).
 // Nothing under test here goes near it, and importing next/headers in a bare node
@@ -598,6 +599,134 @@ describe('the system actor cannot be widened at runtime', () => {
         `UPDATE app_user SET auth_user_id = gen_random_uuid() WHERE id = $1`, [created[0].id]))
         .resolves.toBeDefined()
     })
+  })
+
+  /**
+   * Fix 4, the hole the first three left open. Every guard above defends the OVERRIDES,
+   * the role×permission matrix and the login path; none of them pinned `app_user.role_id`
+   * — and the principal's authority is DERIVED from whichever role that column points at.
+   * Re-pointing it at `super_admin` gave it sixteen permissions, and fn_seed_system_actor()
+   * did not heal it, because the revocations it re-derives come from `operator`.
+   *
+   * Asserted at the schema level first (the trigger is the enforcement), then through the
+   * console path that could actually reach it (below).
+   */
+  it('refuses to be re-pointed at another role', async () => {
+    await expect(db.query(
+      `UPDATE app_user SET role_id = (SELECT id FROM role WHERE key = 'super_admin')
+        WHERE id = $1`, [SYSTEM_ACTOR_ID]))
+      .rejects.toThrow(/automation principal/i)
+  })
+
+  /** Not only escalation: any role at all, including a narrower one, is refused. */
+  it('refuses to be re-pointed at a narrower role either', async () => {
+    await expect(db.query(
+      `UPDATE app_user SET role_id = (SELECT id FROM role WHERE key = 'viewer')
+        WHERE id = $1`, [SYSTEM_ACTOR_ID]))
+      .rejects.toThrow(/automation principal/i)
+  })
+
+  /**
+   * module_access is pinned by the same trigger because updateUserAccess writes it in the
+   * same UPDATE. Removing a module does not widen the principal — it BREAKS it: a handoff
+   * crosses departments by definition, so createTaskInTx would refuse every one of them.
+   */
+  it('refuses to have a module taken away', async () => {
+    await expect(db.query(
+      `UPDATE app_user SET module_access = ARRAY['tasks']::text[] WHERE id = $1`,
+      [SYSTEM_ACTOR_ID]))
+      .rejects.toThrow(/automation principal/i)
+  })
+
+  /** Compared as a SET, so re-ordering the same modules is not a change. */
+  it('accepts the same modules in a different order', async () => {
+    await inRollback(async () => {
+      await expect(db.query(
+        `UPDATE app_user SET module_access = ARRAY['admin','tasks','maintenance',
+           'manufacturing','logistics','finance','engineering']::text[] WHERE id = $1`,
+        [SYSTEM_ACTOR_ID]))
+        .resolves.toBeDefined()
+    })
+  })
+
+  /**
+   * The pin must not brick ordinary maintenance on the row. Deactivating the principal is
+   * a visible, recoverable stop (the drain throws, naming the migration) and stays legal;
+   * the runbook tells an operator to reactivate it.
+   */
+  it('still allows the principal to be deactivated and reactivated', async () => {
+    await inRollback(async () => {
+      await expect(db.query(`UPDATE app_user SET active = false WHERE id = $1`, [SYSTEM_ACTOR_ID]))
+        .resolves.toBeDefined()
+      await expect(db.query(`UPDATE app_user SET active = true WHERE id = $1`, [SYSTEM_ACTOR_ID]))
+        .resolves.toBeDefined()
+    })
+  })
+
+  /** Targeted, not a blanket freeze: ordinary users are still re-roled from the console. */
+  it('still allows an ordinary user to be re-roled', async () => {
+    await inRollback(async () => {
+      const { rows: created } = await db.query<{ id: string }>(
+        `INSERT INTO app_user (email, full_name, role_id, module_access, active)
+         SELECT 'outbox-role-pin@test.local', 'Role Pin', r.id, ARRAY['tasks']::text[], true
+           FROM role r WHERE r.key = 'viewer' RETURNING id`)
+      await expect(db.query(
+        `UPDATE app_user SET role_id = (SELECT id FROM role WHERE key = 'operator')
+          WHERE id = $1`, [created[0].id]))
+        .resolves.toBeDefined()
+    })
+  })
+})
+
+/**
+ * The route the pin above actually closes, exercised end to end.
+ *
+ * updateUserAccess is reachable by any holder of `manage_users` for ANY user id it is
+ * given — assertNotSelfEscalation only compares against the ACTOR's own id — and
+ * listUsers does not exclude the automation principal, so it is visible in the Super
+ * Admin console's user table to pick. Before the pin, this exact call succeeded and left
+ * the principal holding the full super_admin set; `roleKey === 'super_admin'` then
+ * short-circuits moduleAllowed() in taskService and canSeeTask() in visibility.
+ */
+describe('the admin console cannot widen the system actor', () => {
+  const superAdminActor = (id: string): Actor => ({
+    id, roleKey: 'super_admin',
+    permissions: new Set(['manage_users']), moduleAccess: new Set(['admin']),
+    active: true,
+  })
+
+  it('refuses updateUserAccess re-roling the principal to super_admin', async () => {
+    const saId = (await db.query<{ id: string }>(
+      `SELECT u.id FROM app_user u JOIN role r ON r.id = u.role_id
+        WHERE r.key = 'super_admin' AND u.active AND u.deleted_at IS NULL LIMIT 1`)).rows[0].id
+    const version = (await db.query<{ version: number }>(
+      `SELECT version FROM app_user WHERE id = $1`, [SYSTEM_ACTOR_ID])).rows[0].version
+
+    await expect(updateUserAccess(
+      superAdminActor(saId), SYSTEM_ACTOR_ID, { roleKey: 'super_admin' }, version))
+      .rejects.toThrow(/automation principal/i)
+
+    // ...and the refusal rolled the whole transaction back: unchanged, un-bumped.
+    const after = await resolveSystemActor()
+    expect(after.role_key).toBe('operator')
+    expect(effectivePermissions(after)).toEqual([...SYSTEM_ACTOR_PERMISSIONS].sort())
+    expect((await db.query<{ version: number }>(
+      `SELECT version FROM app_user WHERE id = $1`, [SYSTEM_ACTOR_ID])).rows[0].version)
+      .toBe(version)
+  })
+
+  it('refuses updateUserAccess narrowing the principal’s module access', async () => {
+    const saId = (await db.query<{ id: string }>(
+      `SELECT u.id FROM app_user u JOIN role r ON r.id = u.role_id
+        WHERE r.key = 'super_admin' AND u.active AND u.deleted_at IS NULL LIMIT 1`)).rows[0].id
+    const version = (await db.query<{ version: number }>(
+      `SELECT version FROM app_user WHERE id = $1`, [SYSTEM_ACTOR_ID])).rows[0].version
+
+    await expect(updateUserAccess(
+      superAdminActor(saId), SYSTEM_ACTOR_ID, { moduleAccess: ['tasks'] }, version))
+      .rejects.toThrow(/automation principal/i)
+
+    expect((await resolveSystemActor()).module_access.sort()).toEqual([...ALL_MODULES].sort())
   })
 })
 

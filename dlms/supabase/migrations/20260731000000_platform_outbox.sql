@@ -14,6 +14,25 @@
 -- an obstacle to route around — so the drain cannot run as the human who caused
 -- the event, and gets a dedicated automation principal instead.
 --
+-- APPLY THIS MIGRATION BEFORE DEPLOYING THE CODE THAT PRODUCES INTO IT.
+-- deviceWriteService.changeDeviceStatus writes `INSERT INTO outbox ...` INSIDE the
+-- status-change transaction. Deploy that code against a database where this migration
+-- has not been applied and the insert raises `relation "outbox" does not exist`, which
+-- rolls the whole transaction back: EVERY `ready_for_delivery → shipped` status change
+-- fails in the UI, not just the handoff. The producer hard-depends on this file, not
+-- only the drain does. See docs/runbooks/RB-09-outbox-drain.md, "Deploy order".
+--
+-- ONE TENSION, STATED UP FRONT: the automation principal's authority is DERIVED from
+-- the `operator` role's grants, and every enforcement point below guards its CEILING —
+-- it cannot be widened. Nothing guards its FLOOR, and nothing can: a Super Admin
+-- un-ticking `create_records` for `operator` in the console's 24×6 grid strips it from
+-- this principal in the same transaction, and every handoff then fails with
+-- `Permission denied: create_records in tasks` until the role grant is restored (five
+-- attempts later the row parks — RB-09, "Investigating a parked event"). The obvious
+-- repair, an additive override on the principal, is refused by ENFORCEMENT 2 on
+-- purpose. Narrowing `operator` therefore DISABLES THE DRAIN, and the fix is always to
+-- restore the permission on the role, never to grant it to the principal.
+--
 -- Belongs to the `qtx-ops-platform` project. Carries the platform_ token so
 -- __tests__/integration/setup.ts picks it up; committing this file does nothing
 -- by itself until applied via the Supabase MCP/CLI to the cloud project.
@@ -121,6 +140,29 @@ REVOKE EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) FROM PUBLIC, anon, 
 GRANT EXECUTE ON FUNCTION fn_resolve_actor_by_user_id(uuid) TO service_role;
 
 -- ---------------------------------------------------------------------------
+-- The automation principal's module set, in ONE place.
+--
+-- Two things need it and must never disagree: fn_seed_system_actor() below, which
+-- writes it, and fn_pin_system_actor_authority() (ENFORCEMENT 4), which refuses any
+-- other value. Restating the literal in both would make the pin silently
+-- unsatisfiable the day someone edits one of them — the principal could then not be
+-- written at all. A function is the cheapest single definition available inside a
+-- migration; plpgsql has no shared constants.
+--
+-- Every module, deliberately: a handoff crosses department boundaries by definition,
+-- so the breadth is the point and the two-permission narrowing is what keeps it from
+-- also being depth.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_system_actor_modules()
+RETURNS text[] LANGUAGE sql IMMUTABLE SET search_path = public, pg_temp AS $$
+  SELECT ARRAY['engineering','finance','logistics','manufacturing',
+               'maintenance','tasks','admin']::text[];
+$$;
+COMMENT ON FUNCTION fn_system_actor_modules() IS
+  'The module set the outbox drain''s automation principal holds (spec §5.5). Single definition shared by fn_seed_system_actor() (which writes it) and fn_pin_system_actor_authority() (which refuses anything else), so the seed can never write a value its own pin would reject.';
+REVOKE EXECUTE ON FUNCTION fn_system_actor_modules() FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- fn_seed_system_actor — the automation principal, as an idempotent function.
 --
 -- WHY A FUNCTION, AND WHY IT IS CALLED FROM TWO PLACES. Migrations are applied
@@ -192,8 +234,7 @@ BEGIN
   INSERT INTO app_user (id, auth_user_id, email, full_name, role_id,
                         module_access, active, created_by, updated_by)
   VALUES (v_id, NULL, 'system@qtx.internal', 'QTX Automation (system)', v_role_id,
-          ARRAY['engineering','finance','logistics','manufacturing',
-                'maintenance','tasks','admin']::text[],
+          fn_system_actor_modules(),
           true, v_id, v_id)   -- self-attributed: no human authored it
   ON CONFLICT DO NOTHING;
 
@@ -248,7 +289,7 @@ COMMENT ON FUNCTION fn_seed_system_actor() IS
 REVOKE EXECUTE ON FUNCTION fn_seed_system_actor() FROM PUBLIC, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
--- ENFORCEMENT 1 of 3 — the principal cannot widen when the role matrix moves.
+-- ENFORCEMENT 1 of 4 — the principal cannot widen when the role matrix moves.
 --
 -- role_permission is runtime data (see fn_seed_system_actor's header). Re-running the
 -- reconciliation on every write to it is what turns "narrow at seed time" into "narrow,
@@ -281,7 +322,7 @@ COMMENT ON TRIGGER trg_reconcile_system_actor ON role_permission IS
   'Re-derives the outbox automation principal''s revocations after any change to the role x permission matrix, so granting the `operator` role a permission never silently widens the principal (spec §5.5). Delegates to fn_seed_system_actor() — the single definition of what that principal may do.';
 
 -- ---------------------------------------------------------------------------
--- ENFORCEMENT 2 of 3 — the principal's authority has no additive route at all,
+-- ENFORCEMENT 2 of 4 — the principal's authority has no additive route at all,
 -- and no route to make a revocation temporary either.
 --
 -- Reconciliation above makes a widening self-healing; this makes it unreachable. The
@@ -306,6 +347,11 @@ COMMENT ON TRIGGER trg_reconcile_system_actor ON role_permission IS
 --
 -- The WHEN clause keeps this off the hot path: the function body is only ever reached for a
 -- row that is the system actor's AND (additive OR carries an expiry).
+--
+-- The error below says the principal's authority is "the operator role MINUS revocations,
+-- by construction". That is only true because ENFORCEMENT 4 pins WHICH role — this guard
+-- and the reconciliation above defend the subtraction, and neither of them would notice
+-- role_id being re-pointed at `super_admin`. Read the two together.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_forbid_system_actor_grant()
 RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
@@ -333,7 +379,7 @@ COMMENT ON TRIGGER trg_forbid_system_actor_grant ON user_permission_override IS
   'Refuses any additive (granted = true) override on the outbox automation principal, and refuses any non-NULL expires_at on one of its revocations. Its authority is role grants minus revocations with no route to add a grant, and no route to make a revocation temporary — a time-limited revocation on an identity nobody logs in as and nobody watches is a scheduled escalation, not a legitimate configuration (spec §5.5).';
 
 -- ---------------------------------------------------------------------------
--- ENFORCEMENT 3 of 3 — the principal cannot acquire a login path.
+-- ENFORCEMENT 3 of 4 — the principal cannot acquire a login path.
 --
 -- The header above asserts "auth_user_id stays NULL: this principal must have NO login
 -- path", but asserting it in a comment left `UPDATE app_user SET auth_user_id = ...`
@@ -350,6 +396,89 @@ ALTER TABLE app_user ADD CONSTRAINT app_user_system_actor_has_no_login
   CHECK (auth_user_id IS NULL OR id <> '22222222-2222-2222-2222-222222222222'::uuid);
 COMMENT ON CONSTRAINT app_user_system_actor_has_no_login ON app_user IS
   'The outbox drain''s automation principal (spec §5.5) must never be loggable-in-as. Its authority is deliberately un-human: every module, narrowed to two permissions, resolved only by fn_resolve_actor_by_user_id from the drain. Linking an auth.users row to it would turn that into an account.';
+
+-- ---------------------------------------------------------------------------
+-- ENFORCEMENT 4 of 4 — the principal cannot be widened through its own ROLE.
+--
+-- The three guards above cover overrides, the role×permission matrix and the login
+-- path. None of them pins `app_user.role_id`, and that was the hole: the principal's
+-- authority is DERIVED from whichever role its role_id points at, so re-pointing it is
+-- the shortest widening there is. modules/admin/services/userService.ts's
+-- updateUserAccess will set role_id (and module_access) for ANY user id a `manage_users`
+-- holder names — assertNotSelfEscalation only compares against the ACTOR's own id — and
+-- listUsers does not exclude the principal, so it is right there in the console to pick.
+-- Setting it to `super_admin` gave it sixteen permissions, and fn_seed_system_actor()
+-- does not heal that: the revocations it re-derives come from `operator`, so a principal
+-- sitting on a different role keeps every grant that role has and every revocation it
+-- carries is beside the point.
+--
+-- No exploit exists today — the drain only calls createTaskInTx — but spec §5.5 puts
+-- approvals on this same principal, and `roleKey === 'super_admin'` short-circuits
+-- moduleAllowed() in taskService.ts and canSeeTask() in visibility.ts, so a
+-- super_admin-roled automation identity would bypass exactly the checks those functions
+-- exist to make.
+--
+-- module_access is pinned alongside role_id because updateUserAccess writes both in the
+-- same UPDATE, and because narrowing it is how you break the drain rather than widen it:
+-- a handoff crosses departments by definition, so removing `logistics` or `tasks` makes
+-- createTaskInTx refuse every handoff. Compared as a SET, so a reordering of the same
+-- modules is allowed and any addition or removal is not.
+--
+-- A trigger, not a CHECK: the permitted role_id is not a literal — it is whatever row
+-- `role WHERE key = 'operator'` resolves to, which a CHECK may not query. It permits
+-- exactly the values fn_seed_system_actor() writes and refuses every other, so seeding
+-- (and re-seeding, and the reconcile trigger) still works unchanged, while the console
+-- path is closed. The WHEN clause keeps it off the hot path: ordinary users never reach
+-- the function body.
+--
+-- Two things it deliberately does NOT do. It does not fire on DELETE — removing the
+-- principal is a different failure with its own runbook entry ("does not exist ...
+-- somebody deleted the row"), and blocking the delete would leave no way to unwind a
+-- botched database. And it does not pin `active`: deactivating the principal is a
+-- visible, recoverable stop (the drain throws, naming the migration), not a widening.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_pin_system_actor_authority()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_operator_role_id uuid;
+BEGIN
+  -- SECURITY DEFINER so this read is the owner's regardless of who fired the trigger:
+  -- `role` carries RLS (20260720000000_platform_rls.sql) and a guard that fails open
+  -- because it could not see a row would be worse than no guard at all.
+  SELECT id INTO v_operator_role_id FROM role WHERE key = 'operator';
+
+  -- Strict when v_operator_role_id IS NULL (no `operator` role yet): IS DISTINCT FROM
+  -- NULL is true for any real uuid, so the write is refused. That is the safe side and
+  -- costs nothing — fn_seed_system_actor() returns early in exactly that case and never
+  -- reaches this INSERT, and app_user.role_id is NOT NULL REFERENCES role(id), so there
+  -- is no legitimate way to write this row while the role it must hold does not exist.
+  IF NEW.role_id IS DISTINCT FROM v_operator_role_id THEN
+    RAISE EXCEPTION
+      'Cannot change the role of the outbox automation principal (% / system@qtx.internal): its authority is DERIVED from the `operator` role, so re-pointing role_id widens it past everything the override guards defend (spec 5.5). Change what `operator` holds, or widen fn_seed_system_actor()''s keep-list in a migration.',
+      NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF (SELECT array_agg(m ORDER BY m) FROM unnest(NEW.module_access) AS m)
+     IS DISTINCT FROM (SELECT array_agg(m ORDER BY m)
+                         FROM unnest(fn_system_actor_modules()) AS m) THEN
+    RAISE EXCEPTION
+      'Cannot change the module access of the outbox automation principal (% / system@qtx.internal): it holds every module because a handoff crosses departments by definition, and removing one makes createTaskInTx refuse every handoff into it (spec 5.5). Edit fn_system_actor_modules() in a migration instead.',
+      NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER trg_pin_system_actor_authority
+  BEFORE INSERT OR UPDATE ON app_user
+  FOR EACH ROW
+  WHEN (NEW.id = '22222222-2222-2222-2222-222222222222'::uuid)
+  EXECUTE FUNCTION fn_pin_system_actor_authority();
+COMMENT ON TRIGGER trg_pin_system_actor_authority ON app_user IS
+  'Pins the outbox automation principal''s role_id to the `operator` role and its module_access to fn_system_actor_modules() (spec §5.5). Without it, modules/admin/services/userService.ts''s updateUserAccess could re-point the principal at `super_admin` from the console — which fn_seed_system_actor() does not heal, because its revocations are derived from `operator` — and a super_admin role_key short-circuits moduleAllowed()/canSeeTask(). Permits exactly what the seed writes; refuses everything else.';
+REVOKE EXECUTE ON FUNCTION fn_pin_system_actor_authority() FROM PUBLIC, anon, authenticated;
 
 -- Call site 1 of 2 (cloud path). A no-op returning NULL on a from-scratch database.
 SELECT fn_seed_system_actor();
