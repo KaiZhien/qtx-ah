@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   HANDOFF_TEMPLATES, buildHandoffTask, UnknownTemplateError,
-  type HandoffContext,
+  APPROVAL_TEMPLATES, buildApprovalTask, MODULE_DEPARTMENTS,
+  type HandoffContext, type ApprovalContext,
 } from '@/modules/shared/outbox/domain/handoffTemplates'
+import { MODULES } from '@/modules/shared/authz/catalog'
 
 const TITLE_MAX = 200
 const DESCRIPTION_MAX = 5000
@@ -222,5 +224,108 @@ describe('buildHandoffTask', () => {
         expect(() => buildHandoffTask(key, ctx())).toThrow(UnknownTemplateError)
       },
     )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The APPROVAL registry (spec §6.3). Same output shape, same limits, same
+// own-property-guarded lookup — keyed on `approval.kind` instead of on a
+// status_transition template key.
+describe('APPROVAL_TEMPLATES', () => {
+  const actx = (over: Partial<ApprovalContext> = {}): ApprovalContext => ({
+    approvalId: '22222222-2222-4222-8222-222222222222',
+    entityType: 'sales_invoice',
+    entityId: '33333333-3333-4333-8333-333333333333',
+    module: 'finance',
+    label: 'INV-2026-0042',
+    requestedByName: 'Rita Requester',
+    ...over,
+  })
+
+  it('produces a Finance-queued task naming the record and the requester', () => {
+    const task = buildApprovalTask('invoice', actx())
+    expect(task.module).toBe('finance')
+    expect(task.department).toBe('Finance')
+    expect(task.priority).toBe('high')
+    expect(task.title).toContain('INV-2026-0042')
+    expect(task.description).toContain('INV-2026-0042')
+    expect(task.description).toContain('Rita Requester')
+    // The two rules an approver has to know are in the task itself, not only in the UI.
+    expect(task.description.toLowerCase()).toContain('note')
+    expect(task.description.toLowerCase()).toContain('own request')
+  })
+
+  /**
+   * The module comes from the EVENT, not from a kind→module map restated here: the
+   * approvals migration's header is explicit that the module is a property of the
+   * entity, so a map in this module would go stale the day a kind spans two of them
+   * while the stored column stays true.
+   */
+  it('takes the module (and therefore the department queue) from the context', () => {
+    const task = buildApprovalTask('invoice', actx({ module: 'logistics' }))
+    expect(task.module).toBe('logistics')
+    expect(task.department).toBe('Logistics')
+  })
+
+  /**
+   * Without a per-record identifier every serial-less approval renders the same
+   * title, and a queue of identical titles is useless even though each task links to
+   * a different record.
+   */
+  it('falls back to the entity type and a uuid prefix when no label was carried', () => {
+    const task = buildApprovalTask('invoice', actx({ label: null }))
+    expect(task.title).toContain('sales invoice')
+    expect(task.title).toContain('33333333')
+    expect(task.title).not.toContain('null')
+  })
+
+  it('ignores a blank label rather than rendering an empty identifier', () => {
+    const task = buildApprovalTask('invoice', actx({ label: '   ' }))
+    expect(task.title).toContain('33333333')
+  })
+
+  it('keeps the title and description within createTask’s limits', () => {
+    const task = buildApprovalTask('invoice', actx({ label: 'X'.repeat(500) }))
+    expect(task.title.length).toBeLessThanOrEqual(TITLE_MAX)
+    expect(task.description.length).toBeLessThanOrEqual(DESCRIPTION_MAX)
+  })
+
+  /**
+   * eco and repair_signoff are deliberately unregistered: both flows still run
+   * through their own direct permission gates, so nothing has decided which queue
+   * such a request belongs in. Parking the event is the honest outcome — a task that
+   * answers no question would land in a real person's queue.
+   */
+  it.each(['eco', 'repair_signoff'])(
+    'throws for the unregistered kind %s instead of inventing a task', (kind) => {
+      expect(() => buildApprovalTask(kind, actx())).toThrow(UnknownTemplateError)
+    })
+
+  it('names the kind in the error so a parked event is diagnosable from last_error', () => {
+    try {
+      buildApprovalTask('repair_signoff', actx())
+      expect.unreachable('expected UnknownTemplateError to be thrown')
+    } catch (err) {
+      expect((err as Error).message).toContain('repair_signoff')
+      expect((err as Error).message).toContain('approval kind')
+    }
+  })
+
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'throws for the inherited key %s rather than returning garbage', (key) => {
+      expect(() => buildApprovalTask(key, actx())).toThrow(UnknownTemplateError)
+    })
+
+  it('registers a department for every module, so no kind can queue into `undefined`', () => {
+    for (const m of MODULES) expect(MODULE_DEPARTMENTS[m]).toMatch(/\S/)
+  })
+
+  /**
+   * Pinned as a fact rather than left implicit: registering a kind is what turns its
+   * events from parked backlog into tasks in someone's queue, so growing this set is a
+   * decision about whose queue fills up — not a detail to notice in a diff.
+   */
+  it('registers exactly the kinds that have a queue destination today', () => {
+    expect(Object.keys(APPROVAL_TEMPLATES)).toEqual(['invoice'])
   })
 })

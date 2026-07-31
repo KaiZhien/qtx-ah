@@ -2,13 +2,21 @@ import { z } from 'zod'
 import { withTransaction, type Tx } from '@/lib/db/tx'
 import { getPool } from '@/lib/db/pool'
 import { loadSystemActor } from '@/modules/shared/authz/actor'
+import { MODULES } from '@/modules/shared/authz/catalog'
 import type { Actor } from '@/modules/shared/authz/catalog'
-import { buildHandoffTask } from '@/modules/shared/outbox/domain/handoffTemplates'
-import { createTaskInTx } from '@/modules/shared/tasks/services/taskService'
+import { buildApprovalTask, buildHandoffTask } from '@/modules/shared/outbox/domain/handoffTemplates'
+import { createTaskInTx, type CreateTaskInput } from '@/modules/shared/tasks/services/taskService'
 
 /**
- * The drain (spec §5.5): turns unprocessed `outbox` rows into cross-department handoff
- * tasks, EXACTLY ONCE.
+ * The drain (spec §5.5): turns unprocessed `outbox` rows into tasks, EXACTLY ONCE.
+ *
+ * Two event families ride this one mechanism, which is spec §5.5's own arrangement
+ * ("approval flows ride the same mechanism"): a device crossing a department boundary
+ * (`device`/`device_status_changed`) and a request for a second pair of eyes
+ * (`approval`/`approval_requested`). They differ only in taskForEvent — the claim, the
+ * exactly-once transaction, the failure handling and the attribution below are shared,
+ * deliberately, because every one of those is a property of draining rather than of what
+ * is being drained.
  *
  * "Exactly once" is the entire point, and it rests on one structural decision: the task
  * insert and the `processed_at` stamp happen in the SAME transaction. lib/db/tx.ts's
@@ -93,8 +101,28 @@ const payloadSchema = z.object({
 })
 
 /**
+ * The producer for the second event family (approvalService.requestApprovalInTx), validated
+ * for the same reason as the first: `payload` is jsonb with no schema behind it, and a
+ * malformed one must become a recorded, retryable failure on ONE row instead of a TypeError
+ * that takes down the whole drain.
+ *
+ * `approvalId` is absent by design — it is the row's own `aggregate_id` — and so is the
+ * requester's name, resolved from `created_by` at drain time so the task names them as they
+ * are called today. `module` is the value STORED on the approval row rather than one
+ * re-derived from `kind` here (see the approvals migration's header: the module is a
+ * property of the entity, so a kind→module map in code goes stale where the column does not).
+ */
+const approvalPayloadSchema = z.object({
+  kind: z.string().min(1),
+  module: z.enum(MODULES),
+  entityType: z.string().min(1),
+  entityId: z.string().uuid(),
+  label: nullableText,
+})
+
+/**
  * `aggregate_type` and `event_type` are deliberately unconstrained in the schema so a new
- * kind of event never needs a migration. This drain handles one combination; anything else
+ * kind of event never needs a migration. This drain handles two combinations; anything else
  * is RECORDED as a failure rather than silently skipped. Skipping would leave a row
  * unprocessed and invisible forever, re-claimed by every drain; recording it makes the
  * disagreement legible and self-limiting, because MAX_ATTEMPTS eventually parks it.
@@ -112,7 +140,8 @@ type ClaimedRow = {
   aggregate_id: string
   event_type: string
   payload: unknown
-  changed_by_name: string
+  /** `created_by`'s current full name — the human who CAUSED the event, whatever its kind. */
+  caused_by_name: string
 }
 
 type Outcome =
@@ -139,7 +168,7 @@ const messageOf = (err: unknown): string =>
 async function claimRow(tx: Tx, outboxId: string): Promise<ClaimedRow | null> {
   const { rows } = await tx.query<ClaimedRow>(
     `SELECT o.id, o.aggregate_type, o.aggregate_id, o.event_type, o.payload,
-            u.full_name AS changed_by_name
+            u.full_name AS caused_by_name
        FROM outbox o
        JOIN app_user u ON u.id = o.created_by
       WHERE o.id = $1 AND o.processed_at IS NULL AND o.attempts < $2
@@ -148,10 +177,65 @@ async function claimRow(tx: Tx, outboxId: string): Promise<ClaimedRow | null> {
 }
 
 /**
- * One row, one transaction: build the handoff, create the task with its device link, and
- * stamp the row processed. Any throw rolls all three back together, which is what makes a
- * task without its processed marker (and therefore a duplicate on the next drain)
- * impossible.
+ * Turns one claimed row into the task it should become, dispatching on the event family.
+ *
+ * Each branch owns its own payload schema, its own template registry and its own links; what
+ * they share is this function's contract — build a task or throw, touch nothing else — so a
+ * new event family cannot accidentally acquire different failure or attribution behaviour.
+ */
+function taskForEvent(row: ClaimedRow): CreateTaskInput {
+  if (row.aggregate_type === 'device' && row.event_type === 'device_status_changed') {
+    const payload = payloadSchema.parse(row.payload)
+    const handoff = buildHandoffTask(payload.taskTemplateKey, {
+      deviceId: row.aggregate_id,            // the row's own aggregate id; never in the payload
+      deviceSn: payload.deviceSn,
+      pcbaASnLegacy: payload.pcbaASnLegacy,
+      fromStatus: payload.fromStatus,
+      toStatus: payload.toStatus,
+      reason: payload.reason,
+      changedByName: row.caused_by_name,
+    })
+    return {
+      title: handoff.title,
+      description: handoff.description,
+      priority: handoff.priority,
+      department: handoff.department,
+      links: [{ entityType: 'device', entityId: row.aggregate_id, module: handoff.module }],
+    }
+  }
+
+  if (row.aggregate_type === 'approval' && row.event_type === 'approval_requested') {
+    const payload = approvalPayloadSchema.parse(row.payload)
+    const handoff = buildApprovalTask(payload.kind, {
+      approvalId: row.aggregate_id,          // the row's own aggregate id; never in the payload
+      entityType: payload.entityType,
+      entityId: payload.entityId,
+      module: payload.module,
+      label: payload.label,
+      requestedByName: row.caused_by_name,
+    })
+    return {
+      title: handoff.title,
+      description: handoff.description,
+      priority: handoff.priority,
+      department: handoff.department,
+      // TWO links, because an approval task is about two records at once: the approvals
+      // queue and this task have to find each other by the approval's id, and the record
+      // panel of the thing under approval has to show that a decision is outstanding.
+      links: [
+        { entityType: 'approval', entityId: row.aggregate_id, module: handoff.module },
+        { entityType: payload.entityType, entityId: payload.entityId, module: handoff.module },
+      ],
+    }
+  }
+
+  throw new UnsupportedEventError(row.aggregate_type, row.event_type)
+}
+
+/**
+ * One row, one transaction: build the task, create it with its record links, and stamp the
+ * row processed. Any throw rolls all three back together, which is what makes a task without
+ * its processed marker (and therefore a duplicate on the next drain) impossible.
  */
 async function processOne(system: Actor, outboxId: string): Promise<Outcome> {
   try {
@@ -159,36 +243,11 @@ async function processOne(system: Actor, outboxId: string): Promise<Outcome> {
       const row = await claimRow(tx, outboxId)
       if (!row) return { state: 'skipped' }
 
-      if (row.aggregate_type !== 'device' || row.event_type !== 'device_status_changed') {
-        throw new UnsupportedEventError(row.aggregate_type, row.event_type)
-      }
-
-      const payload = payloadSchema.parse(row.payload)
-      const handoff = buildHandoffTask(payload.taskTemplateKey, {
-        deviceId: row.aggregate_id,          // the row's own aggregate id; never in the payload
-        deviceSn: payload.deviceSn,
-        pcbaASnLegacy: payload.pcbaASnLegacy,
-        fromStatus: payload.fromStatus,
-        toStatus: payload.toStatus,
-        reason: payload.reason,
-        changedByName: row.changed_by_name,
-      })
-
-      await createTaskInTx(tx, system, {
-        title: handoff.title,
-        description: handoff.description,
-        priority: handoff.priority,
-        department: handoff.department,
-        // No assignee, on purpose. The system principal holds create_records and
-        // deliberately NOT assign_tasks (see 20260731000000_platform_outbox.sql), and a
-        // handoff belongs to the receiving department's queue rather than to whoever an
-        // automation happened to pick.
-        links: [{
-          entityType: 'device',
-          entityId: row.aggregate_id,
-          module: handoff.module,
-        }],
-      })
+      // No assignee, on purpose. The system principal holds create_records and
+      // deliberately NOT assign_tasks (see 20260731000000_platform_outbox.sql), and a
+      // handoff belongs to the receiving department's queue rather than to whoever an
+      // automation happened to pick.
+      await createTaskInTx(tx, system, taskForEvent(row))
 
       // Same transaction as the insert above. Guarded on processed_at so a row that
       // somehow moved underneath the lock fails loudly instead of silently double-handing.

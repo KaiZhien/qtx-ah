@@ -1,11 +1,23 @@
 import type { ModuleKey } from '@/modules/shared/authz/catalog'
+import { approvalKindLabel } from '@/modules/shared/approvals/domain/approvalDecision'
 
 /**
- * Pure translation from a `status_transition.task_template_key` (spec §5.5) plus
- * the event that fired it into the shape of the handoff task the drain will
- * create. No I/O, no clock — everything comes from HandoffContext, so this can
- * be unit-tested without a database and the drain can call it inside or outside
- * a transaction with identical results.
+ * Pure translation from an outbox event into the shape of the task the drain
+ * will create. No I/O, no clock — everything comes from the context object, so
+ * this can be unit-tested without a database and the drain can call it inside or
+ * outside a transaction with identical results.
+ *
+ * TWO REGISTRIES, because there are two kinds of producer:
+ *
+ *   HANDOFF_TEMPLATES, keyed by `status_transition.task_template_key` (spec
+ *     §5.5) — a device crossing a department boundary.
+ *   APPROVAL_TEMPLATES, keyed by `approval.kind` (spec §6.3) — a request for a
+ *     second pair of eyes that has to reach the approver's queue.
+ *
+ * They share this module, the HandoffTask output shape, the length limits and
+ * the own-property-guarded lookup rather than living apart, because every one of
+ * those properties is a property of "turning an event into a task" and forking
+ * them is how two registries drift into disagreeing about what a task may hold.
  *
  * The output is deliberately shaped as direct `createTask` input (see
  * modules/shared/tasks/services/taskService.ts's `createSchema`): same field
@@ -36,15 +48,21 @@ export type HandoffContext = {
 }
 
 /**
- * A template key is present in `status_transition` but absent from
- * HANDOFF_TEMPLATES only when the status graph and this module have drifted
- * apart. That is a bug, not a degraded case, so buildHandoffTask throws rather
- * than inventing a generic task that would hide the disagreement. The drain
- * records the throw as a retryable outbox failure (spec §5.5).
+ * A key an event carries but no registry holds. For a device handoff that means
+ * the status graph and this module have drifted apart; for an approval it means
+ * the kind has no queue destination decided yet. Either way it is data, not a
+ * degraded case to paper over — so the builders throw rather than inventing a
+ * generic task that would hide the disagreement, and the drain records the throw
+ * as a retryable outbox failure that eventually PARKS (spec §5.5). A parked event
+ * is visible in the runbook's backlog; a task saying "something needs doing" is
+ * not visible as a problem at all, and lands in a real person's queue.
+ *
+ * `label` names WHICH vocabulary the key came from, so a failed attempt is
+ * diagnosable from `outbox.last_error` alone.
  */
 export class UnknownTemplateError extends Error {
-  constructor(templateKey: string) {
-    super(`No handoff template registered for task_template_key "${templateKey}"`)
+  constructor(templateKey: string, label = 'task_template_key') {
+    super(`No handoff template registered for ${label} "${templateKey}"`)
     this.name = 'UnknownTemplateError'
   }
 }
@@ -149,4 +167,108 @@ export function buildHandoffTask(templateKey: string, ctx: HandoffContext): Hand
     throw new UnknownTemplateError(templateKey)
   }
   return HANDOFF_TEMPLATES[templateKey](ctx)
+}
+
+// ── Approval requests (spec §6.3) ───────────────────────────────────────────
+
+/**
+ * The department queue each module's work lands in — `task.department`, matched
+ * against `app_user.department` by taskService's `scope: 'department'` filter.
+ *
+ * Title-Cased module names, which is what platform_seed.sql actually writes
+ * ('Engineering') and what logistics_prepare_delivery already hardcodes
+ * ('Logistics'). Named once here rather than restated per template so a queue
+ * cannot be misspelled into existence for one kind and not another.
+ */
+export const MODULE_DEPARTMENTS: Record<ModuleKey, string> = {
+  engineering: 'Engineering',
+  finance: 'Finance',
+  logistics: 'Logistics',
+  manufacturing: 'Manufacturing',
+  maintenance: 'Maintenance',
+  tasks: 'Tasks',
+  admin: 'Admin',
+}
+
+/**
+ * Everything an approval task is built from. Self-contained like HandoffContext,
+ * and for the same reason: the drain builds the task from the event's payload
+ * alone and never re-reads a record that may have moved on since.
+ *
+ * `module` is READ FROM THE EVENT rather than derived from `kind` here. The
+ * migration's header is explicit that the module is a property of the ENTITY, so
+ * a kind→module map in code "becomes a lie while a stored column stays true" the
+ * day a kind spans two modules. The service derives and validates that pair once,
+ * on the way in; this module consumes what was stored.
+ */
+export type ApprovalContext = {
+  approvalId: string
+  entityType: string
+  entityId: string
+  module: ModuleKey
+  /** Human reference for the record under approval (an invoice number, say). */
+  label: string | null
+  requestedByName: string
+}
+
+/**
+ * Two tiers, mirroring deviceLabel's reasoning: the caller's human reference when
+ * it supplied one, and otherwise the entity type plus a short prefix of its uuid.
+ * Never a bare literal — a queue of character-for-character identical titles is
+ * useless even though each task links to a different record.
+ */
+function recordLabel(ctx: ApprovalContext): string {
+  const label = ctx.label?.trim()
+  if (label) return label
+  return `${ctx.entityType.replace(/_/g, ' ')} ${ctx.entityId.slice(0, 8)}`
+}
+
+/**
+ * Keyed by `approval.kind`, and DELIBERATELY not exhaustive over the CHECK set.
+ *
+ * `invoice` is registered because Finance is the engine's first real consumer
+ * (spec BR-4: records at or above finance_approval_threshold_sgd). `eco` and
+ * `repair_signoff` are not: Engineering's ECO step and Maintenance's repair
+ * sign-off still run through their own direct permission gates, so nothing yet
+ * decides which queue such a request should land in or what the task should say.
+ * Registering a placeholder for them would put a task that answers no question
+ * into a real person's queue; leaving them unregistered parks the event where the
+ * runbook can see it, and the approvals queue page reads the `approval` table
+ * directly and so works for every kind regardless.
+ */
+export const APPROVAL_TEMPLATES: Record<string, (ctx: ApprovalContext) => HandoffTask> = {
+  invoice: (ctx) => {
+    const record = recordLabel(ctx)
+    return {
+      title: truncate(`Approve ${record}`, TITLE_MAX),
+      description: truncate(
+        `${ctx.requestedByName} asked for approval to issue ${record}. Check the total and the ` +
+        'buyer against the snapshot the request captured, then approve or reject it. A rejection ' +
+        'needs a note saying what has to change, and nobody may decide their own request.',
+        DESCRIPTION_MAX,
+      ),
+      module: ctx.module,
+      department: MODULE_DEPARTMENTS[ctx.module],
+      // An approval BLOCKS the work that asked for it — an invoice cannot be issued
+      // until someone decides — so it outranks the ordinary department handoff.
+      priority: 'high',
+    }
+  },
+}
+
+/**
+ * Dispatches on the approval's kind. Guarded with hasOwnProperty for the same
+ * reason buildHandoffTask is: an inherited `Object.prototype` member ("constructor",
+ * "toString") would otherwise resolve to a method mistyped as a HandoffTask, and the
+ * value being looked up here reaches this function through a jsonb payload with no
+ * schema behind it.
+ *
+ * The kind is named in the error so a parked event is diagnosable from
+ * `outbox.last_error` without re-deriving anything.
+ */
+export function buildApprovalTask(kind: string, ctx: ApprovalContext): HandoffTask {
+  if (!Object.prototype.hasOwnProperty.call(APPROVAL_TEMPLATES, kind)) {
+    throw new UnknownTemplateError(`${kind} (${approvalKindLabel(kind)})`, 'approval kind')
+  }
+  return APPROVAL_TEMPLATES[kind](ctx)
 }
