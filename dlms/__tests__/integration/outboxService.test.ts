@@ -94,13 +94,13 @@ describe('outbox schema', () => {
   })
 
   it('starts a new event unprocessed with zero attempts', async () => {
-    const { rows } = await db.query<{ attempts: number; processed_at: string | null }>(
+    const { rows } = await db.query<{ id: string; attempts: number; processed_at: string | null }>(
       `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
        VALUES ('device', gen_random_uuid(), 'device_status_changed', '{}'::jsonb, $1)
-       RETURNING attempts, processed_at, occurred_at`, [SYSTEM_ACTOR_ID])
+       RETURNING id, attempts, processed_at, occurred_at`, [SYSTEM_ACTOR_ID])
     expect(rows[0].attempts).toBe(0)
     expect(rows[0].processed_at).toBeNull()
-    await db.query(`DELETE FROM outbox`)
+    await db.query(`DELETE FROM outbox WHERE id = $1`, [rows[0].id])
   })
 
   it('records the human who caused the event, not just the effect', async () => {
@@ -712,8 +712,15 @@ describe('drainOutbox', () => {
         FROM role r WHERE r.key = 'operator' RETURNING id`, [HUMAN_NAME])).rows[0].id
   })
 
-  // A drain claims from the whole table, so every case starts from an empty backlog.
-  beforeEach(async () => { await db.query(`DELETE FROM outbox`) })
+  /**
+   * A drain claims from the whole table, so every case starts from an empty backlog — but
+   * "empty" is scoped to THIS file's rows, keyed on the human actor created above and
+   * therefore covering exactly what emit() writes. A table-global DELETE would also destroy
+   * deviceWriteService.test.ts's outbox rows, which is only survivable while
+   * `fileParallelism: false` holds and that file happens to clean up after itself; the
+   * `parked` counts below are unaffected because no other file ever writes attempts > 0.
+   */
+  beforeEach(async () => { await db.query(`DELETE FROM outbox WHERE created_by = $1`, [humanId]) })
 
   const emit = async (opts: {
     templateKey?: string
@@ -843,6 +850,93 @@ describe('drainOutbox', () => {
     expect(await tasksFor(deviceId)).toHaveLength(1)
   })
 
+  /**
+   * A failed attempt is recorded in its OWN transaction, AFTER the row's transaction has
+   * rolled back and released the row — so between the two, another claimant can take the
+   * row and process it. An unguarded `attempts + 1, last_error = ...` then lands on an
+   * already-processed row: exactly-once still holds (the handoff task is created once),
+   * but the event is left permanently carrying a last_error it did not earn, and Task 5's
+   * runbook triages on exactly that column.
+   *
+   * The interleave is real, not simulated. `rival` issues its stamp while the drain still
+   * holds the row lock, so it sits in that lock's queue and is granted the instant the
+   * drain's transaction rolls back — ahead of the drain, which still needs a connection, a
+   * BEGIN and a set_config before its failure record can execute. The advisory lock is what
+   * makes that window wide enough to arrange: it parks the drain mid-transaction, holding
+   * the row, until this test has the rival queued behind it.
+   */
+  it('never records a failure against a row processed while the failure was in flight',
+    async () => {
+      const { outboxId, deviceId } = await emit({ deviceSn: 'SN-LATE-FAILURE' })
+      const GATE = 918273645
+
+      // Fails the drain at the task insert — AFTER it has claimed and locked the outbox
+      // row. pg_advisory_xact_lock, not the session variant: it must be released by the
+      // rollback below, or it would leak onto a pooled connection for every later test.
+      await db.query(`
+        CREATE OR REPLACE FUNCTION test_block_handoff_task() RETURNS trigger
+        LANGUAGE plpgsql AS $fn$ BEGIN
+          PERFORM pg_advisory_xact_lock(${GATE});
+          RAISE EXCEPTION 'simulated failure while the row was still claimed';
+        END $fn$`)
+      await db.query(`
+        CREATE TRIGGER trg_test_block_handoff_task BEFORE INSERT ON task
+          FOR EACH ROW WHEN (NEW.title LIKE '%SN-LATE-FAILURE%')
+          EXECUTE FUNCTION test_block_handoff_task()`)
+
+      const until = async (predicate: string) => {
+        for (let i = 0; i < 600; i++) {
+          const { rows } = await db.query<{ ok: boolean }>(`SELECT (${predicate}) AS ok`)
+          if (rows[0].ok) return
+          await new Promise((r) => setTimeout(r, 25))
+        }
+        throw new Error(`timed out waiting for: ${predicate}`)
+      }
+
+      const rival = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+      await rival.connect()
+      let drainP: Promise<Awaited<ReturnType<typeof drainOutbox>>> | undefined
+      let rivalP: Promise<unknown> | undefined
+      try {
+        await db.query(`SELECT pg_advisory_lock(${GATE})`)
+        drainP = drainOutbox()
+
+        // 1. the drain is parked inside its transaction, still holding the outbox row
+        await until(`EXISTS (SELECT 1 FROM pg_locks
+                              WHERE locktype = 'advisory' AND objid = ${GATE} AND NOT granted)`)
+
+        // 2. the rival's stamp is queued on that row lock (a wait on the holder's xid)
+        rivalP = rival.query(
+          `UPDATE outbox SET processed_at = now() WHERE id = $1 AND processed_at IS NULL`,
+          [outboxId])
+        await until(`EXISTS (SELECT 1 FROM pg_locks
+                              WHERE locktype = 'transactionid' AND NOT granted)`)
+
+        // 3. release: the drain raises and rolls back, the rival's stamp lands immediately,
+        //    and only then does the drain get to record its failed attempt.
+        await db.query(`SELECT pg_advisory_unlock(${GATE})`)
+
+        const result = await drainP
+        await rivalP
+        expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 })
+        expect(result.failures[0]).toMatchObject({ outboxId })
+        expect(result.failures[0].error).toMatch(/simulated failure/)
+      } finally {
+        await Promise.allSettled([drainP, rivalP])
+        await db.query(`SELECT pg_advisory_unlock_all()`)
+        await rival.end()
+        await db.query(`DROP TRIGGER IF EXISTS trg_test_block_handoff_task ON task`)
+        await db.query(`DROP FUNCTION IF EXISTS test_block_handoff_task()`)
+      }
+
+      // The row was processed, so it carries NO failure — not the attempt, not the error.
+      const row = await outboxRow(outboxId)
+      expect(row.processed_at).not.toBeNull()
+      expect(row).toMatchObject({ attempts: 0, last_error: null })
+      // ...and the drain's own half really did roll back.
+      expect(await tasksFor(deviceId)).toEqual([])
+    })
+
   /** FOR UPDATE SKIP LOCKED, from the other end: two drains, one event, one task. */
   it('never hands the same event to two concurrent drains', async () => {
     const { deviceId } = await emit()
@@ -928,6 +1022,33 @@ describe('drainOutbox', () => {
 
     expect(await drainOutbox()).toMatchObject({ claimed: 1, processed: 1 })
     expect((await outboxRow(third.outboxId)).processed_at).not.toBeNull()
+  })
+
+  /**
+   * occurred_at alone is not a total order. now() is transaction-scoped, so every event
+   * written by one transaction shares an identical timestamp — and with `ORDER BY
+   * occurred_at ... LIMIT n` the cut between tied rows is then the planner's choice, which
+   * is free to be the same choice every pass. Under sustained load a row on the wrong side
+   * of it is deferred indefinitely. `ORDER BY occurred_at, id` makes the order total, so
+   * these four drain in a fixed, exhaustive sequence.
+   */
+  it('breaks a tie on occurred_at so no row can be deferred forever', async () => {
+    const tied = '2026-02-01T00:00:00Z'
+    const emitted = []
+    for (let i = 0; i < 4; i++) emitted.push(await emit({ occurredAt: tied }))
+
+    const drainedOrder: string[] = []
+    for (let i = 0; i < emitted.length; i++) {
+      expect(await drainOutbox({ limit: 1 })).toMatchObject({ claimed: 1, processed: 1 })
+      for (const e of emitted) {
+        if (!drainedOrder.includes(e.outboxId)
+            && (await outboxRow(e.outboxId)).processed_at !== null) {
+          drainedOrder.push(e.outboxId)
+        }
+      }
+      expect(drainedOrder).toHaveLength(i + 1)   // exactly one more row moved each pass
+    }
+    expect(drainedOrder).toEqual([...emitted.map((e) => e.outboxId)].sort())
   })
 
   /**

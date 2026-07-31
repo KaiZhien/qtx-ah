@@ -85,10 +85,11 @@ describe('createTask', () => {
   })
 
   // The test above is satisfied by Zod (`entityId: z.string().uuid()` rejects
-  // 'not-a-uuid' in createSchema.parse — BEFORE withTransaction is ever entered),
-  // not by transaction rollback: no row is ever inserted, so it would pass even if
-  // the task insert and the link inserts ran in two separate, non-atomic
-  // transactions. It does not prove the property this task is built around.
+  // 'not-a-uuid' in taskService's prepare(), which createTask runs BEFORE it opens a
+  // transaction — see the ordering test at the end of this describe), not by transaction
+  // rollback: no row is ever inserted, so it would pass even if the task insert and the
+  // link inserts ran in two separate, non-atomic transactions. It does not prove the
+  // property this task is built around.
   //
   // This test instead uses an input that PASSES Zod entirely (two links, each with
   // a real uuid and a real module) but fails at the DATABASE, on the SECOND link
@@ -130,6 +131,45 @@ describe('createTask', () => {
       title: 'Sneaky finance link',
       links: [{ entityType: 'sales_invoice', entityId: crypto.randomUUID(), module: 'finance' }],
     })).rejects.toThrow(PermissionError)
+  })
+
+  /**
+   * ORDERING, not merely outcome. authorize.ts is documented as "the choke point. Every
+   * service entry point calls this before touching data" — and a refactor that moved the
+   * checks inside withTransaction kept every assertion above green while breaking exactly
+   * that: withTransaction takes a pooled connection and issues BEGIN before its callback
+   * runs, so a denial would burn a connection and a BEGIN/ROLLBACK round trip, and a denial
+   * during a database outage would surface as a connection error (a 500) instead of a
+   * PermissionError (a 403).
+   *
+   * Proven the only way the outcome distinguishes the two: point a FRESH module graph's
+   * pool at an unreachable port. If the guard still runs first, the pool is never touched
+   * and the error is a PermissionError; if the transaction is opened first, the connection
+   * refusal wins and the error is an AggregateError instead.
+   */
+  it('authorizes before it ever acquires a connection', async () => {
+    const previous = process.env.DATABASE_URL
+    vi.resetModules()
+    process.env.DATABASE_URL = 'postgresql://nobody:nobody@127.0.0.1:1/unreachable'
+    try {
+      // A fresh graph, so lib/db/pool's singleton is rebuilt against the dead address —
+      // and so PermissionError is compared against the class THIS graph throws.
+      const svc = await import('@/modules/shared/tasks/services/taskService')
+      const authz = await import('@/modules/shared/authz/authorize')
+
+      await expect(svc.createTask(viewer(), { title: 'Denied' }))
+        .rejects.toThrow(authz.PermissionError)
+      // The same holds for the link rule, which is the other half of prepare().
+      await expect(svc.createTask(op(), {
+        title: 'Denied link',
+        links: [{ entityType: 'sales_invoice', entityId: crypto.randomUUID(), module: 'finance' }],
+      })).rejects.toThrow(authz.PermissionError)
+      // ...and for validation, which must also fail before a connection is asked for.
+      await expect(svc.createTask(op(), { title: '' })).rejects.toThrow(/title/i)
+    } finally {
+      process.env.DATABASE_URL = previous
+      vi.resetModules()
+    }
   })
 })
 

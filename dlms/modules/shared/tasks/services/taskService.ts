@@ -63,6 +63,35 @@ function moduleAllowed(actor: Actor, module: ModuleKey): boolean {
 }
 
 /**
+ * Everything that must be true BEFORE a task is created — authorization, validation and
+ * the link rules — and nothing that touches the database.
+ *
+ * Kept out of the transaction on purpose. authorize.ts calls itself "the choke point.
+ * Every service entry point calls this before touching data", and `before touching data`
+ * is the load-bearing half: withTransaction acquires a pooled connection and issues BEGIN
+ * before its callback ever runs, so running these checks inside it would make every denied
+ * or malformed call burn a connection plus a BEGIN/ROLLBACK round trip, and would turn a
+ * denial that happened to coincide with a database blip into a 500 instead of a 403.
+ *
+ * Both entry points below call it FIRST — createTask before it opens a transaction,
+ * createTaskInTx at the top of the caller's. That is a repeated parse, not a repeated
+ * round trip, and each is an entry point in its own right: the outbox drain reaches
+ * createTaskInTx directly, so it must be guarded by these rules rather than by its
+ * caller's diligence.
+ */
+function prepare(actor: Actor, input: CreateTaskInput) {
+  authorize(actor, 'create_records', 'tasks')
+  const data = createSchema.parse(input)
+
+  // You cannot link a task into a module you cannot enter — that would let an
+  // outsider create a visible handle on a record they can't see.
+  for (const link of data.links) {
+    if (!moduleAllowed(actor, link.module)) throw new PermissionError('view_records', link.module)
+  }
+  return data
+}
+
+/**
  * Everything "creating a task" means — authorization, validation, the row, and its
  * links — inside a transaction the CALLER owns.
  *
@@ -76,21 +105,13 @@ function moduleAllowed(actor: Actor, module: ModuleKey): boolean {
  *
  * The alternative — re-implementing the two INSERTs inside the drain — was rejected:
  * it would fork the definition of what creating a task means, and the authorization and
- * link rules below are exactly the part that must not be forked. Callers who do not
- * already own a transaction want createTask() below instead.
+ * link rules in prepare() are exactly the part that must not be forked. Callers who do
+ * not already own a transaction want createTask() below instead.
  */
 export async function createTaskInTx(
   tx: Tx, actor: Actor, input: CreateTaskInput,
 ): Promise<{ taskId: string }> {
-  authorize(actor, 'create_records', 'tasks')
-  const data = createSchema.parse(input)
-
-  // You cannot link a task into a module you cannot enter — that would let an
-  // outsider create a visible handle on a record they can't see.
-  for (const link of data.links) {
-    if (!moduleAllowed(actor, link.module)) throw new PermissionError('view_records', link.module)
-  }
-
+  const data = prepare(actor, input)
   const dueDate = normalizeDueDate(data.dueDate)
 
   const { rows } = await tx.query<{ id: string }>(
@@ -119,6 +140,9 @@ export async function createTaskInTx(
  * central list with nothing to act on and appears on no record panel at all.
  */
 export async function createTask(actor: Actor, input: CreateTaskInput): Promise<{ taskId: string }> {
+  // Guard BEFORE the connection, not inside it — see prepare()'s header. createTaskInTx
+  // re-runs the same pure checks for callers that arrive there directly.
+  prepare(actor, input)
   return withTransaction(actor.id, (tx) => createTaskInTx(tx, actor, input))
 }
 

@@ -52,8 +52,13 @@ export type DrainResult = {
    * where the route handler and the runbook (Task 5) can actually see it. A non-zero
    * `parked` with `claimed: 0` is the signature of a backlog that will never move on its
    * own.
+   *
+   * `null` when the count itself failed. Every row above is already committed by the time
+   * it runs, so a broken reporting query must not throw away a completed drain's result —
+   * but defaulting to 0 would be worse than reporting nothing, because 0 is precisely the
+   * reading ("no backlog") a runbook stands down on. null says "unknown", which is true.
    */
-  parked: number
+  parked: number | null
 }
 
 const inputSchema = z.object({
@@ -208,6 +213,16 @@ async function processOne(system: Actor, outboxId: string): Promise<Outcome> {
  * has no updated_by, so with no app.actor_id GUC fn_audit falls back to created_by and
  * would attribute every drain write to the human who caused the event.
  *
+ * Guarded on `processed_at IS NULL`, and that guard is not decoration. This write happens
+ * AFTER the row's transaction rolled back and released the row, so another drain can claim
+ * and successfully process it in between — and an unguarded increment would then land on an
+ * already-processed row, leaving a successfully handed-off event carrying attempts and a
+ * last_error forever. Exactly-once survives that (the task is created once either way), but
+ * anyone triaging this table on attempts/last_error would be reading a permanent false
+ * alarm. The guard does not shorten the wait if that other claim is still in flight — an
+ * UPDATE still queues on the row lock before it can re-evaluate the predicate, up to the
+ * pool's statement_timeout — it only stops the write from being wrong.
+ *
  * A failure to record a failure must not abort the drain either — the row simply stays
  * unprocessed with its old attempt count, which is the safe direction.
  */
@@ -215,7 +230,8 @@ async function recordFailure(system: Actor, outboxId: string, error: string): Pr
   try {
     await withTransaction(system.id, async (tx) => {
       await tx.query(
-        `UPDATE outbox SET attempts = attempts + 1, last_error = $2 WHERE id = $1`,
+        `UPDATE outbox SET attempts = attempts + 1, last_error = $2
+          WHERE id = $1 AND processed_at IS NULL`,
         [outboxId, error])
     })
   } catch (err) {
@@ -243,13 +259,18 @@ export async function drainOutbox(input: DrainInput = {}): Promise<DrainResult> 
   // principal must fail before it has half-processed a backlog.
   const system = await loadSystemActor()
 
+  // `id` is a tie-break, not decoration: rows written in one transaction share an identical
+  // occurred_at (now() is transaction-scoped), so ordering on occurred_at alone leaves the
+  // LIMIT cut between them arbitrary — under sustained load the same row can lose the
+  // coin-flip on every pass and be deferred indefinitely. The second key makes the order
+  // total, so a row that loses once is ahead of the cut next time.
   const { rows: candidates } = await getPool().query<{ id: string }>(
     `SELECT id FROM outbox
       WHERE processed_at IS NULL AND attempts < $1
-      ORDER BY occurred_at
+      ORDER BY occurred_at, id
       LIMIT $2`, [MAX_ATTEMPTS, limit])
 
-  const result: DrainResult = { claimed: 0, processed: 0, failed: 0, failures: [], parked: 0 }
+  const result: DrainResult = { claimed: 0, processed: 0, failed: 0, failures: [], parked: null }
 
   for (const { id } of candidates) {
     const outcome = await processOne(system, id)
@@ -265,10 +286,19 @@ export async function drainOutbox(input: DrainInput = {}): Promise<DrainResult> 
     }
   }
 
-  const { rows: parked } = await getPool().query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM outbox WHERE processed_at IS NULL AND attempts >= $1`,
-    [MAX_ATTEMPTS])
-  result.parked = parked[0].n
+  // Reporting, not work — and everything above is already committed row by row, so this
+  // must not be able to turn a drain that processed its whole batch into a throw. See
+  // DrainResult.parked for why a failure here reads as null rather than 0.
+  try {
+    const { rows: parked } = await getPool().query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM outbox WHERE processed_at IS NULL AND attempts >= $1`,
+      [MAX_ATTEMPTS])
+    result.parked = parked[0].n
+  } catch (err) {
+    console.error(JSON.stringify({
+      level: 'error', msg: 'outbox drain could not count parked rows', err: messageOf(err),
+    }))
+  }
 
   return result
 }
