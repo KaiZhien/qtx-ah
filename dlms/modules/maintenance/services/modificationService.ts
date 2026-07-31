@@ -25,8 +25,20 @@ import {
  * no device write here at all, and the module's "read the shared device registry,
  * never write it" rule holds trivially. Component swaps a modification causes are
  * recorded by the §14 replacement primitive, which validates the modificationId
- * against the installation's own device (attributionService); the modification
- * detail page that surfaces that control is Task 4's work.
+ * against the installation's own device (attributionService).
+ *
+ * THERE IS NO MODIFICATION UI. No page, no route, no server action exists, and
+ * none is planned in this slice — this service has no non-test importer today.
+ * The repair detail screen is Maintenance's only surface, and it is the only
+ * place the §14 replacement control is reachable from.
+ *
+ * Whoever builds the modification page must repeat the repair page's
+ * MANUFACTURING permission gate around the components panel. The panel's
+ * services are Manufacturing's (componentService.getDeviceComponents /
+ * replaceComponentInstallation) and they THROW on a missing permission rather
+ * than returning empty, so a page that renders the panel without first checking
+ * `can(actor, 'view_records', 'manufacturing')` is a 500, not a quietly hidden
+ * section. Maintenance access alone does not imply Manufacturing access.
  */
 
 export class ModificationNotFoundError extends Error {

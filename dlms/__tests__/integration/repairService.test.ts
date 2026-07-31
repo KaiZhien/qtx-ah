@@ -555,4 +555,30 @@ describe('reads', () => {
     const devices = await listRepairableDevices(op())
     expect(Array.isArray(devices)).toBe(true)
   })
+
+  /**
+   * The picker lists a device at ANY status, but only some of them can also be
+   * MOVED to Under Repair, and since that move joined the repair's transaction a
+   * refused edge destroys the whole write rather than degrading to
+   * `deviceMoved: false`. `canMoveToUnderRepair` is what the form uses to
+   * withhold the checkbox, so it has to agree with the graph the write consults
+   * — including for a device already Under Repair, which is the realistic way a
+   * user hits this (a second fault found during an existing repair).
+   */
+  it('listRepairableDevices reports whether each device has an edge into Under Repair', async () => {
+    const movable = await makeDevice('active')
+    const stuck = await makeDevice('under_repair')
+    const devices = await listRepairableDevices(op(), 100)
+    const find = (id: string) => devices.find((d) => d.id === id)
+
+    expect(find(movable)?.canMoveToUnderRepair).toBe(true)
+    // Listed (a repair can be opened) but NOT offered the move.
+    expect(find(stuck)).toBeDefined()
+    expect(find(stuck)?.canMoveToUnderRepair).toBe(false)
+
+    // …and the flag is honest about what the write would do: asking for the
+    // move the flag denies is exactly the failure the form now prevents.
+    await expect(createRepair(op(), { deviceId: stuck, moveDevice: true }))
+      .rejects.toThrow(InvalidStatusChangeError)
+  })
 })

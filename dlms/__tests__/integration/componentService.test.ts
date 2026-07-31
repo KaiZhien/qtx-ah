@@ -253,4 +253,89 @@ describe('replacement attribution', () => {
       `SELECT repair_id, modification_id FROM component_installation WHERE id=$1`, [res.newId])
     expect(rows[0]).toEqual({ repair_id: null, modification_id: null })
   })
+
+  // A LATER swap must not rewrite an EARLIER one's history. The close-UPDATE
+  // stamps repair_id/modification_id on the row it removes, and the append-only
+  // guard freezes identity columns and already-removed rows but NOT these two on
+  // a still-open row — so an unconditional write let swap #2 (unattributed) null
+  // out the attribution swap #1 had recorded on the row it opened. "R1 installed
+  // this board" then survived only in audit_log, and countInstallationsForRepair
+  // — the fact behind the §5.4 sign-off gate — silently lost a row.
+  describe('a later swap does not erase an earlier swap\'s attribution', () => {
+    let dev: string, rOne: string, uOne: string, uTwo: string, uThree: string
+
+    beforeAll(async () => {
+      dev = (await db.query(`
+        INSERT INTO device (variant_id, status, created_by, updated_by)
+        VALUES ((SELECT id FROM device_variant WHERE code='pro'),'in_stock',$1,$1) RETURNING id`,
+        [userId])).rows[0].id
+      rOne = (await db.query(
+        `INSERT INTO repair (device_id, created_by) VALUES ($1,$2) RETURNING id`,
+        [dev, userId])).rows[0].id
+      const unit = async (n: string) => (await db.query(
+        `INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
+         VALUES ($1,$2,$3,$3) RETURNING id`, [pcbaTypeId, `PCBA-A-${n}-${runTag}`, userId])).rows[0].id
+      uOne = await unit('ERASE-1')
+      uTwo = await unit('ERASE-2')
+      uThree = await unit('ERASE-3')
+    })
+
+    it('an unattributed swap leaves the previous repair stamped on the row it closes', async () => {
+      await installComponent(op(), { deviceId: dev, componentTypeId: pcbaTypeId, unitId: uOne })
+      const a = (await db.query(
+        `SELECT id FROM component_installation
+          WHERE device_id=$1 AND component_type_id=$2 AND removed_at IS NULL`,
+        [dev, pcbaTypeId])).rows[0].id
+
+      // Swap #1, attributed to R1: closes A, opens B — both stamped with R1.
+      const first = await replaceComponentInstallation(op(), {
+        removedInstallationId: a, reason: 'board dead', replacementUnitId: uTwo, repairId: rOne,
+      })
+      const backedByR1 = async () => (await db.query<{ n: number }>(
+        `SELECT count(*)::int n FROM component_installation WHERE repair_id=$1`, [rOne])).rows[0].n
+      expect(await backedByR1()).toBe(2)
+
+      // Swap #2, UNATTRIBUTED, on the same slot: closes B. B must keep R1.
+      const second = await replaceComponentInstallation(op(), {
+        removedInstallationId: first.newId, reason: 'wrong revision', replacementUnitId: uThree,
+      })
+      const b = (await db.query<{ repair_id: string | null; modification_id: string | null }>(
+        `SELECT repair_id, modification_id FROM component_installation WHERE id=$1`,
+        [first.newId])).rows[0]
+      expect(b.repair_id).toBe(rOne)
+
+      // The row swap #2 opened is genuinely unattributed — COALESCE must not
+      // make attribution "sticky" across into a new row.
+      const c = (await db.query<{ repair_id: string | null }>(
+        `SELECT repair_id FROM component_installation WHERE id=$1`, [second.newId])).rows[0]
+      expect(c.repair_id).toBeNull()
+
+      // …and the count the §5.4 sign-off gate reads did not go backwards.
+      expect(await backedByR1()).toBe(2)
+    })
+
+    it('an explicitly attributed later swap still records its OWN attribution', async () => {
+      const rTwo = (await db.query(
+        `INSERT INTO repair (device_id, created_by) VALUES ($1,$2) RETURNING id`,
+        [dev, userId])).rows[0].id
+      const uFour = (await db.query(
+        `INSERT INTO component_unit (component_type_id, serial_no, created_by, updated_by)
+         VALUES ($1,$2,$3,$3) RETURNING id`,
+        [pcbaTypeId, `PCBA-A-ERASE-4-${runTag}`, userId])).rows[0].id
+      const open = (await db.query(
+        `SELECT id FROM component_installation
+          WHERE device_id=$1 AND component_type_id=$2 AND removed_at IS NULL`,
+        [dev, pcbaTypeId])).rows[0].id
+
+      const res = await replaceComponentInstallation(op(), {
+        removedInstallationId: open, reason: 'second fault', replacementUnitId: uFour,
+        repairId: rTwo,
+      })
+      const { rows } = await db.query<{ repair_id: string | null }>(
+        `SELECT repair_id FROM component_installation WHERE id = ANY($1)`,
+        [[res.closedId, res.newId]])
+      expect(rows).toHaveLength(2)
+      expect(rows.every((r) => r.repair_id === rTwo)).toBe(true)
+    })
+  })
 })

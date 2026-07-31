@@ -202,6 +202,13 @@ export async function changeDeviceStatusInTx(
 export async function changeDeviceStatus(
   actor: Actor, input: ChangeStatusInput,
 ): Promise<{ status: string; version: number }> {
+  // NOT redundant, despite the discarded return value: this call is what runs
+  // authorize + parse BEFORE withTransaction acquires a connection. Deleting it
+  // moves both guards inside the transaction — the exact regression pinned by
+  // __tests__/integration/deviceWriteService.test.ts, "changeDeviceStatus —
+  // guards run before the connection", which points a fresh module graph's pool
+  // at an unreachable port so a denial that reached the pool first would come
+  // back as a connection error instead of a PermissionError.
   prepareStatusChange(actor, input)
   return withTransaction(actor.id, (tx) => changeDeviceStatusInTx(tx, actor, input))
 }

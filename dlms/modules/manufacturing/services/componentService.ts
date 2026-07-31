@@ -137,10 +137,21 @@ export async function replaceComponentInstallation(
     }
 
     // 1. Close the old installation (the append-only guard permits this one-time stamp).
+    //
+    // COALESCE, not a plain assignment, on the two attribution columns. A row is
+    // stamped TWICE over its life: once by the swap that OPENS it (the insert
+    // below) and once by the swap that CLOSES it (here). fn_component_installation_guard
+    // freezes the identity columns and already-removed rows, but not these two on
+    // a still-open row — so writing `repair_id = $3` unconditionally let a later
+    // UNATTRIBUTED swap null out the attribution an earlier one had recorded, and
+    // "repair R1 installed this board" survived only in audit_log. An explicit id
+    // still wins (a later swap may legitimately be the reason this row came out);
+    // what can no longer happen is an absent one erasing what is already there.
     await tx.query(
       `UPDATE component_installation
           SET removed_at = now(), removed_by = $1, removal_reason = $2,
-              repair_id = $3, modification_id = $4
+              repair_id = COALESCE($3, repair_id),
+              modification_id = COALESCE($4, modification_id)
         WHERE id = $5`,
       [actor.id, data.reason, data.repairId ?? null, data.modificationId ?? null,
        data.removedInstallationId])

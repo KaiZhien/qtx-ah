@@ -37,26 +37,61 @@ export class RepairDeviceNotFoundError extends Error {
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
-export type RepairableDevice = { id: string; deviceSn: string | null; status: string; statusLabel: string }
+/**
+ * The device status a repair puts a device into. Named once, and read by BOTH
+ * the picker below (to decide whether to offer the move) and createRepair (to
+ * perform it), so the offer and the write cannot drift apart.
+ */
+const UNDER_REPAIR = 'under_repair'
+
+export type RepairableDevice = {
+  id: string
+  deviceSn: string | null
+  status: string
+  statusLabel: string
+  /**
+   * Does the status graph have an edge from this device's CURRENT status into
+   * `under_repair`? Only these devices can be opened with `moveDevice`.
+   */
+  canMoveToUnderRepair: boolean
+}
 
 /**
  * Devices a repair can be opened against, for the New Repair picker. Reads the
  * shared device table under maintenance authz (not manufacturing's — a
  * maintenance user opening a repair need not be able to enter Manufacturing).
+ *
+ * Every live device is listed: a repair may be opened against a device at ANY
+ * status, including one already Under Repair (a second fault found during an
+ * existing repair is the ordinary case). What is NOT universal is the optional
+ * device move that rides along with it, and since createRepair made that move
+ * part of the repair's own transaction, offering it where the graph has no edge
+ * would not degrade to "repair opened, device didn't move" — it would throw
+ * InvalidStatusChangeError and create NO repair at all. So the edge is resolved
+ * HERE, per row, and the form uses it to withhold the checkbox.
+ *
+ * Asked of `status_transition` rather than hardcoded to the seeded sources
+ * (`active`, `returned`): the graph is admin-editable data, and this is the same
+ * table changeDeviceStatusInTx consults, so an added edge just works.
  */
 export async function listRepairableDevices(actor: Actor, limit = 100): Promise<RepairableDevice[]> {
   authorize(actor, 'view_records', 'maintenance')
   return withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
       id: string; device_sn: string | null; status: string; status_label: string
+      can_move_to_under_repair: boolean
     }>(
-      `SELECT d.id, d.device_sn, d.status, s.label_en AS status_label
+      `SELECT d.id, d.device_sn, d.status, s.label_en AS status_label,
+              EXISTS (SELECT 1 FROM status_transition st
+                       WHERE st.from_status = d.status AND st.to_status = $2)
+                AS can_move_to_under_repair
          FROM device d JOIN status_option s ON s.code = d.status
         WHERE d.deleted_at IS NULL
         ORDER BY d.created_at DESC
-        LIMIT $1`, [limit])
+        LIMIT $1`, [limit, UNDER_REPAIR])
     return rows.map((r) => ({
       id: r.id, deviceSn: r.device_sn, status: r.status, statusLabel: r.status_label,
+      canMoveToUnderRepair: r.can_move_to_under_repair,
     }))
   })
 }
@@ -374,7 +409,7 @@ export async function createRepair(
   const data = createSchema.parse(input)
   // Answered before the connection, from the Actor alone — see mayMoveDevices.
   const willMove = data.moveDevice && mayMoveDevices(actor)
-  if (data.moveDevice && !willMove) logDeviceMoveNotAttempted(data.deviceId, 'under_repair')
+  if (data.moveDevice && !willMove) logDeviceMoveNotAttempted(data.deviceId, UNDER_REPAIR)
 
   return withTransaction(actor.id, async (tx) => {
     const { rows: devRows } = await tx.query<{ id: string }>(
@@ -397,7 +432,7 @@ export async function createRepair(
        VALUES ($1, NULL, 'reported', $2)`, [created.id, actor.id])
 
     const deviceMoved = willMove
-      ? await moveDeviceInTx(tx, actor, data.deviceId, 'under_repair')
+      ? await moveDeviceInTx(tx, actor, data.deviceId, UNDER_REPAIR)
       : false
 
     return { repairId: created.id, repairNo: created.repair_no, deviceMoved }
@@ -561,6 +596,18 @@ export type SignOffRepairInput = z.input<typeof signOffSchema>
  * the transaction could be satisfied when asked and void by the time the repair
  * closes, which would let exactly the failure §5.4 describes slip through under
  * concurrency.
+ *
+ * What makes the gate UN-GAMEABLE is a different fact, worth stating because it
+ * is easy to assume the wrong one: it is NOT that the count is locked. Nothing
+ * here locks component_installation — the FOR UPDATE above takes the `repair`
+ * row and only that — so a concurrent replacement can still add rows while this
+ * transaction runs. The gate holds because those rows cannot be taken AWAY: an
+ * attributed replacement stamps two rows and immediately CLOSES one of them, and
+ * fn_component_installation_guard freezes a closed row forever. So once a repair
+ * has any backing at all it can never lose the last of it, and a "≥ 1" answer
+ * read here stays true past COMMIT. (The still-open half is only protected
+ * because componentService COALESCEs on close rather than overwriting — see the
+ * comment there; the frozen half is what the gate actually rests on.)
  */
 export async function signOffRepair(
   actor: Actor, input: SignOffRepairInput,

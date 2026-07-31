@@ -36,6 +36,16 @@ export function NewRepairForm({ devices, presetDeviceId, canMoveDevice }: Props)
   const locked = Boolean(presetDeviceId)
   const selected = devices.find((d) => d.id === deviceId)
 
+  // The move is offered only when the actor may move devices AND the status
+  // graph actually has an edge from THIS device's status into Under Repair.
+  // The second half matters because the move now shares the repair's
+  // transaction: asking for an edge that does not exist throws and creates no
+  // repair at all, so an offer we cannot honour would cost the user the form
+  // rather than just the status change. A device already Under Repair is the
+  // realistic case — a second fault found during an existing repair.
+  const moveAvailable = Boolean(selected?.canMoveToUnderRepair)
+  const requestMove = canMoveDevice && moveAvailable && moveDevice
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSubmitting(true)
@@ -46,13 +56,10 @@ export function NewRepairForm({ devices, presetDeviceId, canMoveDevice }: Props)
         faultDescription: faultDescription.trim() || undefined,
         warrantyFlag,
         warrantyJustification: warrantyFlag ? warrantyJustification.trim() || undefined : undefined,
-        moveDevice: canMoveDevice && moveDevice,
+        moveDevice: requestMove,
       })
       if (!res.ok) { setError(res.error); toast.error(res.error); return }
       toast.success('Repair opened')
-      if (canMoveDevice && moveDevice && !res.data.deviceMoved) {
-        toast.warning('Repair opened, but the device status was not changed — move it manually.')
-      }
       router.push(`/maintenance/repairs/${res.data.repairId}`)
     } finally {
       setSubmitting(false)
@@ -112,15 +119,28 @@ export function NewRepairForm({ devices, presetDeviceId, canMoveDevice }: Props)
       )}
 
       {canMoveDevice && (
-        <div className="flex items-center gap-2">
-          <input
-            id="move-device" type="checkbox" checked={moveDevice}
-            onChange={(e) => setMoveDevice(e.target.checked)}
-            className="h-4 w-4 rounded border-input"
-          />
-          <Label htmlFor="move-device" className="cursor-pointer">
-            Also move the device to Under Repair
-          </Label>
+        <div>
+          <div className="flex items-center gap-2">
+            <input
+              id="move-device" type="checkbox" checked={requestMove}
+              disabled={!moveAvailable}
+              onChange={(e) => setMoveDevice(e.target.checked)}
+              className="h-4 w-4 rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <Label
+              htmlFor="move-device"
+              className={moveAvailable ? 'cursor-pointer' : 'text-muted-foreground'}
+            >
+              Also move the device to Under Repair
+            </Label>
+          </div>
+          {selected && !moveAvailable && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Not available from <span className="font-medium">{selected.statusLabel}</span> — the
+              status workflow has no move from here to Under Repair. The repair still opens; the
+              device keeps its current status.
+            </p>
+          )}
         </div>
       )}
 
