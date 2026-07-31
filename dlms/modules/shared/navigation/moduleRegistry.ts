@@ -42,3 +42,37 @@ export const MODULE_REGISTRY: readonly ModuleDef[] = [
 export function visibleModules(actor: Actor): ModuleDef[] {
   return MODULE_REGISTRY.filter((m) => can(actor, m.gate, m.key)).sort((a, b) => a.sort - b.sort)
 }
+
+export type CrossModuleLink = {
+  key: string
+  label: string
+  href: string
+  icon: string
+  /** Module-less on purpose — see CROSS_MODULE_LINKS. */
+  gate: Permission
+}
+
+/**
+ * Sections that belong to no single module.
+ *
+ * Approvals is the first: a request can come from Finance, Engineering or
+ * Maintenance, and `listApprovals` scopes the ROWS by which modules the actor may
+ * enter. So the link's gate is the bare permission, with no module argument —
+ * asking for `approve_requests` in one particular module would hide the section
+ * from a manager who holds it in a different one, and `can()` with no module skips
+ * the module clause entirely while still honouring the `active` gate.
+ *
+ * A separate list rather than a seventh MODULE_REGISTRY row: that registry is
+ * keyed by ModuleKey and pinned to it by
+ * __tests__/platform/navigation/moduleRegistry.test.ts ("defines every module key
+ * exactly once"), which is a property worth keeping.
+ */
+export const CROSS_MODULE_LINKS: readonly CrossModuleLink[] = [
+  { key: 'approvals', label: 'Approvals', href: '/approvals', icon: 'ShieldCheck',
+    gate: 'approve_requests' },
+]
+
+/** Pure: the cross-module sections this actor should see, in registry order. */
+export function visibleCrossModuleLinks(actor: Actor): CrossModuleLink[] {
+  return CROSS_MODULE_LINKS.filter((l) => can(actor, l.gate))
+}

@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation'
 import { getCurrentActor } from '@/modules/shared/auth/session'
-import { visibleModules } from '@/modules/shared/navigation/moduleRegistry'
+import {
+  visibleModules, visibleCrossModuleLinks,
+} from '@/modules/shared/navigation/moduleRegistry'
 import { ModuleNav } from '@/components/platform/ModuleNav'
 import { createClient } from '@/lib/supabase/server'
 import { requiresMfa, mfaGateStatus, type AalLevel } from '@/modules/shared/auth/mfaPolicy'
@@ -20,10 +22,11 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   }
 
   const modules = visibleModules(actor)
+  const crossModuleLinks = visibleCrossModuleLinks(actor)
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      <ModuleNav modules={modules} />
+      <ModuleNav modules={modules} crossModuleLinks={crossModuleLinks} />
       <div className="flex flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b bg-white px-6">
           <span className="text-sm text-slate-500">Search — coming in week 9</span>
