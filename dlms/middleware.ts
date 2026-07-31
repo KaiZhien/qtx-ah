@@ -1,7 +1,14 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const PUBLIC_PATHS = ['/login', '/auth', '/unauthorized', '/api/health']
+// `/api/outbox/drain` is public TO THIS GATE ONLY, and has to be: the drain's
+// callers (a scheduler, a cron, an operator with curl) have no Supabase session,
+// so without this entry every POST would be answered with a 307 to /login and
+// the handler would never run. It is not unauthenticated — it authenticates on a
+// shared secret it compares in constant time, and refuses every request when that
+// secret is unset (see app/api/outbox/drain/route.ts). Middleware has no database
+// and could not make that decision anyway.
+const PUBLIC_PATHS = ['/login', '/auth', '/unauthorized', '/api/health', '/api/outbox/drain']
 
 /**
  * Refreshes the Supabase session on every route, then coarse-gates the

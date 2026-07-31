@@ -15,7 +15,8 @@
     "db:migrate:staging": "npx supabase db push --db-url \"$DATABASE_URL_MIGRATE\"",
     "migrate:demo": "npx tsx scripts/migrate_demo.ts",
     "migrate:components": "npx tsx scripts/migrate_components.ts",
-    "reconcile": "npx tsx scripts/reconcile.ts"
+    "reconcile": "npx tsx scripts/reconcile.ts",
+    "outbox:drain": "npx tsx scripts/drain_outbox.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
