@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { withTransaction, OptimisticLockError } from '@/lib/db/tx'
+import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
+import { can } from '@/modules/shared/authz/policy'
 import type { Actor } from '@/modules/shared/authz/catalog'
-import { changeDeviceStatus } from '@/modules/manufacturing/services/deviceWriteService'
+import { changeDeviceStatusInTx } from '@/modules/manufacturing/services/deviceWriteService'
 import { countInstallationsForRepair } from '@/modules/manufacturing/services/componentService'
 import {
   REPAIR_STATUSES, repairStatusLabel,
@@ -29,9 +30,9 @@ export class RepairDeviceNotFoundError extends Error {
  * The Maintenance module READS the shared device registry directly (spec §4.2:
  * the device record is the hub every module references by device.id). It NEVER
  * writes a device row from here — a device's status is owned by Manufacturing, so
- * every device mutation goes through the manufacturing `changeDeviceStatus`
- * service (moveDeviceUnderRepair / on sign-off below), never a direct UPDATE. The
- * reads are gated on the maintenance module's own permissions.
+ * every device mutation goes through the manufacturing `changeDeviceStatusInTx`
+ * service (moveDeviceInTx below), never a direct UPDATE. The reads are gated on
+ * the maintenance module's own permissions.
  */
 
 // ── Reads ───────────────────────────────────────────────────────────────────
@@ -263,33 +264,86 @@ export async function getRepairStatusCounts(actor: Actor): Promise<RepairStatusC
 // ── Writes ────────────────────────────────────────────────────────────────
 
 /**
- * Move a device via Manufacturing's own service, as a SEPARATE transaction from
- * the repair write that triggered it (spec §5.3 basic scope: NON-ATOMIC BY
- * DESIGN — repair and device commit independently; the worst case is a repair
- * that opened/closed without its device having moved, never a lost repair). The
- * move needs change_device_status on Manufacturing, which the acting user may not
- * hold; any failure (permission, no legal edge, stale version) is caught and
- * reported as `moved: false` rather than undoing the already-committed repair.
+ * May this actor move devices at all? A PURE question — `can` reads the Actor
+ * and nothing else — so it is answered BEFORE a connection is acquired, by the
+ * two writes below, and it is the ONE reason a repair still commits without its
+ * device having moved.
+ *
+ * It has to stay a permitted outcome. `sign_off_repairs` is a Maintenance
+ * permission and `change_device_status` a Manufacturing one; a maintenance
+ * manager may well hold the first and not the second, and refusing to let them
+ * sign a repair off because they cannot also move the device would be a worse
+ * failure than a device left Under Repair for someone else to move. The New
+ * Repair page asks the identical question to decide whether to offer the
+ * "move this device to Under Repair" checkbox at all, so the two agree by
+ * construction.
+ *
+ * Everything else that could stop the move — the device missing, the transition
+ * graph refusing the edge, a stale version, a database error — is NOT tolerated
+ * any more: it aborts the repair write with it. See moveDeviceInTx.
  */
-async function moveDevice(
-  actor: Actor, deviceId: string, toStatus: string,
+function mayMoveDevices(actor: Actor): boolean {
+  return can(actor, 'change_device_status', 'manufacturing')
+}
+
+/**
+ * Move a device inside the CALLER's transaction, through Manufacturing's own
+ * Tx-accepting entry point, so the device move and the repair write that caused
+ * it commit together or not at all.
+ *
+ * MA1 ran this as a second, separate transaction and called that non-atomic by
+ * design. It is not a design a device registry can keep: `withTransaction`
+ * acquires a SEPARATE pooled connection per call, so the repair and the device
+ * committed independently, and a crash in the window between them left a closed
+ * repair asserting the device was back in service beside a device still reading
+ * Under Repair — two records disagreeing about one physical machine, with
+ * nothing in the system able to notice or repair the disagreement. Passing the
+ * caller's `tx` down closes the window: there is now one COMMIT.
+ *
+ * The consequence, stated plainly because it IS a behaviour change: a move that
+ * the transition graph refuses (no legal edge out of the device's current
+ * status) now fails the repair write instead of being swallowed into
+ * `moved: false`. That is the point — a half-applied outcome is what was being
+ * removed. The one skip that survives is `onlyFrom`, which is a question about
+ * intent rather than a failure: sign-off returns a device to service only if it
+ * is the one under repair.
+ *
+ * The device row is locked FOR UPDATE here rather than read and passed
+ * optimistically: changeDeviceStatusInTx re-reads it FOR UPDATE and compares
+ * versions, so an unlocked read could lose the race with a concurrent status
+ * change and surface as a spurious OptimisticLockError on a repair the user did
+ * nothing wrong with. Holding the lock across both reads makes the version we
+ * pass in the version it still has. Callers lock the `repair` row first and the
+ * `device` row here, always in that order, so two of these cannot deadlock.
+ */
+async function moveDeviceInTx(
+  tx: Tx, actor: Actor, deviceId: string, toStatus: string,
+  opts: { onlyFrom?: string } = {},
 ): Promise<boolean> {
-  try {
-    const version = await withTransaction(actor.id, async (tx) => {
-      const { rows } = await tx.query<{ version: number }>(
-        `SELECT version FROM device WHERE id = $1 AND deleted_at IS NULL`, [deviceId])
-      return rows[0]?.version
-    })
-    if (version === undefined) return false
-    await changeDeviceStatus(actor, { deviceId, toStatus, version })
-    return true
-  } catch (err) {
-    console.error(JSON.stringify({
-      level: 'warn', msg: 'repair device move skipped (non-atomic by design)',
-      deviceId, toStatus, err: err instanceof Error ? err.message : String(err),
-    }))
-    return false
-  }
+  const { rows } = await tx.query<{ status: string; version: number }>(
+    `SELECT status, version FROM device WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [deviceId])
+  const device = rows[0]
+  if (!device) return false
+  if (opts.onlyFrom !== undefined && device.status !== opts.onlyFrom) return false
+
+  await changeDeviceStatusInTx(tx, actor, { deviceId, toStatus, version: device.version })
+  return true
+}
+
+/**
+ * Says out loud that a device move was not attempted, and why. Worded as the
+ * DECISION rather than the outcome ("not attempted", not "skipped"): it is
+ * emitted from the permission branch, which cannot know whether the device had
+ * anywhere to move — on sign-off the device may never have been Under Repair at
+ * all, and claiming a move was skipped would be a small lie in the log.
+ */
+function logDeviceMoveNotAttempted(deviceId: string, toStatus: string): void {
+  console.error(JSON.stringify({
+    level: 'warn',
+    msg: 'device move not attempted — actor lacks change_device_status in manufacturing',
+    deviceId, toStatus,
+  }))
 }
 
 const createSchema = z.object({
@@ -306,20 +360,23 @@ const createSchema = z.object({
 export type CreateRepairInput = z.input<typeof createSchema>
 
 /**
- * Open a repair against a device at status `reported` (spec §5.3). One
- * transaction: verify the device exists and isn't soft-deleted, insert the repair
- * (repair_no auto-assigned by trigger), and write the opening history row so the
- * timeline reads from the first moment. When moveDevice is set, ALSO transitions
- * the device → under_repair via Manufacturing's changeDeviceStatus in a SECOND
- * transaction (moveDevice above — non-atomic by design).
+ * Open a repair against a device at status `reported` (spec §5.3). ONE
+ * transaction, and it now covers the device too: verify the device exists and
+ * isn't soft-deleted, insert the repair (repair_no auto-assigned by trigger),
+ * write the opening history row, and — when moveDevice is set — transition the
+ * device → under_repair through Manufacturing's changeDeviceStatusInTx. Either
+ * everything lands or nothing does.
  */
 export async function createRepair(
   actor: Actor, input: CreateRepairInput,
 ): Promise<{ repairId: string; repairNo: string; deviceMoved: boolean }> {
   authorize(actor, 'create_records', 'maintenance')
   const data = createSchema.parse(input)
+  // Answered before the connection, from the Actor alone — see mayMoveDevices.
+  const willMove = data.moveDevice && mayMoveDevices(actor)
+  if (data.moveDevice && !willMove) logDeviceMoveNotAttempted(data.deviceId, 'under_repair')
 
-  const { repairId, repairNo } = await withTransaction(actor.id, async (tx) => {
+  return withTransaction(actor.id, async (tx) => {
     const { rows: devRows } = await tx.query<{ id: string }>(
       `SELECT id FROM device WHERE id = $1 AND deleted_at IS NULL`, [data.deviceId])
     if (devRows.length === 0) throw new RepairDeviceNotFoundError(data.deviceId)
@@ -339,11 +396,12 @@ export async function createRepair(
       `INSERT INTO repair_status_history (repair_id, from_status, to_status, changed_by)
        VALUES ($1, NULL, 'reported', $2)`, [created.id, actor.id])
 
-    return { repairId: created.id, repairNo: created.repair_no }
-  })
+    const deviceMoved = willMove
+      ? await moveDeviceInTx(tx, actor, data.deviceId, 'under_repair')
+      : false
 
-  const deviceMoved = data.moveDevice ? await moveDevice(actor, data.deviceId, 'under_repair') : false
-  return { repairId, repairNo, deviceMoved }
+    return { repairId: created.id, repairNo: created.repair_no, deviceMoved }
+  })
 }
 
 const updateSchema = z.object({
@@ -485,27 +543,34 @@ const signOffSchema = z.object({
 export type SignOffRepairInput = z.input<typeof signOffSchema>
 
 /**
- * Sign off a repair (spec §5.3 + §5.4, permission sign_off_repairs). One
+ * Sign off a repair (spec §5.3 + §5.4, permission sign_off_repairs). ONE
  * transaction: lock the repair, enforce the pure precondition, stamp
- * signed_off_by/at, set status closed, append history. THEN — as a second,
- * non-atomic transaction (moveDevice) — return the device Under Repair → Active
- * when it is currently under repair.
+ * signed_off_by/at, set status closed, append history, and return the device
+ * Under Repair → Active — all of it, or none of it.
  *
- * The precondition now has three facts, not two: awaiting_sign_off, testing
- * notes present, AND — when the repair CLAIMS parts were replaced — at least
- * one component_installation referencing it. That last count is read INSIDE
- * this transaction, after the FOR UPDATE lock, deliberately: a count taken
- * before the transaction could be satisfied when asked and void by the time the
- * repair closes, which would let exactly the failure §5.4 describes slip
- * through under concurrency.
+ * That last clause is the whole point of this shape. Closing a repair is an
+ * assertion that the device is back in service; committing it separately from
+ * the device's own move meant a crash between the two could publish the
+ * assertion and not the fact. There is one COMMIT now, so the two cannot
+ * disagree.
+ *
+ * The precondition has three facts, not two: awaiting_sign_off, testing notes
+ * present, AND — when the repair CLAIMS parts were replaced — at least one
+ * component_installation referencing it. That last count is read INSIDE this
+ * transaction, after the FOR UPDATE lock, deliberately: a count taken before
+ * the transaction could be satisfied when asked and void by the time the repair
+ * closes, which would let exactly the failure §5.4 describes slip through under
+ * concurrency.
  */
 export async function signOffRepair(
   actor: Actor, input: SignOffRepairInput,
 ): Promise<{ status: RepairStatus; version: number; deviceReturned: boolean }> {
   authorize(actor, 'sign_off_repairs', 'maintenance')
   const data = signOffSchema.parse(input)
+  // Pure, and therefore ahead of the connection — see mayMoveDevices.
+  const mayMove = mayMoveDevices(actor)
 
-  const deviceId = await withTransaction(actor.id, async (tx) => {
+  return withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
       status: RepairStatus; testing_notes: string | null; parts_replaced: boolean
       version: number; device_id: string
@@ -539,21 +604,18 @@ export async function signOffRepair(
       `INSERT INTO repair_status_history (repair_id, from_status, to_status, note, changed_by)
        VALUES ($1, 'awaiting_sign_off', 'closed', 'Signed off', $2)`, [data.repairId, actor.id])
 
-    return current.device_id
-  })
+    // Return the device to service — only if it IS the device under repair, and
+    // in this same transaction. `onlyFrom` is intent, not tolerance: a device
+    // already Active (or Returned, or Retired) was never taken out of service by
+    // this repair, so there is nothing to give back.
+    let deviceReturned = false
+    if (mayMove) {
+      deviceReturned = await moveDeviceInTx(
+        tx, actor, current.device_id, 'active', { onlyFrom: 'under_repair' })
+    } else {
+      logDeviceMoveNotAttempted(current.device_id, 'active')
+    }
 
-  // Non-atomic by design: return the device to service only if it is under repair.
-  const moved = await moveDeviceToActiveIfUnderRepair(actor, deviceId)
-  return { status: 'closed', version: data.version + 1, deviceReturned: moved }
-}
-
-/** Reads the device's current status and, only if under_repair, moves it → active. */
-async function moveDeviceToActiveIfUnderRepair(actor: Actor, deviceId: string): Promise<boolean> {
-  const status = await withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{ status: string }>(
-      `SELECT status FROM device WHERE id = $1 AND deleted_at IS NULL`, [deviceId])
-    return rows[0]?.status
+    return { status: 'closed' as const, version: updated[0].version, deviceReturned }
   })
-  if (status !== 'under_repair') return false
-  return moveDevice(actor, deviceId, 'active')
 }

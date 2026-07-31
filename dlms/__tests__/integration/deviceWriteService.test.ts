@@ -2,10 +2,10 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
-import { changeDeviceStatus, DeviceNotFoundError } from '@/modules/manufacturing/services/deviceWriteService'
+import { changeDeviceStatus, changeDeviceStatusInTx, DeviceNotFoundError } from '@/modules/manufacturing/services/deviceWriteService'
 import { createDevice, updateDevice, listAllowedTransitions, DuplicateSerialError } from '@/modules/manufacturing/services/deviceWriteService'
 import { InvalidStatusChangeError } from '@/modules/manufacturing/domain/deviceStatus'
-import { OptimisticLockError } from '@/lib/db/tx'
+import { withTransaction, OptimisticLockError } from '@/lib/db/tx'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 
@@ -242,6 +242,100 @@ describe('changeDeviceStatus — outbox handoff events', () => {
       await db.query(
         `UPDATE status_transition SET task_template_key=NULL, notify_roles=NULL
           WHERE from_status='active' AND to_status='retired'`)
+    }
+  })
+})
+
+/**
+ * The Tx-accepting entry point Maintenance reaches for (spec §5.3). Two
+ * properties, and neither is "it writes the row":
+ *
+ *  1. It joins the CALLER's transaction rather than opening one, so the caller's
+ *     rollback takes the device move with it. That is the whole reason it exists.
+ *  2. It is an entry point in its OWN right — a caller handing it a live `tx`
+ *     does not thereby vouch for the actor.
+ */
+describe('changeDeviceStatusInTx', () => {
+  it('rolls back with the caller when the caller fails afterwards', async () => {
+    const d = await makeDevice('ready_for_delivery', `QTX-TX-${runTag}`)
+    const boom = new Error('caller failed after the device moved')
+
+    await expect(withTransaction(userId, async (tx) => {
+      // The move genuinely happens inside the transaction...
+      const moved = await changeDeviceStatusInTx(tx, op(), {
+        deviceId: d.id, toStatus: 'shipped', version: d.version,
+      })
+      expect(moved).toEqual({ status: 'shipped', version: d.version + 1 })
+      const midFlight = await tx.query(`SELECT status FROM device WHERE id=$1`, [d.id])
+      expect(midFlight.rows[0].status).toBe('shipped')
+      // ...and then the caller's own work fails.
+      throw boom
+    })).rejects.toThrow(boom)
+
+    // All three writes are gone together — the device, its history row, and the
+    // handoff event this edge emits. A separate transaction would have kept them.
+    const dev = await db.query(`SELECT status, version FROM device WHERE id=$1`, [d.id])
+    expect(dev.rows[0]).toMatchObject({ status: 'ready_for_delivery', version: d.version })
+    const hist = await db.query(
+      `SELECT count(*)::int AS n FROM device_status_history WHERE device_id=$1`, [d.id])
+    expect(hist.rows[0].n).toBe(0)
+    const evt = await db.query(`SELECT count(*)::int AS n FROM outbox WHERE aggregate_id=$1`, [d.id])
+    expect(evt.rows[0].n).toBe(0)
+  })
+
+  it('refuses a viewer even when handed an open transaction', async () => {
+    const d = await makeDevice('in_production')
+    await expect(withTransaction(userId, (tx) => changeDeviceStatusInTx(tx, viewer(), {
+      deviceId: d.id, toStatus: 'quality_check', version: d.version,
+    }))).rejects.toThrow(PermissionError)
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [d.id])
+    expect(dev.rows[0].status).toBe('in_production')
+  })
+
+  it('validates its own input even when handed an open transaction', async () => {
+    await expect(withTransaction(userId, (tx) => changeDeviceStatusInTx(tx, op(), {
+      deviceId: 'not-a-uuid', toStatus: 'quality_check', version: 1,
+    }))).rejects.toThrow(/uuid/i)
+  })
+})
+
+/**
+ * ORDERING, not merely outcome — the same property taskService.test.ts pins for
+ * createTask, and for the same reason. authorize.ts is documented as "the choke
+ * point. Every service entry point calls this before touching data", and
+ * extracting changeDeviceStatusInTx is exactly the refactor that tends to move
+ * those checks inside the transaction: every assertion in this file stays green
+ * if they do, while a denied call starts burning a pooled connection plus a
+ * BEGIN/ROLLBACK, and a denial during a database outage starts surfacing as a
+ * connection error (a 500) instead of a PermissionError (a 403).
+ *
+ * Proven the only way the outcome distinguishes the two: point a FRESH module
+ * graph's pool at an unreachable port. If the guard still runs first, the pool is
+ * never touched and the error is a PermissionError; if the transaction is opened
+ * first, the connection refusal wins and an AggregateError comes back instead.
+ */
+describe('changeDeviceStatus — guards run before the connection', () => {
+  it('authorizes and validates before it ever acquires a connection', async () => {
+    const previous = process.env.DATABASE_URL
+    vi.resetModules()
+    process.env.DATABASE_URL = 'postgresql://nobody:nobody@127.0.0.1:1/unreachable'
+    try {
+      // A fresh graph, so lib/db/pool's singleton is rebuilt against the dead
+      // address — and so PermissionError is compared against the class THIS
+      // graph throws.
+      const svc = await import('@/modules/manufacturing/services/deviceWriteService')
+      const authz = await import('@/modules/shared/authz/authorize')
+
+      await expect(svc.changeDeviceStatus(viewer(), {
+        deviceId: crypto.randomUUID(), toStatus: 'quality_check', version: 1,
+      })).rejects.toThrow(authz.PermissionError)
+      // ...and validation, which must also fail before a connection is asked for.
+      await expect(svc.changeDeviceStatus(op(), {
+        deviceId: 'not-a-uuid', toStatus: 'quality_check', version: 1,
+      })).rejects.toThrow(/uuid/i)
+    } finally {
+      process.env.DATABASE_URL = previous
+      vi.resetModules()
     }
   })
 })

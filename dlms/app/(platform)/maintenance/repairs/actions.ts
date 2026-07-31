@@ -11,6 +11,7 @@ import {
 import {
   InvalidRepairTransitionError, RepairSignOffError,
 } from '@/modules/maintenance/domain/repairStatus'
+import { InvalidStatusChangeError } from '@/modules/manufacturing/domain/deviceStatus'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 
@@ -28,6 +29,13 @@ function toMessage(err: unknown): string {
   }
   if (err instanceof InvalidRepairTransitionError) return err.message
   if (err instanceof RepairSignOffError) return err.message
+  // A repair write can now fail on the DEVICE half: since the device move shares
+  // the repair's transaction, a move the status graph refuses aborts the whole
+  // write instead of being swallowed into `deviceMoved: false`. The message is
+  // already the human one Manufacturing composes ("A device cannot move from
+  // X to Y"), so it passes through — without this line the user would be told
+  // "Something went wrong" about a rule the system knows how to explain.
+  if (err instanceof InvalidStatusChangeError) return err.message
   if (err instanceof RepairDeviceNotFoundError) {
     return 'That device no longer exists. Reload and try again.'
   }

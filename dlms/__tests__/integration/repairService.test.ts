@@ -2,9 +2,7 @@
 //
 // Mirrors deviceWriteService.test.ts's harness idiom: mock the supabase server
 // module, talk to a real local Postgres over TEST_DATABASE_URL, tag rows per run,
-// and clean up in afterAll. NOT run in this worktree (no docker / no
-// test:integration here — shared port with parallel agents); the controller runs
-// the integration suite serially at merge.
+// and clean up in afterAll.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
@@ -14,6 +12,7 @@ import {
   RepairNotFoundError, RepairDeviceNotFoundError,
 } from '@/modules/maintenance/services/repairService'
 import { InvalidRepairTransitionError, RepairSignOffError } from '@/modules/maintenance/domain/repairStatus'
+import { InvalidStatusChangeError } from '@/modules/manufacturing/domain/deviceStatus'
 import {
   installComponent, replaceComponentInstallation,
 } from '@/modules/manufacturing/services/componentService'
@@ -169,7 +168,7 @@ describe('createRepair', () => {
       .rejects.toThrow(RepairDeviceNotFoundError)
   })
 
-  it('optionally moves an Active device to Under Repair (non-atomic second tx)', async () => {
+  it('optionally moves an Active device to Under Repair, in the same transaction', async () => {
     const { deviceId, deviceMoved } = await openRepair('active', true)
     expect(deviceMoved).toBe(true)
     const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
@@ -362,6 +361,163 @@ describe('signOffRepair — the parts-replaced precondition', () => {
       repairId, version: await currentVersion(repairId),
     })
     expect(signed.status).toBe('closed')
+  })
+})
+
+// ── The device move commits with the repair, or not at all ──────────────────
+//
+// The property is NOT "both rows read correctly after a successful call" — that
+// is equally true when the two commit on two pooled connections, which is what
+// MA1 did. It is "interrupt ONE of the two writes and the OTHER must not
+// survive", and only a shared transaction can satisfy that.
+//
+// The interruption is a trigger that refuses one device edge — the outbox
+// work's method, and it stands in for exactly the crash the old shape left a
+// window for. Every assertion below would FAIL under two transactions: the
+// repair would already be committed by the time the device write blew up.
+describe('atomicity of the repair ↔ device move', () => {
+  /**
+   * Refuses one device edge for the duration of `body`. `from`/`to` are test
+   * literals, not input. Safe to install on the shared table because integration
+   * files run serially (vitest.integration.config.ts: fileParallelism false),
+   * and dropped in `finally` so a failing assertion cannot leak it into the
+   * files that run after this one.
+   */
+  async function withBlockedDeviceMove<T>(
+    from: string, to: string, body: () => Promise<T>,
+  ): Promise<T> {
+    await db.query(`
+      CREATE OR REPLACE FUNCTION test_block_device_move() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$ BEGIN
+        RAISE EXCEPTION 'simulated crash while moving the device';
+      END $fn$`)
+    await db.query(`
+      CREATE TRIGGER trg_test_block_device_move BEFORE UPDATE ON device
+        FOR EACH ROW WHEN (OLD.status = '${from}' AND NEW.status = '${to}')
+        EXECUTE FUNCTION test_block_device_move()`)
+    try {
+      return await body()
+    } finally {
+      await db.query(`DROP TRIGGER IF EXISTS trg_test_block_device_move ON device`)
+      await db.query(`DROP FUNCTION IF EXISTS test_block_device_move()`)
+    }
+  }
+
+  it('un-closes the repair when the device cannot be returned to service', async () => {
+    const { deviceId, repairId } = await openRepair('active', true)   // device → under_repair
+    await driveToAwaitingSignOff(repairId)
+    const version = await currentVersion(repairId)
+
+    await withBlockedDeviceMove('under_repair', 'active', async () => {
+      await expect(signOffRepair(signer(), { repairId, version }))
+        .rejects.toThrow(/simulated crash/)
+    })
+
+    // The sign-off rolled back WITH the device move. A closed repair here would
+    // mean the two writes were in different transactions — and would be the
+    // divergence itself: a repair asserting the device is back in service, beside
+    // a device still reading Under Repair, with nothing able to reconcile them.
+    const rep = await db.query(
+      `SELECT status, version, signed_off_by, signed_off_at, closed_at FROM repair WHERE id=$1`,
+      [repairId])
+    expect(rep.rows[0]).toMatchObject({
+      status: 'awaiting_sign_off', version, signed_off_by: null,
+    })
+    expect(rep.rows[0].signed_off_at).toBeNull()
+    expect(rep.rows[0].closed_at).toBeNull()
+    const closedRows = await db.query(
+      `SELECT count(*)::int AS n FROM repair_status_history
+        WHERE repair_id=$1 AND to_status='closed'`, [repairId])
+    expect(closedRows.rows[0].n).toBe(0)
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
+    expect(dev.rows[0].status).toBe('under_repair')
+
+    // ...and the retry, now unobstructed, lands both halves together.
+    const res = await signOffRepair(signer(), { repairId, version })
+    expect(res).toMatchObject({ status: 'closed', deviceReturned: true })
+    const after = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
+    expect(after.rows[0].status).toBe('active')
+  })
+
+  it('leaves no repair behind when the device cannot be taken out of service', async () => {
+    const deviceId = await makeDevice('active')
+
+    await withBlockedDeviceMove('active', 'under_repair', async () => {
+      await expect(createRepair(op(), {
+        deviceId, faultDescription: 'no power', moveDevice: true,
+      })).rejects.toThrow(/simulated crash/)
+    })
+
+    // The repair row and its opening history row demonstrably existed
+    // mid-transaction (the device UPDATE runs after both), so a zero count here
+    // can only be the transaction having rolled them back.
+    const rep = await db.query(
+      `SELECT count(*)::int AS n FROM repair WHERE device_id=$1`, [deviceId])
+    expect(rep.rows[0].n).toBe(0)
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
+    expect(dev.rows[0].status).toBe('active')
+  })
+
+  /**
+   * The behaviour change this atomicity costs, pinned deliberately. MA1
+   * swallowed an illegal move into `deviceMoved: false` and committed the repair
+   * anyway; a shared transaction cannot do that — a refused move takes the
+   * repair with it. `in_stock` has no seeded edge to `under_repair`, so this is
+   * the graph refusing, not a database error.
+   */
+  it('fails the whole repair when a REQUESTED device move has no legal edge', async () => {
+    const deviceId = await makeDevice('in_stock')
+    await expect(createRepair(op(), { deviceId, moveDevice: true }))
+      .rejects.toThrow(InvalidStatusChangeError)
+    const rep = await db.query(
+      `SELECT count(*)::int AS n FROM repair WHERE device_id=$1`, [deviceId])
+    expect(rep.rows[0].n).toBe(0)
+
+    // Without the request, the same device opens a repair perfectly well — the
+    // failure above is the move, not the device.
+    const ok = await createRepair(op(), { deviceId })
+    createdRepairIds.push(ok.repairId)
+    expect(ok.deviceMoved).toBe(false)
+  })
+
+  /**
+   * The ONE skip that survives, and it is a permission question answered from
+   * the Actor alone before any connection is taken. `sign_off_repairs` is a
+   * Maintenance permission and `change_device_status` a Manufacturing one;
+   * refusing the sign-off because the signer cannot also move devices would be a
+   * worse failure than a device left Under Repair for someone else to move.
+   */
+  it('still signs off for a signer who cannot move devices, and says the device stayed put',
+    async () => {
+      const maintenanceOnlySigner = (): Actor => ({
+        id: userId, roleKey: 'manager',
+        permissions: new Set(['view_records', 'create_records', 'edit_records', 'sign_off_repairs']),
+        moduleAccess: new Set(['maintenance']), active: true,
+      })
+      const { deviceId, repairId } = await openRepair('active', true)
+      await driveToAwaitingSignOff(repairId)
+
+      const res = await signOffRepair(maintenanceOnlySigner(), {
+        repairId, version: await currentVersion(repairId),
+      })
+      expect(res).toMatchObject({ status: 'closed', deviceReturned: false })
+      const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
+      expect(dev.rows[0].status).toBe('under_repair')
+    })
+
+  /** The same leniency on the way in: the repair opens, the device does not move. */
+  it('opens the repair for a creator who cannot move devices', async () => {
+    const maintenanceOnlyOperator = (): Actor => ({
+      id: userId, roleKey: 'operator',
+      permissions: new Set(['view_records', 'create_records', 'edit_records']),
+      moduleAccess: new Set(['maintenance']), active: true,
+    })
+    const deviceId = await makeDevice('active')
+    const res = await createRepair(maintenanceOnlyOperator(), { deviceId, moveDevice: true })
+    createdRepairIds.push(res.repairId)
+    expect(res.deviceMoved).toBe(false)
+    const dev = await db.query(`SELECT status FROM device WHERE id=$1`, [deviceId])
+    expect(dev.rows[0].status).toBe('active')
   })
 })
 
