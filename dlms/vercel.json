@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/outbox/drain", "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/task-reminders", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/expire-overrides", "schedule": "0 * * * *" }
+  ]
+}

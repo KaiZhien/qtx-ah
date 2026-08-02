@@ -1,14 +1,26 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-// `/api/outbox/drain` is public TO THIS GATE ONLY, and has to be: the drain's
-// callers (a scheduler, a cron, an operator with curl) have no Supabase session,
-// so without this entry every POST would be answered with a 307 to /login and
-// the handler would never run. It is not unauthenticated — it authenticates on a
-// shared secret it compares in constant time, and refuses every request when that
-// secret is unset (see app/api/outbox/drain/route.ts). Middleware has no database
-// and could not make that decision anyway.
-const PUBLIC_PATHS = ['/login', '/auth', '/unauthorized', '/api/health', '/api/outbox/drain']
+// `/api/outbox/drain` and `/api/cron` are public TO THIS GATE ONLY, and have to
+// be: their callers (Vercel Cron, an external scheduler, an operator with curl)
+// have no Supabase session, so without these entries every request would be
+// answered with a 307 to /login and the handler would never run. They are not
+// unauthenticated — each authenticates on a shared secret it compares in constant
+// time, and refuses every request when that secret is unset (see
+// app/api/outbox/drain/route.ts, app/api/cron/[job]/route.ts and the shared
+// modules/shared/outbox/services/cronAuth.ts). Middleware has no database and
+// could not make that decision anyway.
+//
+// `/api/health` was listed here before the route existed — pre-existing drift,
+// now closed by app/api/health/route.ts (spec §13). It is genuinely public: a
+// health check that needs a credential cannot be used by an uptime monitor, and
+// what it discloses is bounded to liveness plus a queue depth.
+//
+// Every entry is pinned by __tests__/platform/shared/middlewarePublicPaths.test.ts:
+// deleting one is the difference between the endpoint working and 307-ing to /login.
+const PUBLIC_PATHS = [
+  '/login', '/auth', '/unauthorized', '/api/health', '/api/outbox/drain', '/api/cron',
+]
 
 /**
  * Refreshes the Supabase session on every route, then coarse-gates the

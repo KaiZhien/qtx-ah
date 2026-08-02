@@ -5,7 +5,15 @@ import { loadSystemActor } from '@/modules/shared/authz/actor'
 import { MODULES } from '@/modules/shared/authz/catalog'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { buildApprovalTask, buildHandoffTask } from '@/modules/shared/outbox/domain/handoffTemplates'
-import { createTaskInTx, type CreateTaskInput } from '@/modules/shared/tasks/services/taskService'
+import { createTaskInTx } from '@/modules/shared/tasks/services/taskService'
+import {
+  buildApprovalDecidedNotification, buildApprovalRequestedNotification,
+  buildHandoffNotification,
+} from '@/modules/shared/notifications/domain/templates'
+import {
+  deliverEmails, fanOutInTx, resolveApproverRecipients, resolveRecipientById,
+  resolveRoleRecipients, type EmailIntent, type FanOutResult,
+} from '@/modules/shared/notifications/services/notificationService'
 
 /**
  * The drain (spec §5.5): turns unprocessed `outbox` rows into tasks, EXACTLY ONCE.
@@ -67,6 +75,29 @@ export type DrainResult = {
    * reading ("no backlog") a runbook stands down on. null says "unknown", which is true.
    */
   parked: number | null
+  /**
+   * Emails that ACTUALLY went out during this drain — not emails wanted, and not
+   * notifications created.
+   *
+   * Zero is the EXPECTED value on this deployment: RESEND_API_KEY is unset, so
+   * LoggingEmailSender truthfully reports every send as undelivered and no `emailed_at` is
+   * stamped. A non-zero `emailed` against a configured key is the only thing that proves
+   * the mail path works end to end.
+   *
+   * Deliberately NOT `number | null`, and the contrast with `parked` above is the reason:
+   * `parked` is null-able because a COUNT QUERY can fail after the work is done, leaving
+   * the run genuinely unable to say. This number is accumulated from the delivery loop's
+   * own return values as it goes, so there is no state in which it is unknown.
+   */
+  emailed: number
+  /**
+   * In-app notification ROWS written by this drain, across every event it processed.
+   *
+   * Not the number of people the events concerned: a recipient who muted the category gets
+   * no row, and a notification suppressed by a dedupe key is not counted either. It is what
+   * actually landed in somebody's bell.
+   */
+  notified: number
 }
 
 const inputSchema = z.object({
@@ -98,6 +129,14 @@ const payloadSchema = z.object({
   reason: nullableText,
   deviceSn: nullableText,
   pcbaASnLegacy: nullableText,
+  /**
+   * `status_transition.notify_roles`, carried by the producer since the outbox was built
+   * and READ BY NOTHING until the notifications slice. Optional and defaulting to empty,
+   * deliberately: every event already in the table was written before this field was
+   * consumed, and some carry `null` from a transition with no roles configured. Requiring
+   * it would turn a historical backlog into a wave of parked rows.
+   */
+  notifyRoles: z.array(z.string().min(1)).nullish().transform((v) => v ?? []),
 })
 
 /**
@@ -121,6 +160,25 @@ const approvalPayloadSchema = z.object({
 })
 
 /**
+ * The DECIDED half of the approval family — notification only, no task.
+ *
+ * NOTHING PRODUCES THIS EVENT YET, and that is a scoping fact rather than a design one:
+ * emitting it belongs in approvalService.decideApproval, which this slice was not allowed
+ * to edit (it is another agent's file this wave). The consumer is built and tested so that
+ * adding the producer is one INSERT — see docs/runbooks/RB-09-outbox-drain.md, "Wiring the
+ * decision notification", which carries the exact statement.
+ *
+ * `decidedBy` is in the payload rather than resolved from `created_by` like the other two
+ * families, because for THIS event they are the same person and the recipient is not: the
+ * notification goes to the REQUESTER, who must therefore be named explicitly.
+ */
+const approvalDecidedPayloadSchema = approvalPayloadSchema.extend({
+  decision: z.enum(['approved', 'rejected']),
+  note: nullableText,
+  requestedBy: z.string().uuid(),
+})
+
+/**
  * `aggregate_type` and `event_type` are deliberately unconstrained in the schema so a new
  * kind of event never needs a migration. This drain handles two combinations; anything else
  * is RECORDED as a failure rather than silently skipped. Skipping would leave a row
@@ -140,12 +198,14 @@ type ClaimedRow = {
   aggregate_id: string
   event_type: string
   payload: unknown
+  /** The human who CAUSED the event — excluded from its own notification fan-out. */
+  created_by: string
   /** `created_by`'s current full name — the human who CAUSED the event, whatever its kind. */
   caused_by_name: string
 }
 
 type Outcome =
-  | { state: 'processed' }
+  | { state: 'processed'; fanOut: FanOutResult }
   | { state: 'skipped' }
   | { state: 'failed'; error: string }
 
@@ -168,7 +228,7 @@ const messageOf = (err: unknown): string =>
 async function claimRow(tx: Tx, outboxId: string): Promise<ClaimedRow | null> {
   const { rows } = await tx.query<ClaimedRow>(
     `SELECT o.id, o.aggregate_type, o.aggregate_id, o.event_type, o.payload,
-            u.full_name AS caused_by_name
+            o.created_by, u.full_name AS caused_by_name
        FROM outbox o
        JOIN app_user u ON u.id = o.created_by
       WHERE o.id = $1 AND o.processed_at IS NULL AND o.attempts < $2
@@ -177,16 +237,30 @@ async function claimRow(tx: Tx, outboxId: string): Promise<ClaimedRow | null> {
 }
 
 /**
- * Turns one claimed row into the task it should become, dispatching on the event family.
+ * Turns one claimed row into the task it should become, plus the people who should be told
+ * about it — dispatching on the event family, inside the CALLER'S transaction.
  *
  * Each branch owns its own payload schema, its own template registry and its own links; what
- * they share is this function's contract — build a task or throw, touch nothing else — so a
+ * they share is this function's contract — do the work or throw, touch nothing else — so a
  * new event family cannot accidentally acquire different failure or attribution behaviour.
+ *
+ * WHY THE NOTIFICATION WRITES ARE IN HERE rather than after the drain: `tx` is the same
+ * transaction that inserts the task and stamps `processed_at`, so the notifications inherit
+ * the drain's exactly-once property instead of inventing a weaker one. Fan-out through a
+ * second connection would commit independently of the stamp, and a crash between the two
+ * would re-deliver every recipient's notification on the next drain. Emails are the one
+ * thing that CANNOT join it — a send is not rollback-able — so they are returned as intents
+ * and delivered after the commit.
+ *
+ * NOT EVERY EVENT PRODUCES A TASK. `approval_decided` notifies the requester and creates
+ * nothing: there is no work to queue, only news to deliver.
  */
-function taskForEvent(row: ClaimedRow): CreateTaskInput {
+async function handleEvent(
+  tx: Tx, system: Actor, row: ClaimedRow,
+): Promise<FanOutResult> {
   if (row.aggregate_type === 'device' && row.event_type === 'device_status_changed') {
     const payload = payloadSchema.parse(row.payload)
-    const handoff = buildHandoffTask(payload.taskTemplateKey, {
+    const context = {
       deviceId: row.aggregate_id,            // the row's own aggregate id; never in the payload
       deviceSn: payload.deviceSn,
       pcbaASnLegacy: payload.pcbaASnLegacy,
@@ -194,27 +268,39 @@ function taskForEvent(row: ClaimedRow): CreateTaskInput {
       toStatus: payload.toStatus,
       reason: payload.reason,
       changedByName: row.caused_by_name,
-    })
-    return {
+    }
+    const handoff = buildHandoffTask(payload.taskTemplateKey, context)
+    await createTaskInTx(tx, system, {
       title: handoff.title,
       description: handoff.description,
       priority: handoff.priority,
       department: handoff.department,
       links: [{ entityType: 'device', entityId: row.aggregate_id, module: handoff.module }],
-    }
+    })
+
+    // `notify_roles` finally consumed. Resolved to users HERE rather than at produce time
+    // so the audience is who holds the role when the news is delivered, and gated on the
+    // handoff's own module so the notification and the task agree about who is entitled to
+    // hear about this event. The causer is excluded — nobody needs telling what they just did.
+    const content = buildHandoffNotification({ ...context, module: handoff.module })
+    const recipients = await resolveRoleRecipients(
+      tx, payload.notifyRoles, handoff.module, row.created_by)
+    return fanOutInTx(tx, system, recipients, content)
   }
 
   if (row.aggregate_type === 'approval' && row.event_type === 'approval_requested') {
     const payload = approvalPayloadSchema.parse(row.payload)
-    const handoff = buildApprovalTask(payload.kind, {
+    const context = {
       approvalId: row.aggregate_id,          // the row's own aggregate id; never in the payload
+      kind: payload.kind,
       entityType: payload.entityType,
       entityId: payload.entityId,
       module: payload.module,
       label: payload.label,
       requestedByName: row.caused_by_name,
-    })
-    return {
+    }
+    const handoff = buildApprovalTask(payload.kind, context)
+    await createTaskInTx(tx, system, {
       title: handoff.title,
       description: handoff.description,
       priority: handoff.priority,
@@ -226,7 +312,33 @@ function taskForEvent(row: ClaimedRow): CreateTaskInput {
         { entityType: 'approval', entityId: row.aggregate_id, module: handoff.module },
         { entityType: payload.entityType, entityId: payload.entityId, module: handoff.module },
       ],
-    }
+    })
+
+    // Everyone who could actually decide it, minus the requester — who is refused by
+    // evaluateDecision anyway, so telling them would be an invitation to a dead end.
+    const recipients = await resolveApproverRecipients(tx, payload.module, row.created_by)
+    return fanOutInTx(tx, system, recipients, buildApprovalRequestedNotification(context))
+  }
+
+  if (row.aggregate_type === 'approval' && row.event_type === 'approval_decided') {
+    const payload = approvalDecidedPayloadSchema.parse(row.payload)
+    // NO TASK. The decision is the end of the work, not the start of some.
+    const requester = await resolveRecipientById(tx, payload.requestedBy)
+    // A requester who has since been deactivated or removed is not an error: the decision
+    // stands, there is simply nobody left to tell. Stamping the event processed is correct.
+    if (!requester) return { created: 0, intents: [] }
+
+    return fanOutInTx(tx, system, [requester], buildApprovalDecidedNotification({
+      approvalId: row.aggregate_id,
+      kind: payload.kind,
+      entityType: payload.entityType,
+      entityId: payload.entityId,
+      module: payload.module,
+      label: payload.label,
+      decidedByName: row.caused_by_name,
+      decision: payload.decision,
+      note: payload.note,
+    }))
   }
 
   throw new UnsupportedEventError(row.aggregate_type, row.event_type)
@@ -247,7 +359,11 @@ async function processOne(system: Actor, outboxId: string): Promise<Outcome> {
       // deliberately NOT assign_tasks (see 20260731000000_platform_outbox.sql), and a
       // handoff belongs to the receiving department's queue rather than to whoever an
       // automation happened to pick.
-      await createTaskInTx(tx, system, taskForEvent(row))
+      //
+      // The notification fan-out happens in here too, on this same connection — that is
+      // what gives it exactly-once alongside the task. Emails come back as intents to be
+      // sent after COMMIT, because a send cannot be rolled back.
+      const fanOut = await handleEvent(tx, system, row)
 
       // Same transaction as the insert above. Guarded on processed_at so a row that
       // somehow moved underneath the lock fails loudly instead of silently double-handing.
@@ -257,7 +373,7 @@ async function processOne(system: Actor, outboxId: string): Promise<Outcome> {
       if (stamped.rowCount !== 1) {
         throw new Error(`Could not stamp outbox ${outboxId} processed — it changed underneath`)
       }
-      return { state: 'processed' }
+      return { state: 'processed', fanOut }
     })
   } catch (err) {
     return { state: 'failed', error: messageOf(err) }
@@ -329,7 +445,11 @@ export async function drainOutbox(input: DrainInput = {}): Promise<DrainResult> 
       ORDER BY occurred_at, id
       LIMIT $2`, [MAX_ATTEMPTS, limit])
 
-  const result: DrainResult = { claimed: 0, processed: 0, failed: 0, failures: [], parked: null }
+  const result: DrainResult = {
+    claimed: 0, processed: 0, failed: 0, failures: [], parked: null,
+    notified: 0, emailed: 0,
+  }
+  const intents: EmailIntent[] = []
 
   for (const { id } of candidates) {
     const outcome = await processOne(system, id)
@@ -338,12 +458,21 @@ export async function drainOutbox(input: DrainInput = {}): Promise<DrainResult> 
     result.claimed++
     if (outcome.state === 'processed') {
       result.processed++
+      result.notified += outcome.fanOut.created
+      intents.push(...outcome.fanOut.intents)
     } else {
       result.failed++
       result.failures.push({ outboxId: id, error: outcome.error })
       await recordFailure(system, id, outcome.error)
     }
   }
+
+  // AFTER every row has committed, never inside one. Absorbs its own failures: the in-app
+  // notifications are already delivered and are the record of the event, so a mail outage
+  // must not turn a successful drain into a failed one. `emailed` counts what ACTUALLY
+  // went out, which on a deployment with no RESEND_API_KEY is honestly zero.
+  const { sent } = await deliverEmails(system.id, intents)
+  result.emailed = sent
 
   // Reporting, not work — and everything above is already committed row by row, so this
   // must not be able to turn a drain that processed its whole batch into a throw. See
