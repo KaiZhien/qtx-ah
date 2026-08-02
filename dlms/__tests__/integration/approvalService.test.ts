@@ -24,7 +24,7 @@ import type { Actor } from '@/modules/shared/authz/catalog'
 import { ApprovalDecisionError } from '@/modules/shared/approvals/domain/approvalDecision'
 import {
   requestApproval, requestApprovalInTx, decideApproval, listApprovals,
-  getApprovalFor, getApprovalForInTx,
+  countPendingApprovals, getApprovalFor, getApprovalForInTx,
   ApprovalNotFoundError, ApprovalAlreadyPendingError, RejectionNeedsNoteError,
   InvalidSnapshotError, ApprovalTargetError,
 } from '@/modules/shared/approvals/services/approvalService'
@@ -1141,6 +1141,44 @@ describe('listApprovals — the queue', () => {
 
     expect(new Set(seen).size).toBe(seen.length)          // nothing repeated
     for (const id of wanted) expect(seen).toContain(id)   // nothing dropped
+  })
+
+  /**
+   * The dashboard tile's count. It MUST agree with the queue it links to, so it
+   * is scoped identically — a tile reading "3" that opens a page showing four
+   * rows is a bug report, not a feature.
+   */
+  it('counts what the queue would show, with the same two scopes', async () => {
+    const before = await countPendingApprovals(approver())
+    const invoice = await makeInvoice()
+    track(await requestInvoiceApproval(requester(), invoice))
+    expect(await countPendingApprovals(approver())).toBe(before + 1)
+
+    // Scope 1: no approve_requests → zero, not a throw. A tile on a shared
+    // dashboard has to render for everyone.
+    expect(await countPendingApprovals(requester())).toBe(0)
+    expect(await countPendingApprovals(approver({ active: false }))).toBe(0)
+
+    // Scope 2: module access. A Finance request is invisible to an
+    // Engineering-only approver, count included.
+    const engineeringOnly = approver({ moduleAccess: new Set(['engineering']) })
+    const engCount = await countPendingApprovals(engineeringOnly)
+    expect(engCount).toBe(await countPendingApprovals(engineeringOnly, { module: 'engineering' }))
+    expect(await countPendingApprovals(engineeringOnly, { module: 'finance' })).toBe(0)
+  })
+
+  it('counts decided rows out, and can exclude the actor’s own requests', async () => {
+    const invoice = await makeInvoice()
+    const { approvalId } = track(await requestInvoiceApproval(requester(), invoice))
+    const withMine = await countPendingApprovals(approver(), { kind: 'invoice' })
+
+    // The requester is not the approver here, so excluding own requests changes
+    // nothing for THEM — but it must exclude the row for the requester's own view.
+    expect(await countPendingApprovals(approver(), {
+      kind: 'invoice', excludeOwnRequests: true })).toBe(withMine)
+
+    await decideApproval(approver(), { approvalId, decision: 'approved' })
+    expect(await countPendingApprovals(approver(), { kind: 'invoice' })).toBe(withMine - 1)
   })
 
   it('ignores an unparseable cursor rather than failing the page', async () => {

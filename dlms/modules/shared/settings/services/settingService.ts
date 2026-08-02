@@ -1,4 +1,10 @@
-import type { Tx } from '@/lib/db/tx'
+import { z } from 'zod'
+import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
+import { authorize } from '@/modules/shared/authz/authorize'
+import type { Actor } from '@/modules/shared/authz/catalog'
+import {
+  knownSetting, parseSettingValue, SETTING_KEY_PATTERN, type SettingEntry,
+} from '@/modules/shared/settings/domain/settingRegistry'
 
 /**
  * `app_setting` — the runtime-knob store (spec §3.1 "system settings"), read side.
@@ -85,4 +91,137 @@ export async function getNumericSettingInTx(tx: Tx, key: string): Promise<string
     throw new SettingUnavailableError(key, `holds a ${kind}, not a number`)
   }
   return value
+}
+
+// ── The console's read and write path (spec §3.1, permission manage_settings) ──
+//
+// The header above explains why the READ above has no `authorize`: it is a
+// Tx-only internal that enforces a gate inside a transaction its caller already
+// authorized. Everything below is the opposite — a public entry point an
+// administrator reaches from a screen — so every one of them runs
+// `authorize(actor, 'manage_settings', 'admin')` on its first line, ahead of the
+// connection, exactly as the platform's other services do.
+
+export class SettingNotEditableError extends Error {
+  readonly key: string
+  constructor(key: string, reason: string) {
+    super(reason)
+    this.name = 'SettingNotEditableError'
+    this.key = key
+  }
+}
+
+export type SettingRow = {
+  key: string
+  /** The raw jsonb value, as stored. */
+  value: unknown
+  /** The JSON type Postgres reports — 'number', 'string', 'object', … */
+  valueType: string
+  /** Null when this key is not in the registry: visible, but read-only. */
+  entry: SettingEntry | null
+  updatedAt: Date
+  updatedByName: string | null
+  version: number
+}
+
+/**
+ * Every knob in the table, registered or not.
+ *
+ * UNREGISTERED KEYS ARE INCLUDED DELIBERATELY. Filtering the list to what the
+ * console can edit would make the table look emptier than the database is, and
+ * the row an operator most needs to see is precisely the one nobody declared —
+ * a knob written by hand, or one left behind by a feature that has since been
+ * removed. They come back with `entry: null`, and the page renders them
+ * read-only.
+ */
+export async function listSettings(actor: Actor): Promise<SettingRow[]> {
+  authorize(actor, 'manage_settings', 'admin')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{
+      key: string; value: unknown; value_type: string
+      updated_at: Date; updated_by_name: string | null; version: number
+    }>(
+      `SELECT s.key, s.value, jsonb_typeof(s.value) AS value_type,
+              s.updated_at, u.full_name AS updated_by_name, s.version
+         FROM app_setting s
+         LEFT JOIN app_user u ON u.id = s.updated_by
+        ORDER BY s.key`)
+
+    return rows.map((r) => ({
+      key: r.key,
+      value: r.value,
+      valueType: r.value_type,
+      entry: knownSetting(r.key),
+      updatedAt: r.updated_at,
+      updatedByName: r.updated_by_name,
+      version: r.version,
+    }))
+  })
+}
+
+const updateSchema = z.object({
+  key: z.string().min(1).max(100).regex(SETTING_KEY_PATTERN),
+  /** Always the raw text from the form; the registry decides what it means. */
+  value: z.string().max(10_000),
+  version: z.number().int().nonnegative(),
+})
+export type UpdateSettingInput = z.input<typeof updateSchema>
+
+/**
+ * Change one knob.
+ *
+ * THREE THINGS THIS DOES NOT DO, each on purpose:
+ *
+ *   IT DOES NOT CREATE. `UPDATE ... WHERE key = $1` only; a key that is not there
+ *     is refused rather than inserted. Which keys exist is decided by the
+ *     migration that seeds them next to the code that reads them, and a console
+ *     that can conjure arbitrary rows into a key→value table is a console that
+ *     can typo a knob into existence beside the real one, leaving the reader
+ *     failing closed while the screen shows a plausible value.
+ *
+ *   IT DOES NOT EDIT UNREGISTERED KEYS. Without a declared type there is nothing
+ *     to validate against, and storing whatever text was typed is exactly how the
+ *     threshold becomes the string "abc".
+ *
+ *   IT DOES NOT DEFAULT. See settingRegistry's header: a missing knob stays
+ *     missing and the reader keeps failing closed and loudly.
+ *
+ * The optimistic lock is not ceremony despite the tiny row count — the column's
+ * own COMMENT names the collision it arbitrates: two admins retuning the
+ * threshold from this console at once. `fn_audit` records who and when, which is
+ * the question an auditor actually asks about a settings change.
+ */
+export async function updateSetting(
+  actor: Actor, input: UpdateSettingInput,
+): Promise<{ version: number }> {
+  authorize(actor, 'manage_settings', 'admin')
+  const data = updateSchema.parse(input)
+
+  // Parsed AHEAD of the connection: a malformed value is knowable from the input
+  // alone, and refusing it here costs no pooled connection and no BEGIN/ROLLBACK.
+  const parsed = parseSettingValue(data.key, data.value)
+  if (!parsed.ok) throw new SettingNotEditableError(data.key, parsed.error)
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows: current } = await tx.query<{ version: number }>(
+      `SELECT version FROM app_setting WHERE key = $1 FOR UPDATE`, [data.key])
+    if (current.length === 0) {
+      throw new SettingNotEditableError(data.key,
+        `There is no "${data.key}" setting to change. Settings are created by the migration that `
+        + 'ships the code reading them, never from this screen — otherwise a typo here becomes a '
+        + 'second key beside the real one, and the real one stays unset.')
+    }
+    if (current[0].version !== data.version) throw new OptimisticLockError('app_setting', data.key)
+
+    const { rows } = await tx.query<{ version: number }>(
+      `UPDATE app_setting
+          SET value = $1::jsonb, updated_at = now(), updated_by = $2, version = version + 1
+        WHERE key = $3 AND version = $4
+        RETURNING version`,
+      [JSON.stringify(parsed.value), actor.id, data.key, data.version])
+    if (rows.length === 0) throw new OptimisticLockError('app_setting', data.key)
+
+    return { version: rows[0].version }
+  })
 }

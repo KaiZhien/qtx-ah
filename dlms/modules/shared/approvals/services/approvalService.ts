@@ -710,3 +710,63 @@ export async function listApprovals(
     }
   })
 }
+
+export type PendingApprovalCountFilter = {
+  kind?: ApprovalKind
+  module?: ModuleKey
+  /**
+   * Counts only requests this actor could actually DECIDE, i.e. excluding their
+   * own. Off by default so the count matches what `/approvals` renders.
+   */
+  excludeOwnRequests?: boolean
+}
+
+/**
+ * How many requests are waiting on this actor — for a dashboard tile, without
+ * fetching rows in order to `.length` them.
+ *
+ * SCOPED IDENTICALLY TO listApprovals, and that is the whole reason this lives
+ * here rather than being hand-rolled by each caller. Both scopes are subtle and
+ * both are easy to get wrong from outside: `approve_requests` (without which the
+ * answer is zero, not a throw — a tile on a shared dashboard must render for
+ * everyone) and MODULE ACCESS resolved through `can()` per module, so a manager
+ * who can enter Finance but not Engineering is not told there are ECO requests.
+ * A COUNT written at a call site would almost certainly miss the second and leak
+ * the existence of work in a module the reader cannot open.
+ *
+ * A tile and the queue it links to MUST agree, so this counts exactly what
+ * `listApprovals` would return for the same actor — including, by default, the
+ * actor's own pending requests. They are visible in the queue (marked, and with
+ * the controls disabled, because nobody decides their own), so omitting them here
+ * would make a tile reading "3" link to a page showing four rows. Callers who
+ * want the actionable number rather than the visible one pass
+ * `excludeOwnRequests: true`.
+ */
+export async function countPendingApprovals(
+  actor: Actor, filter: PendingApprovalCountFilter = {},
+): Promise<number> {
+  const visibleModules = MODULES.filter((m) => can(actor, 'approve_requests', m))
+  const modules = filter.module
+    ? visibleModules.filter((m) => m === filter.module)
+    : visibleModules
+  // No connection acquired for an actor who can see nothing.
+  if (modules.length === 0) return 0
+
+  return withTransaction(actor.id, async (tx) => {
+    const params: unknown[] = []
+    const p = (v: unknown) => { params.push(v); return `$${params.length}` }
+    const conditions = [
+      'deleted_at IS NULL',
+      "status = 'pending'",
+      `module = ANY(${p(modules)})`,
+    ]
+    if (filter.kind) conditions.push(`kind = ${p(filter.kind)}`)
+    if (filter.excludeOwnRequests) conditions.push(`requested_by <> ${p(actor.id)}`)
+
+    const { rows } = await tx.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM approval WHERE ${conditions.join(' AND ')}`, params)
+    // node-postgres returns bigint as TEXT to avoid float truncation; a queue
+    // count is small, but parsing it explicitly beats relying on that.
+    return Number(rows[0].count)
+  })
+}

@@ -26,8 +26,8 @@ const SECTIONS: readonly AdminSection[] = [
     description: 'Manage shared status, phase, and category lists.', note: 'Coming soon' },
   { key: 'audit', label: 'Audit', href: null, icon: ScrollText,
     description: 'Search the full change history and security event trail.', note: 'Coming soon' },
-  { key: 'settings', label: 'Settings', href: null, icon: SettingsIcon,
-    description: 'Platform-wide configuration.', note: 'Coming soon' },
+  { key: 'settings', label: 'Settings', href: '/admin/settings', icon: SettingsIcon,
+    description: 'Retune platform-wide runtime knobs, such as the Finance approval threshold.' },
   { key: 'exports', label: 'Exports', href: null, icon: Download,
     description: 'Request and download full system exports.', note: 'Coming soon' },
 ]
