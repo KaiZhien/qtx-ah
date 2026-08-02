@@ -78,6 +78,12 @@ export type FailureListItem = {
   id: string; fiNo: string; title: string
   status: FailureStatus; statusLabel: string; severity: string
   deviceId: string | null; deviceLabel: string | null
+  /**
+   * The STRUCTURED cause. Spec §8.5's "by root cause" dashboard groups on
+   * rootCauseId and labels with rootCauseName; the free-text `rootCause` on the
+   * detail type is elaboration only and is never the reporting axis.
+   */
+  rootCauseId: string | null; rootCauseCode: string | null; rootCauseName: string | null
   ecoId: string | null; ecoNo: string | null
   createdAt: Date
 }
@@ -95,6 +101,7 @@ const filterSchema = z.object({
   q: z.string().max(100).optional(),
   status: z.array(z.string()).optional(),
   severity: z.array(z.string()).optional(),
+  rootCauseId: z.string().uuid().optional(),
   deviceId: z.string().uuid().optional(),
   repairId: z.string().uuid().optional(),
   ecoId: z.string().uuid().optional(),
@@ -125,6 +132,7 @@ export async function listFailures(
     }
     if (f.status?.length) conditions.push(`f.status = ANY(${p(f.status)})`)
     if (f.severity?.length) conditions.push(`f.severity = ANY(${p(f.severity)})`)
+    if (f.rootCauseId) conditions.push(`f.root_cause_id = ${p(f.rootCauseId)}`)
     if (f.deviceId) conditions.push(`f.device_id = ${p(f.deviceId)}`)
     if (f.repairId) conditions.push(`f.repair_id = ${p(f.repairId)}`)
     if (f.ecoId) conditions.push(`f.eco_id = ${p(f.ecoId)}`)
@@ -136,13 +144,16 @@ export async function listFailures(
     const { rows } = await tx.query<{
       id: string; fi_no: string; title: string; status: FailureStatus; severity: string
       device_id: string | null; device_sn: string | null; device_legacy: string | null
+      root_cause_id: string | null; root_cause_code: string | null; root_cause_name: string | null
       eco_id: string | null; eco_no: string | null; created_at: Date
     }>(
       `SELECT f.id, f.fi_no, f.title, f.status, f.severity,
               f.device_id, d.device_sn, d.pcba_a_sn_legacy AS device_legacy,
+              f.root_cause_id, rc.code AS root_cause_code, rc.name AS root_cause_name,
               f.eco_id, o.eco_no, f.created_at
          FROM failure_investigation f
          LEFT JOIN device d ON d.id = f.device_id
+         LEFT JOIN root_cause_option rc ON rc.id = f.root_cause_id
          LEFT JOIN eco o ON o.id = f.eco_id
         WHERE ${conditions.join(' AND ')}
         ORDER BY f.created_at DESC, f.id DESC
@@ -156,6 +167,8 @@ export async function listFailures(
         id: r.id, fiNo: r.fi_no, title: r.title, status: r.status,
         statusLabel: failureStatusLabel(r.status), severity: r.severity,
         deviceId: r.device_id, deviceLabel: r.device_sn ?? r.device_legacy,
+        rootCauseId: r.root_cause_id, rootCauseCode: r.root_cause_code,
+        rootCauseName: r.root_cause_name,
         ecoId: r.eco_id, ecoNo: r.eco_no, createdAt: r.created_at,
       })),
       nextCursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null,
@@ -172,6 +185,7 @@ export async function getFailure(actor: Actor, id: string): Promise<FailureDetai
       description: string | null; containment: string | null
       root_cause: string | null; corrective_action: string | null
       device_id: string | null; device_sn: string | null; device_legacy: string | null
+      root_cause_id: string | null; root_cause_code: string | null; root_cause_name: string | null
       repair_id: string | null; repair_no: string | null
       eco_id: string | null; eco_no: string | null
       reported_by_name: string | null; assigned_to: string | null; assigned_to_name: string | null
@@ -180,6 +194,7 @@ export async function getFailure(actor: Actor, id: string): Promise<FailureDetai
     }>(
       `SELECT f.id, f.fi_no, f.title, f.status, f.severity, f.description, f.containment,
               f.root_cause, f.corrective_action,
+              f.root_cause_id, rc.code AS root_cause_code, rc.name AS root_cause_name,
               f.device_id, d.device_sn, d.pcba_a_sn_legacy AS device_legacy,
               f.repair_id, r.repair_no, f.eco_id, o.eco_no,
               rep.full_name AS reported_by_name,
@@ -188,6 +203,7 @@ export async function getFailure(actor: Actor, id: string): Promise<FailureDetai
               u.full_name AS created_by_name, f.created_at, f.updated_at
          FROM failure_investigation f
          LEFT JOIN device d ON d.id = f.device_id
+         LEFT JOIN root_cause_option rc ON rc.id = f.root_cause_id
          LEFT JOIN repair r ON r.id = f.repair_id
          LEFT JOIN eco o ON o.id = f.eco_id
          LEFT JOIN app_user rep ON rep.id = f.reported_by
@@ -202,6 +218,8 @@ export async function getFailure(actor: Actor, id: string): Promise<FailureDetai
       description: r.description, containment: r.containment,
       rootCause: r.root_cause, correctiveAction: r.corrective_action,
       deviceId: r.device_id, deviceLabel: r.device_sn ?? r.device_legacy,
+      rootCauseId: r.root_cause_id, rootCauseCode: r.root_cause_code,
+      rootCauseName: r.root_cause_name,
       repairId: r.repair_id, repairNo: r.repair_no,
       ecoId: r.eco_id, ecoNo: r.eco_no,
       reportedByName: r.reported_by_name, assignedTo: r.assigned_to,
@@ -292,6 +310,24 @@ export async function listFailureRepairOptions(
 }
 
 /**
+ * The admin-editable root-cause vocabulary, for the classification picker.
+ * ACTIVE rows only — a retired cause disappears from the picker but stays
+ * resolvable on investigations that already carry it (soft-disable, spec §6.3).
+ * Ordered by the admin's `sort`; no code is ever named in this file.
+ */
+export async function listRootCauseOptions(
+  actor: Actor,
+): Promise<{ id: string; code: string; label: string }[]> {
+  authorize(actor, 'view_records', 'engineering')
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM root_cause_option
+        WHERE deleted_at IS NULL AND active ORDER BY sort, name`)
+    return rows.map((r) => ({ id: r.id, code: r.code, label: r.name }))
+  })
+}
+
+/**
  * Change orders an investigation can escalate INTO. Terminal ECOs are excluded:
  * escalating into an already-implemented or rejected order records a design
  * decision that was never actually taken for this failure.
@@ -316,6 +352,7 @@ const createSchema = z.object({
   severity: SEVERITY.default('normal'),
   description: z.string().max(5000).optional(),
   containment: z.string().max(5000).optional(),
+  rootCauseId: z.string().uuid().optional(),
   rootCause: z.string().max(5000).optional(),
   correctiveAction: z.string().max(5000).optional(),
   deviceId: z.string().uuid().optional(),
@@ -354,13 +391,15 @@ export async function createFailure(
 
     const { rows } = await tx.query<{ id: string; fi_no: string }>(
       `INSERT INTO failure_investigation
-         (title, severity, status, description, containment, root_cause, corrective_action,
-          device_id, repair_id, reported_by, assigned_to, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$10,$10)
+         (title, severity, status, description, containment, root_cause_id, root_cause,
+          corrective_action, device_id, repair_id, reported_by, assigned_to,
+          created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11,$11)
        RETURNING id, fi_no`,
       [data.title, data.severity, FAILURE_INITIAL_STATUS, data.description ?? null,
-       data.containment ?? null, data.rootCause ?? null, data.correctiveAction ?? null,
-       data.deviceId ?? null, data.repairId ?? null, actor.id, data.assignedTo ?? null])
+       data.containment ?? null, data.rootCauseId ?? null, data.rootCause ?? null,
+       data.correctiveAction ?? null, data.deviceId ?? null, data.repairId ?? null,
+       actor.id, data.assignedTo ?? null])
     const created = rows[0]
 
     await tx.query(
@@ -378,6 +417,7 @@ const updateSchema = z.object({
   severity: SEVERITY.optional(),
   description: z.string().max(5000).nullish(),
   containment: z.string().max(5000).nullish(),
+  rootCauseId: z.string().uuid().nullish(),
   rootCause: z.string().max(5000).nullish(),
   correctiveAction: z.string().max(5000).nullish(),
   deviceId: z.string().uuid().nullish(),
@@ -388,11 +428,12 @@ export type UpdateFailureInput = z.input<typeof updateSchema>
 
 // status is absent by construction (changeFailureStatus owns it, so the graph
 // and the history log can never be bypassed) and so is eco_id (escalation only).
-// root_cause / corrective_action ARE editable here — they are the preconditions
-// the lifecycle reads, and they must be recordable before the move that needs them.
+// root_cause_id / corrective_action ARE editable here — they are the
+// preconditions the lifecycle reads, and they must be recordable before the move
+// that needs them.
 const UPDATE_COLUMNS: Record<string, string> = {
   title: 'title', severity: 'severity', description: 'description',
-  containment: 'containment', rootCause: 'root_cause',
+  containment: 'containment', rootCauseId: 'root_cause_id', rootCause: 'root_cause',
   correctiveAction: 'corrective_action', deviceId: 'device_id',
   repairId: 'repair_id', assignedTo: 'assigned_to',
 }
@@ -455,9 +496,9 @@ export async function changeFailureStatus(
   return withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
       status: FailureStatus; version: number
-      root_cause: string | null; corrective_action: string | null
+      root_cause_id: string | null; corrective_action: string | null
     }>(
-      `SELECT status, version, root_cause, corrective_action
+      `SELECT status, version, root_cause_id, corrective_action
          FROM failure_investigation WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
     if (rows.length === 0) throw new FailureNotFoundError(data.id)
     const current = rows[0]
@@ -466,7 +507,7 @@ export async function changeFailureStatus(
     }
 
     const decision = evaluateFailureTransition(current.status, data.toStatus, {
-      rootCause: current.root_cause,
+      rootCauseId: current.root_cause_id,
       correctiveAction: current.corrective_action,
       note: data.note ?? null,
     })
@@ -520,8 +561,8 @@ export type EscalateFailureInput = z.input<typeof escalateSchema>
  * Preconditions, all checked under the row lock:
  *   • the investigation is not terminal — a closed/cancelled record is history,
  *     and back-dating a design decision into it hides when it was actually made;
- *   • a root cause IS on record — escalation means "this cause needs a design
- *     change", so with no cause there is nothing to escalate;
+ *   • a root cause IS classified — escalation means "this cause needs a design
+ *     change", so with no cause on record there is nothing to escalate;
  *   • it is not already escalated to a DIFFERENT order (re-linking would erase
  *     the provenance of the first). Re-escalating to the SAME order is an
  *     idempotent no-op, so a double-submitted form does not throw.
@@ -549,9 +590,9 @@ export async function escalateFailureToEco(
 
   const version = await withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
-      status: FailureStatus; version: number; root_cause: string | null; eco_id: string | null
+      status: FailureStatus; version: number; root_cause_id: string | null; eco_id: string | null
     }>(
-      `SELECT status, version, root_cause, eco_id FROM failure_investigation
+      `SELECT status, version, root_cause_id, eco_id FROM failure_investigation
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
     if (rows.length === 0) throw new FailureNotFoundError(data.id)
     const current = rows[0]
@@ -563,10 +604,10 @@ export async function escalateFailureToEco(
         'terminal',
         `A ${failureStatusLabel(current.status).toLowerCase()} investigation cannot be escalated.`)
     }
-    if (!current.root_cause?.trim()) {
+    if (!current.root_cause_id) {
       throw new FailureEscalationError(
         'root_cause_required',
-        'Record a root cause before escalating to a change order.')
+        'Classify the root cause before escalating to a change order.')
     }
     if (current.eco_id && current.eco_id === target.id) return current.version // idempotent
     if (current.eco_id) {

@@ -24,6 +24,10 @@ vi.mock('@/lib/db/tx', () => ({
   OptimisticLockError: class OptimisticLockError extends Error {},
 }))
 
+// The mocked error classes keep the REAL constructor arity (and, where the
+// action forwards err.message, the real message), so a signature change in the
+// service is a type error here rather than a silently-passing test.
+
 const mockCreate = vi.fn()
 const mockUpdate = vi.fn()
 const mockChangeStatus = vi.fn()
@@ -36,7 +40,9 @@ vi.mock('@/modules/engineering/services/failureService', () => ({
   escalateFailureToEco: (...a: unknown[]) => mockEscalate(...a),
   FailureNotFoundError: class FailureNotFoundError extends Error {},
   FailureSubjectNotFoundError: class FailureSubjectNotFoundError extends Error {},
-  FailureEscalationError: class FailureEscalationError extends Error {},
+  FailureEscalationError: class FailureEscalationError extends Error {
+    constructor(_code: string, message: string) { super(message) }
+  },
 }))
 
 const {
@@ -81,8 +87,8 @@ describe('error sanitization', () => {
   })
 
   it('passes an escalation refusal through verbatim', async () => {
-    mockEscalate.mockRejectedValue(
-      new FailureEscalationError('Record a root cause before escalating to a change order.'))
+    mockEscalate.mockRejectedValue(new FailureEscalationError(
+      'root_cause_required', 'Record a root cause before escalating to a change order.'))
     const res = await escalateFailureAction({ id: 'f1', version: 1, ecoId: 'e1' })
     expect(res).toEqual({
       ok: false, error: 'Record a root cause before escalating to a change order.',
@@ -96,7 +102,7 @@ describe('error sanitization', () => {
         ok: false, error: 'That investigation no longer exists. Reload and try again.',
       })
 
-    mockChangeStatus.mockRejectedValue(new OptimisticLockError('stale'))
+    mockChangeStatus.mockRejectedValue(new OptimisticLockError('failure_investigation', 'f1'))
     await expect(changeFailureStatusAction({ id: 'f1', version: 1, toStatus: 'investigating' }))
       .resolves.toEqual({
         ok: false, error: 'Someone else changed this investigation. Reload and try again.',
@@ -104,7 +110,7 @@ describe('error sanitization', () => {
   })
 
   it('maps a permission denial without confirming what was denied', async () => {
-    mockCreate.mockRejectedValue(new PermissionError('create_records on engineering'))
+    mockCreate.mockRejectedValue(new PermissionError('create_records', 'engineering'))
     await expect(createFailureAction({ title: 'x' })).resolves.toEqual({
       ok: false, error: "You don't have permission to do that.",
     })

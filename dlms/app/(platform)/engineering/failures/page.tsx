@@ -66,6 +66,7 @@ export default async function FailureListPage({ searchParams }: PageProps) {
                 <TableHead>What failed</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Severity</TableHead>
+                <TableHead>Root cause</TableHead>
                 <TableHead>Device</TableHead>
                 <TableHead>Escalated to</TableHead>
               </TableRow>
@@ -85,6 +86,7 @@ export default async function FailureListPage({ searchParams }: PageProps) {
                   </TableCell>
                   <TableCell><FailureStatusBadge status={f.status} /></TableCell>
                   <TableCell><SeverityBadge severity={f.severity} /></TableCell>
+                  <TableCell className="text-muted-foreground">{f.rootCauseName ?? '—'}</TableCell>
                   <TableCell className="text-muted-foreground">{f.deviceLabel ?? '—'}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {f.ecoId && f.ecoNo

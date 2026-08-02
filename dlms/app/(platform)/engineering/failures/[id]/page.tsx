@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import {
-  getFailure, listFailureStatusHistory, listEscalationEcoOptions,
+  getFailure, listFailureStatusHistory, listEscalationEcoOptions, listRootCauseOptions,
 } from '@/modules/engineering/services/failureService'
 import {
   nextFailureStatuses, failureStatusLabel, isTerminalFailureStatus,
@@ -46,6 +46,9 @@ export default async function FailureDetailPage({ params }: PageProps) {
   // not already escalated; the ECO picker is only loaded when it will render.
   const canEscalate = canEdit && !failure.ecoId && !isTerminalFailureStatus(failure.status)
   const ecoOptions = canEscalate ? await listEscalationEcoOptions(actor) : []
+  // Resolved from root_cause_option, never a literal list — prod vocabulary has
+  // drifted from seed on this project before (CLAUDE.md).
+  const causeOptions = canEdit ? await listRootCauseOptions(actor) : []
 
   return (
     <div className="space-y-6">
@@ -91,6 +94,7 @@ export default async function FailureDetailPage({ params }: PageProps) {
               : '—'}
           </dd>
         </div>
+        <Field label="Root cause" value={failure.rootCauseName ?? 'Not yet classified'} />
         <Field label="Reported by" value={failure.reportedByName ?? failure.createdByName} />
         <Field label="Assigned to" value={failure.assignedToName ?? '—'} />
         <Field label="Opened" value={fmtDateTime(failure.openedAt)} />
@@ -106,13 +110,15 @@ export default async function FailureDetailPage({ params }: PageProps) {
       {canEdit ? (
         <FailureFindingsForm
           id={failure.id} version={failure.version}
-          containment={failure.containment} rootCause={failure.rootCause}
-          correctiveAction={failure.correctiveAction}
+          containment={failure.containment} rootCauseId={failure.rootCauseId}
+          rootCause={failure.rootCause} correctiveAction={failure.correctiveAction}
+          causeOptions={causeOptions}
         />
       ) : (
         <dl className="grid grid-cols-1 gap-4 rounded-md border p-4">
           <ReadOnlyField label="Containment" value={failure.containment} />
-          <ReadOnlyField label="Root cause" value={failure.rootCause} />
+          <ReadOnlyField label="Root cause" value={failure.rootCauseName} />
+          <ReadOnlyField label="Root-cause detail" value={failure.rootCause} />
           <ReadOnlyField label="Corrective action" value={failure.correctiveAction} />
         </dl>
       )}

@@ -30,10 +30,24 @@ vi.mock('@/modules/engineering/services/bomEffectivityService', () => ({
   removeAffectedItem: (...a: unknown[]) => mockRemove(...a),
   applyEcoEffectivity: (...a: unknown[]) => mockApply(...a),
   BomEcoNotFoundError: class BomEcoNotFoundError extends Error {},
-  BomApplyError: class BomApplyError extends Error {},
+  // Mirrors the REAL constructor arity and message, so a signature change in the
+  // service becomes a type error here rather than a silently-passing test.
+  BomApplyError: class BomApplyError extends Error {
+    constructor(_code: string, message: string) { super(message) }
+  },
   AffectedItemNotFoundError: class AffectedItemNotFoundError extends Error {},
-  AffectedItemLockedError: class AffectedItemLockedError extends Error {},
-  DuplicateAffectedItemError: class DuplicateAffectedItemError extends Error {},
+  // Literals, not shared consts: vi.mock factories run when the mocked module is
+  // first imported, which is BEFORE this file's const declarations initialize.
+  AffectedItemLockedError: class AffectedItemLockedError extends Error {
+    constructor() {
+      super('This change order has already been applied to the BOM and can no longer be edited')
+    }
+  },
+  DuplicateAffectedItemError: class DuplicateAffectedItemError extends Error {
+    constructor() {
+      super('That component type is already listed on this change order for that variant')
+    }
+  },
 }))
 
 const {
@@ -46,6 +60,10 @@ const {
 
 const MFA_MESSAGE = 'Two-factor authentication required — reload the page to finish signing in.'
 const GENERIC = 'Something went wrong. Try again, and tell Reet if it keeps happening.'
+const LOCKED_MESSAGE =
+  'This change order has already been applied to the BOM and can no longer be edited'
+const DUPLICATE_MESSAGE =
+  'That component type is already listed on this change order for that variant'
 const actor = { id: 'u1' }
 const ITEM = {
   ecoId: 'e1', variantId: 'v1', componentTypeId: 'c1',
@@ -70,21 +88,21 @@ describe('AAL2 guard placement', () => {
 describe('error sanitization', () => {
   it('passes an apply refusal through verbatim', async () => {
     const msg = 'A change order must be implemented before its BOM changes can be applied.'
-    mockApply.mockRejectedValue(new BomApplyError(msg))
+    mockApply.mockRejectedValue(new BomApplyError('not_implemented', msg))
     await expect(applyEcoEffectivityAction({ ecoId: 'e1' })).resolves.toEqual({
       ok: false, error: msg,
     })
   })
 
   it('passes the frozen-list and duplicate refusals through verbatim', async () => {
-    mockAdd.mockRejectedValue(new AffectedItemLockedError('already applied'))
+    mockAdd.mockRejectedValue(new AffectedItemLockedError())
     await expect(addAffectedItemAction(ITEM)).resolves.toEqual({
-      ok: false, error: 'already applied',
+      ok: false, error: LOCKED_MESSAGE,
     })
 
-    mockAdd.mockRejectedValue(new DuplicateAffectedItemError('already listed'))
+    mockAdd.mockRejectedValue(new DuplicateAffectedItemError())
     await expect(addAffectedItemAction(ITEM)).resolves.toEqual({
-      ok: false, error: 'already listed',
+      ok: false, error: DUPLICATE_MESSAGE,
     })
   })
 

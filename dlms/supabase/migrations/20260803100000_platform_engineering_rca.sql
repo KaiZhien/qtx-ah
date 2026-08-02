@@ -28,6 +28,74 @@
 -- both bypass RLS — see 20260720000000_platform_rls.sql).
 -- ===========================================================================
 
+-- ── root_cause_option vocabulary ───────────────────────────────────────────
+-- Spec §6.3 asks for "vocabulary tables over enums wherever admins may extend",
+-- and spec §8.5 asks the Maintenance dashboard for "repairs by root cause
+-- (30/90 d)". That widget is UNBUILDABLE against free text: `repair` carries
+-- only fault_description and diagnosis, both prose, and no root-cause column at
+-- all. Rather than bolt one onto `repair`, the classification lives here —
+-- failure_investigation already owns root-cause analysis AND already carries a
+-- nullable repair FK, so the widget's join is simply
+--     repair → failure_investigation.repair_id
+--            → failure_investigation.root_cause_id
+--            → root_cause_option.code
+-- and `repair` gains nothing.
+--
+-- Shaped after modification_type (20260801000000_platform_modifications.sql),
+-- NOT after status_option: nothing stores a root-cause code inline, so this gets
+-- the house uuid PK, `code` is unique DATA, and the full audit + version shape.
+--
+-- NOTHING IN CODE BRANCHES ON THESE CODES. The lifecycle only asks "is a cause
+-- classified at all" (root_cause_id IS NOT NULL) — see
+-- modules/engineering/domain/failureStatus.ts. That matters: prod vocabulary has
+-- drifted from seed on this project before (CLAUDE.md documents the trap), and
+-- an admin adding "ESD damage" tomorrow must just work.
+CREATE TABLE root_cause_option (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  active boolean NOT NULL DEFAULT true,   -- soft-disable, per spec §6.3 Vocabularies
+  sort integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid REFERENCES app_user(id),  -- nullable for the same reason as
+                                             -- modification_type.created_by: this migration's
+                                             -- own seed below runs BEFORE platform_seed.sql
+                                             -- bootstraps app_user on a from-scratch database
+                                             -- (see __tests__/integration/setup.ts), so the
+                                             -- attribution subselect returns NULL there. On the
+                                             -- cloud target the Super Admin already exists.
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid REFERENCES app_user(id),
+  deleted_at timestamptz,
+  version integer NOT NULL DEFAULT 1
+);
+COMMENT ON TABLE root_cause_option IS
+  'Admin-extensible root-cause vocabulary (spec §6.3). A TABLE, not an enum: adding "ESD damage" is a row INSERT through the admin console, never a migration. Retiring one is `active = false` — never a delete, because closed investigations still reference it. This is what makes spec §8.5''s "repairs by root cause" widget possible: group failure_investigation.root_cause_id, join here for the label.';
+COMMENT ON COLUMN root_cause_option.active IS
+  'Soft-disable. An inactive cause disappears from the picker but stays resolvable on records that already use it.';
+COMMENT ON COLUMN root_cause_option.code IS
+  'Stable machine key, unique. Business DATA, never a primary key (spec §6.4) — so renaming a code never orphans an investigation.';
+
+CREATE INDEX root_cause_option_sort_idx ON root_cause_option(sort) WHERE deleted_at IS NULL;
+
+-- Starter vocabulary, deliberately small and generic. The point of the table is
+-- that this list is the Super Admin's to extend.
+INSERT INTO root_cause_option (code, name, sort, created_by)
+SELECT v.code, v.name, v.sort,
+       (SELECT id FROM app_user WHERE email='reetmitra8@gmail.com')
+FROM (VALUES
+  ('component_failure', 'Component Failure',            1),
+  ('workmanship',       'Workmanship / Assembly',       2),
+  ('design',            'Design Deficiency',            3),
+  ('firmware',          'Firmware / Software',          4),
+  ('supplier',          'Supplier / Incoming Quality',  5),
+  ('user_error',        'User Error / Misuse',          6),
+  ('environmental',     'Environmental / External',     7),
+  ('wear',              'Normal Wear',                  8),
+  ('no_fault_found',    'No Fault Found',               9),
+  ('other',             'Other',                       99)
+) AS v(code, name, sort);
+
 -- ── fi_no human key (spec §6.4) ────────────────────────────────────────────
 -- Copies the REP- pattern from 20260720110000_platform_maintenance.sql verbatim:
 -- a dedicated sequence supplies the numeric part and a BEFORE INSERT trigger
@@ -51,10 +119,15 @@ CREATE TABLE failure_investigation (
     CHECK (status IN ('open','investigating','root_cause_identified',
                       'corrective_action','closed','cancelled')),
 
+  -- THE classification (spec §8.5's dashboard axis). Nullable until the
+  -- investigation actually identifies one; setting it is the precondition for
+  -- reaching root_cause_identified.
+  root_cause_id uuid REFERENCES root_cause_option(id),
+
   -- The 8D-compressed narrative. All bilingual free text, preserved verbatim.
   description text,                      -- what failed, and how it presented
   containment text,                      -- what stopped the bleeding meanwhile
-  root_cause text,                       -- precondition for root_cause_identified
+  root_cause text,                       -- prose elaboration of root_cause_id, optional
   corrective_action text,                -- precondition for corrective_action
 
   -- All three subject links are NULLABLE and independent: a failure may be
@@ -84,7 +157,11 @@ COMMENT ON TABLE failure_investigation IS
 COMMENT ON COLUMN failure_investigation.fi_no IS
   'Human reference FI-YYYY-NNNN, assigned by trg_fi_assign_no from fi_no_seq. UNIQUE; never a PK (the uuid id is identity). See spec §6.4.';
 COMMENT ON COLUMN failure_investigation.status IS
-  'Current state only. root_cause_identified requires a non-empty root_cause, corrective_action requires a non-empty corrective_action, and closed re-checks BOTH (they stay editable while the investigation is live) — all enforced in failureStatus.ts, not here. Cancelling requires a note, which lands in failure_status_history.';
+  'Current state only. root_cause_identified requires root_cause_id to be SET, corrective_action requires a non-empty corrective_action, and closed re-checks BOTH (they stay editable while the investigation is live) — all enforced in failureStatus.ts, not here. Cancelling requires a note, which lands in failure_status_history.';
+COMMENT ON COLUMN failure_investigation.root_cause_id IS
+  'The STRUCTURED cause (root_cause_option), and the reason spec §8.5''s "repairs by root cause" widget is buildable: group on this, join through repair_id. Setting it is what the lifecycle checks — never the prose in root_cause — so the dashboard can never be defeated by someone typing a paragraph.';
+COMMENT ON COLUMN failure_investigation.root_cause IS
+  'Free-text elaboration of root_cause_id (evidence, the 5-whys chain). Optional and NOT a lifecycle precondition — the classification is.';
 COMMENT ON COLUMN failure_investigation.eco_id IS
   'Spec §6.3''s "eng_change FK when escalated". Points at the change ORDER (eco), because this codebase split eng_change into ecr + eco (see 20260720100000_platform_engineering.sql). NULL until the investigation escalates.';
 COMMENT ON COLUMN failure_investigation.repair_id IS
@@ -98,6 +175,9 @@ CREATE INDEX fi_device_idx ON failure_investigation(device_id) WHERE device_id I
 CREATE INDEX fi_repair_idx ON failure_investigation(repair_id) WHERE repair_id IS NOT NULL;
 CREATE INDEX fi_eco_idx ON failure_investigation(eco_id) WHERE eco_id IS NOT NULL;
 CREATE INDEX fi_keyset_idx ON failure_investigation(created_at DESC, id DESC) WHERE deleted_at IS NULL;
+-- The §8.5 dashboard shape: group by cause over a rolling window.
+CREATE INDEX fi_root_cause_idx ON failure_investigation(root_cause_id, opened_at DESC)
+  WHERE deleted_at IS NULL AND root_cause_id IS NOT NULL;
 -- Ref lookup for the list search and (later) global search: the read service
 -- matches on lower(fi_no), so index the same expression.
 CREATE INDEX fi_no_lower_idx ON failure_investigation(lower(fi_no)) WHERE deleted_at IS NULL;
@@ -136,7 +216,7 @@ CREATE INDEX fsh_failure ON failure_status_history(failure_id, changed_at DESC);
 -- Audit on both tables (history is append-only in practice — its INSERT is
 -- exactly the event worth trailing). fn_audit is shape-agnostic.
 SELECT fn_attach_audit(t) FROM unnest(ARRAY[
-  'failure_investigation','failure_status_history'
+  'root_cause_option','failure_investigation','failure_status_history'
 ]) AS t;
 
 -- RLS deny-via-REST (R1 pattern, per 20260720000000_platform_rls.sql): the app
@@ -144,6 +224,7 @@ SELECT fn_attach_audit(t) FROM unnest(ARRAY[
 -- of which bypass RLS; enabling RLS with ZERO policies makes PostgREST deny
 -- every anon/authenticated verb. NOT FORCE — FORCE would also gate the owner
 -- connection and fn_audit's SECURITY DEFINER writes.
+ALTER TABLE root_cause_option      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE failure_investigation  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE failure_status_history ENABLE ROW LEVEL SECURITY;
 -- No CREATE POLICY statements follow, by design — see above.

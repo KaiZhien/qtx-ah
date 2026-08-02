@@ -4,22 +4,34 @@ import { canTransition, isTerminal, nextStates, type TransitionGraph } from './t
  * Failure-investigation (FI / RCA) lifecycle — spec §6.3 `failure_investigation`.
  *
  * Pure decision logic, no I/O: the service loads the row's current status plus
- * the two facts the lifecycle asserts (root_cause, corrective_action) and hands
- * them here, exactly as maintenance/domain/repairStatus.ts does.
+ * the two facts the lifecycle asserts (the root-cause CLASSIFICATION and the
+ * corrective action) and hands them here, exactly as
+ * maintenance/domain/repairStatus.ts does.
  *
  * ── Why these six states ────────────────────────────────────────────────────
- * The record carries four narrative fields — description, containment,
- * root_cause, corrective_action — which is 8D compressed to what this business
- * actually writes down. The status is therefore just "how far down that list
- * have we got", and each state that ASSERTS a fact must have that fact on
- * record before it can be entered:
+ * The record carries the 8D narrative compressed to what this business actually
+ * writes down — description, containment, root cause, corrective action. The
+ * status is therefore just "how far down that list have we got", and each state
+ * that ASSERTS a fact must have that fact on record before it can be entered:
  *
  *   open                  a failure was reported; nobody has picked it up
  *   investigating         someone owns it; containment/analysis under way
- *   root_cause_identified requires a non-empty root_cause
+ *   root_cause_identified requires a CLASSIFIED cause (root_cause_id)
  *   corrective_action     requires a non-empty corrective_action
  *   closed                requires BOTH still on record (terminal)
  *   cancelled             not a real failure / duplicate (terminal)
+ *
+ * ── Why the CLASSIFICATION and not the prose ────────────────────────────────
+ * The precondition is `root_cause_id IS NOT NULL` (a row in the admin-editable
+ * root_cause_option vocabulary), NOT the free-text root_cause field. Spec §8.5
+ * wants a "by root cause" dashboard, and a dashboard built on prose is a
+ * dashboard that reports nothing. Gating the lifecycle on the structured value
+ * is what makes every closed investigation countable. The prose stays as
+ * optional elaboration.
+ *
+ * This module NEVER branches on a particular cause code — only on whether one
+ * is set. Admin-added codes therefore just work, and the vocabulary drift this
+ * project has already been bitten by (CLAUDE.md) cannot reach the lifecycle.
  *
  * ── Why the edges are what they are ─────────────────────────────────────────
  * • No jump straight to closed. Closing an investigation with no root cause is
@@ -101,7 +113,8 @@ export type FailureTransitionDecision =
   | { ok: false; error: FailureTransitionErrorCode }
 
 export type FailureTransitionFacts = {
-  rootCause: string | null
+  /** root_cause_option id — the CLASSIFICATION. Prose is not a substitute. */
+  rootCauseId: string | null
   correctiveAction: string | null
   /** The status-change note; required only when cancelling. */
   note: string | null
@@ -116,22 +129,22 @@ const present = (v: string | null | undefined) => !!v && v.trim().length > 0
  * fills in a field and is refused anyway.
  *
  * `closed` re-checks both facts rather than trusting that the earlier states
- * verified them: root_cause is editable while the investigation is live, so it
- * can be blanked after root_cause_identified was reached.
+ * verified them: both stay editable while the investigation is live, so either
+ * can be cleared after the state that required it was reached.
  */
 export function evaluateFailureTransition(
   from: string, to: string, facts: FailureTransitionFacts,
 ): FailureTransitionDecision {
   if (!isValidFailureTransition(from, to)) return { ok: false, error: 'transition_forbidden' }
 
-  if (to === 'root_cause_identified' && !present(facts.rootCause)) {
+  if (to === 'root_cause_identified' && !present(facts.rootCauseId)) {
     return { ok: false, error: 'root_cause_required' }
   }
   if (to === 'corrective_action' && !present(facts.correctiveAction)) {
     return { ok: false, error: 'corrective_action_required' }
   }
   if (to === 'closed') {
-    if (!present(facts.rootCause)) return { ok: false, error: 'root_cause_required' }
+    if (!present(facts.rootCauseId)) return { ok: false, error: 'root_cause_required' }
     if (!present(facts.correctiveAction)) return { ok: false, error: 'corrective_action_required' }
   }
   if (to === 'cancelled' && !present(facts.note)) return { ok: false, error: 'note_required' }
@@ -146,7 +159,7 @@ export function messageForFailureTransitionError(
     case 'transition_forbidden':
       return `Cannot move a failure investigation from "${fromLabel}" to "${toLabel}".`
     case 'root_cause_required':
-      return 'Record a root cause before moving the investigation forward.'
+      return 'Classify the root cause before moving the investigation forward.'
     case 'corrective_action_required':
       return 'Record a corrective action before moving the investigation forward.'
     case 'note_required':

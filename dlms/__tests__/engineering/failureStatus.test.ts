@@ -90,24 +90,25 @@ describe('nextFailureStatuses / isTerminalFailureStatus', () => {
 })
 
 describe('evaluateFailureTransition preconditions', () => {
-  const facts = { rootCause: null as string | null, correctiveAction: null as string | null }
+  const CAUSE = '9f1d0b6e-0000-4000-8000-000000000001' // a root_cause_option id
+  const facts = { rootCauseId: null as string | null, correctiveAction: null as string | null }
 
   it('refuses an illegal edge before checking any precondition', () => {
     expect(evaluateFailureTransition('open', 'closed', { ...facts, note: 'x' }))
       .toEqual({ ok: false, error: 'transition_forbidden' })
   })
 
-  it('requires a recorded root cause to reach root_cause_identified', () => {
+  it('requires a CLASSIFIED root cause to reach root_cause_identified', () => {
     expect(evaluateFailureTransition('investigating', 'root_cause_identified', { ...facts, note: null }))
       .toEqual({ ok: false, error: 'root_cause_required' })
-    expect(evaluateFailureTransition('investigating', 'root_cause_identified', { ...facts, rootCause: '   ', note: null }))
+    expect(evaluateFailureTransition('investigating', 'root_cause_identified', { ...facts, rootCauseId: '   ', note: null }))
       .toEqual({ ok: false, error: 'root_cause_required' })
-    expect(evaluateFailureTransition('investigating', 'root_cause_identified', { ...facts, rootCause: 'cold solder joint', note: null }))
+    expect(evaluateFailureTransition('investigating', 'root_cause_identified', { ...facts, rootCauseId: CAUSE, note: null }))
       .toEqual({ ok: true })
   })
 
   it('requires a recorded corrective action to reach corrective_action', () => {
-    const withCause = { ...facts, rootCause: 'cold solder joint' }
+    const withCause = { ...facts, rootCauseId: CAUSE }
     expect(evaluateFailureTransition('root_cause_identified', 'corrective_action', { ...withCause, note: null }))
       .toEqual({ ok: false, error: 'corrective_action_required' })
     expect(evaluateFailureTransition('root_cause_identified', 'corrective_action', { ...withCause, correctiveAction: 'reflow profile revised', note: null }))
@@ -115,12 +116,22 @@ describe('evaluateFailureTransition preconditions', () => {
   })
 
   it('requires both facts to still be on record when closing', () => {
-    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCause: null, correctiveAction: 'x', note: null }))
+    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCauseId: null, correctiveAction: 'x', note: null }))
       .toEqual({ ok: false, error: 'root_cause_required' })
-    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCause: 'x', correctiveAction: null, note: null }))
+    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCauseId: CAUSE, correctiveAction: null, note: null }))
       .toEqual({ ok: false, error: 'corrective_action_required' })
-    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCause: 'x', correctiveAction: 'y', note: null }))
+    expect(evaluateFailureTransition('corrective_action', 'closed', { rootCauseId: CAUSE, correctiveAction: 'y', note: null }))
       .toEqual({ ok: true })
+  })
+
+  it('never branches on WHICH cause was chosen — any option id satisfies it', () => {
+    // The whole point of the vocabulary being admin-editable: a code seeded
+    // tomorrow, or one that has drifted in prod, must behave identically.
+    for (const id of ['00000000-0000-4000-8000-00000000dead', 'anything-nonempty']) {
+      expect(evaluateFailureTransition('investigating', 'root_cause_identified', {
+        ...facts, rootCauseId: id, note: null,
+      })).toEqual({ ok: true })
+    }
   })
 
   it('requires a note to cancel', () => {
@@ -142,7 +153,7 @@ describe('messageForFailureTransitionError', () => {
   it('names the two states for a forbidden edge and explains each precondition', () => {
     expect(messageForFailureTransitionError('transition_forbidden', 'Open', 'Closed'))
       .toBe('Cannot move a failure investigation from "Open" to "Closed".')
-    expect(messageForFailureTransitionError('root_cause_required', 'A', 'B')).toMatch(/root cause/i)
+    expect(messageForFailureTransitionError('root_cause_required', 'A', 'B')).toMatch(/classify the root cause/i)
     expect(messageForFailureTransitionError('corrective_action_required', 'A', 'B')).toMatch(/corrective action/i)
     expect(messageForFailureTransitionError('note_required', 'A', 'B')).toMatch(/reason/i)
   })

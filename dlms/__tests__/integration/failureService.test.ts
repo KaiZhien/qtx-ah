@@ -13,7 +13,7 @@ import { getPool } from '@/lib/db/pool'
 import {
   createFailure, updateFailure, changeFailureStatus, escalateFailureToEco,
   getFailure, listFailures, listFailureStatusHistory, getFailureStatusCounts,
-  listEscalationEcoOptions,
+  listEscalationEcoOptions, listRootCauseOptions,
   FailureNotFoundError, FailureSubjectNotFoundError, FailureEscalationError,
 } from '@/modules/engineering/services/failureService'
 import { InvalidFailureTransitionError } from '@/modules/engineering/domain/failureStatus'
@@ -26,6 +26,8 @@ vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 let db: Client
 let userId: string
 let deviceId: string
+/** Resolved from root_cause_option at run time — NEVER a hardcoded seed code. */
+let causeId: string
 const runTag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`
 const failureIds: string[] = []
 const ecoIds: string[] = []
@@ -46,9 +48,9 @@ const outsider = (): Actor => ({
   moduleAccess: new Set(['manufacturing']), active: true,
 })
 
-/** Opens an FI already carrying a root cause, so escalation/close paths are reachable. */
+/** Opens an FI already CLASSIFIED, so escalation/close paths are reachable. */
 async function openWithRootCause(title: string): Promise<{ id: string; version: number }> {
-  const c = await createFailure(op(), { title, rootCause: `cause ${runTag}` })
+  const c = await createFailure(op(), { title, rootCauseId: causeId })
   failureIds.push(c.id)
   const v = (await db.query(`SELECT version FROM failure_investigation WHERE id=$1`, [c.id]))
     .rows[0].version as number
@@ -65,6 +67,12 @@ beforeAll(async () => {
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await db.connect()
   userId = (await db.query(`SELECT id FROM app_user WHERE email='reetmitra8@gmail.com'`)).rows[0].id
+  // Whichever cause the vocabulary actually holds — the point of the table is
+  // that its contents are the admin's, and prod codes have drifted from seed
+  // before (CLAUDE.md). No test here may name a code.
+  causeId = (await db.query(
+    `SELECT id FROM root_cause_option WHERE active AND deleted_at IS NULL ORDER BY sort LIMIT 1`
+  )).rows[0].id
   const dev = await db.query<{ id: string }>(
     `INSERT INTO device (device_sn, variant_id, status, created_by, updated_by)
      VALUES ($1, (SELECT id FROM device_variant WHERE code='pro'),
@@ -155,6 +163,27 @@ describe('reads', () => {
     expect(items.every((i) => i.deviceId === deviceId)).toBe(true)
   })
 
+  it('surfaces the root-cause classification for the §8.5 dashboard join', async () => {
+    const res = await createFailure(op(), { title: `Classified ${runTag}`, rootCauseId: causeId })
+    failureIds.push(res.id)
+    const detail = await getFailure(op(), res.id)
+    expect(detail?.rootCauseId).toBe(causeId)
+    expect(detail?.rootCauseCode).toBeTruthy()
+    expect(detail?.rootCauseName).toBeTruthy()
+    const { items } = await listFailures(op(), { rootCauseId: causeId })
+    expect(items.map((i) => i.id)).toContain(res.id)
+    expect(items.every((i) => i.rootCauseId === causeId)).toBe(true)
+  })
+
+  it('listRootCauseOptions returns the ACTIVE vocabulary, resolved not hardcoded', async () => {
+    const options = await listRootCauseOptions(op())
+    expect(options.length).toBeGreaterThan(0)
+    expect(options.map((o) => o.id)).toContain(causeId)
+    const { rows } = await db.query<{ active: boolean }>(
+      `SELECT active FROM root_cause_option WHERE id = ANY($1)`, [options.map((o) => o.id)])
+    expect(rows.every((r) => r.active)).toBe(true)
+  })
+
   it('getFailureStatusCounts includes at least this run\'s open row', async () => {
     const res = await createFailure(op(), { title: `Counted ${runTag}` })
     failureIds.push(res.id)
@@ -166,7 +195,7 @@ describe('reads', () => {
 })
 
 describe('lifecycle preconditions', () => {
-  it('refuses root_cause_identified until a root cause is recorded, then allows it', async () => {
+  it('refuses root_cause_identified until a root cause is CLASSIFIED, then allows it', async () => {
     const c = await createFailure(op(), { title: `Precondition ${runTag}` })
     failureIds.push(c.id)
     let v = await versionOf(c.id)
@@ -181,8 +210,16 @@ describe('lifecycle preconditions', () => {
     expect((await db.query(`SELECT status FROM failure_investigation WHERE id=$1`, [c.id]))
       .rows[0].status).toBe('investigating')
 
-    const edited = await updateFailure(op(), {
+    // PROSE ALONE IS NOT ENOUGH — this is the whole point of the vocabulary.
+    const prosed = await updateFailure(op(), {
       id: c.id, version: investigating.version, rootCause: 'cold solder joint',
+    })
+    await expect(changeFailureStatus(op(), {
+      id: c.id, version: prosed.version, toStatus: 'root_cause_identified',
+    })).rejects.toThrow(InvalidFailureTransitionError)
+
+    const edited = await updateFailure(op(), {
+      id: c.id, version: prosed.version, rootCauseId: causeId,
     })
     v = edited.version
     const identified = await changeFailureStatus(op(), {
@@ -191,16 +228,16 @@ describe('lifecycle preconditions', () => {
     expect(identified.status).toBe('root_cause_identified')
   })
 
-  it('refuses closing when the root cause was blanked after it was identified', async () => {
+  it('refuses closing when the classification was cleared after it was identified', async () => {
     const c = await createFailure(op(), {
-      title: `Blanked ${runTag}`, rootCause: 'cause', correctiveAction: 'fix',
+      title: `Blanked ${runTag}`, rootCauseId: causeId, correctiveAction: 'fix',
     })
     failureIds.push(c.id)
     let v = await versionOf(c.id)
     v = (await changeFailureStatus(op(), { id: c.id, version: v, toStatus: 'investigating' })).version
     v = (await changeFailureStatus(op(), { id: c.id, version: v, toStatus: 'root_cause_identified' })).version
     v = (await changeFailureStatus(op(), { id: c.id, version: v, toStatus: 'corrective_action' })).version
-    v = (await updateFailure(op(), { id: c.id, version: v, rootCause: null })).version
+    v = (await updateFailure(op(), { id: c.id, version: v, rootCauseId: null })).version
 
     await expect(changeFailureStatus(op(), { id: c.id, version: v, toStatus: 'closed' }))
       .rejects.toThrow(InvalidFailureTransitionError)
@@ -208,7 +245,7 @@ describe('lifecycle preconditions', () => {
 
   it('walks the full happy path and stamps closed_at exactly once', async () => {
     const c = await createFailure(op(), {
-      title: `Happy ${runTag}`, rootCause: 'cause', correctiveAction: 'fix',
+      title: `Happy ${runTag}`, rootCauseId: causeId, correctiveAction: 'fix',
     })
     failureIds.push(c.id)
     let v = await versionOf(c.id)
@@ -304,7 +341,7 @@ describe('escalation to a change order', () => {
     })).rejects.toThrow(FailureEscalationError)
   })
 
-  it('refuses escalation with no root cause on record', async () => {
+  it('refuses escalation with no classified root cause', async () => {
     const c = await createFailure(op(), { title: `No-cause ${runTag}` })
     failureIds.push(c.id)
     await expect(escalateFailureToEco(op(), {
@@ -313,7 +350,7 @@ describe('escalation to a change order', () => {
   })
 
   it('refuses escalation from a terminal investigation', async () => {
-    const c = await createFailure(op(), { title: `Terminal ${runTag}`, rootCause: 'cause' })
+    const c = await createFailure(op(), { title: `Terminal ${runTag}`, rootCauseId: causeId })
     failureIds.push(c.id)
     const cancelled = await changeFailureStatus(op(), {
       id: c.id, version: await versionOf(c.id), toStatus: 'cancelled', note: 'stop',
