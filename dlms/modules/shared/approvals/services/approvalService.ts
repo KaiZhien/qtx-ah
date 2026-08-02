@@ -531,6 +531,42 @@ export async function getApprovalForInTx(
 }
 
 /**
+ * The governing approval, read for ENFORCEMENT rather than for display — and
+ * therefore with no `actor` and no `authorize`.
+ *
+ * That omission is the point, and it is the same argument settingService's header
+ * makes about reading a knob: the one caller is a gate, running inside a
+ * transaction it already opened and already authorized, that needs to know whether
+ * an approval constrains the act it is about to perform. Gating THAT read on
+ * `view_records` would mean an actor's own grants decide whether a control applies
+ * to them — a caller who cannot read approvals would sail past the gate instead of
+ * being stopped by it, which is precisely backwards for a fail-closed check.
+ *
+ * It also removes a real wart: `getApprovalForInTx` demands `view_records` in the
+ * consumer's module, so a gated path asks for a permission its ungated equivalent
+ * never needed (recorded as a carried finding against the Finance gate, where it
+ * is unreachable under today's role matrix but reachable via a per-user override).
+ * New consumers use this and do not inherit it.
+ *
+ * Nothing here surfaces a value to a user: the caller turns it into a refusal.
+ * `getApprovalFor` / `getApprovalForInTx` remain the READ path, where
+ * `view_records` is exactly right, and they keep their guard.
+ *
+ * Ordering matches getApprovalForInTx's, and for the same reason: a live pending
+ * request outranks any decision, and among decisions the newest wins.
+ */
+export async function getGoverningApprovalInTx(
+  tx: Tx, entityType: string, entityId: string, kind: ApprovalKind,
+): Promise<ApprovalRecord | null> {
+  const { rows } = await tx.query<ApprovalRow>(
+    `${SELECT_APPROVAL}
+      WHERE a.entity_type = $1 AND a.entity_id = $2 AND a.kind = $3 AND a.deleted_at IS NULL
+      ORDER BY (a.status = 'pending') DESC, a.created_at DESC, a.id DESC
+      LIMIT 1`, [entityType, entityId, kind])
+  return rows[0] ? toRecord(rows[0]) : null
+}
+
+/**
  * Every consumer calls this immediately before it acts on an approved record, and
  * then re-checks `snapshotsAgree` against current state (spec §6.3). Consumers
  * that are already inside a transaction must use getApprovalForInTx instead: a
@@ -549,6 +585,52 @@ export type ApprovalQueueFilter = {
   kind?: ApprovalKind
   module?: ModuleKey
   limit?: number
+  /** Opaque keyset cursor from a previous page's `nextCursor`. */
+  cursor?: string
+}
+
+export type ApprovalQueuePage = {
+  items: ApprovalRecord[]
+  /** null when this is the last page. */
+  nextCursor: string | null
+}
+
+/**
+ * KEYSET, not OFFSET — the same choice engineeringReadService documents ("OFFSET
+ * drifts as rows are inserted mid-session"). It matters more here than on a
+ * catalogue: the queue's natural order is newest-first and its whole purpose is
+ * that rows arrive while you are reading it, so an OFFSET page 2 would skip
+ * exactly the requests that landed while page 1 was on screen.
+ *
+ * The cursor is `(created_at, id)`, which is the ORDER BY the queue already used
+ * and which the `approval_queue_idx` index already serves. `id` is the tiebreaker
+ * and is not optional: two requests committed in the same transaction share a
+ * `created_at` to the microsecond, and a cursor on the timestamp alone would
+ * either repeat or drop one of them.
+ */
+function encodeCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url')
+}
+
+/**
+ * Fails closed on anything malformed. The cursor reaches this from a URL query
+ * string, so "not a cursor" is an ordinary input, not an exception: an
+ * unparseable one would otherwise become `new Date(undefined)` → `Invalid Date` →
+ * a raw Postgres error on a page that should simply have shown the first page.
+ */
+function decodeCursor(cursor: string): [Date, string] | null {
+  let decoded: string
+  try {
+    decoded = Buffer.from(cursor, 'base64url').toString()
+  } catch {
+    return null
+  }
+  const separator = decoded.indexOf('|')
+  if (separator < 0) return null
+  const timestamp = new Date(decoded.slice(0, separator))
+  const id = decoded.slice(separator + 1)
+  if (Number.isNaN(timestamp.getTime()) || !id) return null
+  return [timestamp, id]
 }
 
 /**
@@ -569,34 +651,62 @@ export type ApprovalQueueFilter = {
  *     policy function.
  *
  * Pending-only by default: this is a work queue, and the decided rows are history.
+ *
+ * PAGED, because "All" is unbounded. The open backlog is small by construction —
+ * a pending request is one somebody is about to clear — but the decided rows only
+ * ever accumulate, so the `show=all` view grows without limit. The previous fixed
+ * `LIMIT 200` did not fail on a large history, which is worse than failing: it
+ * silently truncated it, and a decision trail that quietly stops at 200 rows is
+ * indistinguishable from one that ends there.
  */
 export async function listApprovals(
   actor: Actor, filter: ApprovalQueueFilter = {},
-): Promise<ApprovalRecord[]> {
+): Promise<ApprovalQueuePage> {
   const visibleModules = MODULES.filter((m) => can(actor, 'approve_requests', m))
   const modules = filter.module
     ? visibleModules.filter((m) => m === filter.module)
     : visibleModules
   // No connection is acquired for an actor who can see nothing — the same reason
   // every other guard here runs ahead of withTransaction.
-  if (modules.length === 0) return []
+  const empty: ApprovalQueuePage = { items: [], nextCursor: null }
+  if (modules.length === 0) return empty
 
   const statuses = filter.status?.length
     ? filter.status.filter((s) => APPROVAL_STATUSES.includes(s))
     : (['pending'] as ApprovalStatus[])
-  if (statuses.length === 0) return []
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 500)
+  if (statuses.length === 0) return empty
+  const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200)
 
   return withTransaction(actor.id, async (tx) => {
-    const params: unknown[] = [modules, statuses, limit]
-    const kindClause = filter.kind ? ' AND a.kind = $4' : ''
-    if (filter.kind) params.push(filter.kind)
+    const params: unknown[] = []
+    const p = (v: unknown) => { params.push(v); return `$${params.length}` }
+    const conditions = [
+      'a.deleted_at IS NULL',
+      `a.module = ANY(${p(modules)})`,
+      `a.status = ANY(${p(statuses)})`,
+    ]
+    if (filter.kind) conditions.push(`a.kind = ${p(filter.kind)}`)
+    // A cursor that does not parse is ignored rather than refused: the caller gets
+    // the first page, which is the honest answer to a hand-edited URL.
+    const cursor = filter.cursor ? decodeCursor(filter.cursor) : null
+    if (cursor) {
+      conditions.push(`(a.created_at, a.id) < (${p(cursor[0])}, ${p(cursor[1])})`)
+    }
 
+    // limit + 1 answers "is there another page?" without a second COUNT query
+    // over a table whose decided half grows forever.
     const { rows } = await tx.query<ApprovalRow>(
       `${SELECT_APPROVAL}
-        WHERE a.deleted_at IS NULL AND a.module = ANY($1) AND a.status = ANY($2)${kindClause}
+        WHERE ${conditions.join(' AND ')}
         ORDER BY a.created_at DESC, a.id DESC
-        LIMIT $3`, params)
-    return rows.map(toRecord)
+        LIMIT ${p(limit + 1)}`, params)
+
+    const hasMore = rows.length > limit
+    const page = hasMore ? rows.slice(0, limit) : rows
+    const last = page[page.length - 1]
+    return {
+      items: page.map(toRecord),
+      nextCursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null,
+    }
   })
 }

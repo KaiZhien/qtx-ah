@@ -291,22 +291,66 @@ describe('APPROVAL_TEMPLATES', () => {
   })
 
   /**
-   * eco and repair_signoff are deliberately unregistered: both flows still run
-   * through their own direct permission gates, so nothing has decided which queue
-   * such a request belongs in. Parking the event is the honest outcome — a task that
-   * answers no question would land in a real person's queue.
+   * eco and repair_signoff became registered when their flows moved onto the
+   * engine: each now has a decided destination queue and a task that says what the
+   * approver must check. Before that they parked deliberately — a task answering no
+   * question is worse than a visible backlog — which is why the register/park line
+   * is pinned in BOTH directions rather than assumed.
    */
+  it.each(['eco', 'repair_signoff'])('builds a real task for the migrated kind %s', (kind) => {
+    const task = buildApprovalTask(kind, actx())
+    expect(task.title).toMatch(/\S/)
+    expect(task.description).toMatch(/\S/)
+    // An approval BLOCKS the work that asked for it, so it outranks an ordinary
+    // department handoff — same reasoning as `invoice`.
+    expect(task.priority).toBe('high')
+    // Nobody decides their own request, and a rejection needs a note: both are
+    // rules the approver has to know BEFORE they open the queue.
+    expect(task.description.toLowerCase()).toContain('own request')
+    expect(task.description.toLowerCase()).toContain('reject')
+  })
+
+  it('routes each migrated kind to its own module’s department queue', () => {
+    expect(buildApprovalTask('eco', actx({ module: 'engineering' })).department)
+      .toBe('Engineering')
+    expect(buildApprovalTask('repair_signoff', actx({ module: 'maintenance' })).department)
+      .toBe('Maintenance')
+  })
+
+  it('points the ECO approver at the effectivity — the scope that must not drift', () => {
+    const task = buildApprovalTask('eco', actx())
+    expect(task.description.toLowerCase()).toContain('effectivity')
+  })
+
+  it('points the sign-off approver at the testing notes and the parts claim', () => {
+    const task = buildApprovalTask('repair_signoff', actx())
+    expect(task.description.toLowerCase()).toContain('testing notes')
+    expect(task.description.toLowerCase()).toContain('parts-replaced')
+  })
+
   it.each(['eco', 'repair_signoff'])(
-    'throws for the unregistered kind %s instead of inventing a task', (kind) => {
-      expect(() => buildApprovalTask(kind, actx())).toThrow(UnknownTemplateError)
+    'keeps the migrated kind %s within createTask’s limits', (kind) => {
+      const task = buildApprovalTask(kind, actx({ label: 'X'.repeat(500) }))
+      expect(task.title.length).toBeLessThanOrEqual(TITLE_MAX)
+      expect(task.description.length).toBeLessThanOrEqual(DESCRIPTION_MAX)
     })
+
+  /**
+   * The PARKING behaviour itself is unchanged and must stay that way: a kind
+   * nobody registered still throws rather than inventing a generic task. Growing
+   * the CHECK set without growing this registry has to remain visible as a parked
+   * outbox row, not silently land "something needs approving" in someone's queue.
+   */
+  it('still throws for a kind nobody registered, instead of inventing a task', () => {
+    expect(() => buildApprovalTask('quorum_signoff', actx())).toThrow(UnknownTemplateError)
+  })
 
   it('names the kind in the error so a parked event is diagnosable from last_error', () => {
     try {
-      buildApprovalTask('repair_signoff', actx())
+      buildApprovalTask('quorum_signoff', actx())
       expect.unreachable('expected UnknownTemplateError to be thrown')
     } catch (err) {
-      expect((err as Error).message).toContain('repair_signoff')
+      expect((err as Error).message).toContain('quorum_signoff')
       expect((err as Error).message).toContain('approval kind')
     }
   })
@@ -326,6 +370,7 @@ describe('APPROVAL_TEMPLATES', () => {
    * decision about whose queue fills up — not a detail to notice in a diff.
    */
   it('registers exactly the kinds that have a queue destination today', () => {
-    expect(Object.keys(APPROVAL_TEMPLATES)).toEqual(['invoice'])
+    expect(Object.keys(APPROVAL_TEMPLATES).sort())
+      .toEqual(['eco', 'invoice', 'repair_signoff'])
   })
 })

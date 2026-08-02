@@ -13,7 +13,7 @@ import { MODULE_REGISTRY } from '@/modules/shared/navigation/moduleRegistry'
 import { ApprovalQueue, type ApprovalQueueRow } from '@/components/approvals/ApprovalQueue'
 import { cn } from '@/lib/utils'
 
-type PageProps = { searchParams: { show?: string } }
+type PageProps = { searchParams: { show?: string; cursor?: string } }
 
 const moduleLabel = (key: string) =>
   MODULE_REGISTRY.find((m) => m.key === key)?.label ?? key
@@ -59,7 +59,11 @@ export default async function ApprovalsPage({ searchParams }: PageProps) {
 
   const showAll = searchParams.show === 'all'
   const status: ApprovalStatus[] = showAll ? [...APPROVAL_STATUSES] : ['pending']
-  const approvals = await listApprovals(actor, { status })
+  // Keyset-paged: "All" accumulates every decided row forever, and the previous
+  // fixed cap silently truncated the decision trail rather than paging it.
+  const { items: approvals, nextCursor } = await listApprovals(actor, {
+    status, cursor: searchParams.cursor,
+  })
 
   // One clock for the whole page, so two rows requested a second apart cannot
   // disagree about which of them is older.
@@ -98,6 +102,26 @@ export default async function ApprovalsPage({ searchParams }: PageProps) {
       </nav>
 
       <ApprovalQueue rows={rows} showingDecided={showAll} />
+
+      {/*
+        Forward-only, because the cursor is keyset rather than an offset: there is
+        no "page number" to go back to, and a Back link that guessed one would
+        skip rows inserted since. The browser's own Back button returns to the
+        previous page's URL, which still holds its cursor and is therefore exact.
+      */}
+      {nextCursor && (
+        <nav className="flex justify-end" aria-label="More approvals">
+          <Link
+            href={`/approvals?${new URLSearchParams({
+              ...(showAll ? { show: 'all' } : {}), cursor: nextCursor,
+            })}`}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700
+                       transition-colors hover:bg-slate-100"
+          >
+            Older requests →
+          </Link>
+        </nav>
+      )}
     </div>
   )
 }

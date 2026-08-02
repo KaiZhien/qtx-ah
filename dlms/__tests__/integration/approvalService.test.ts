@@ -1062,13 +1062,13 @@ describe('listApprovals — the queue', () => {
   it('shows nothing at all to an actor without approve_requests', async () => {
     const invoice = await makeInvoice()
     await requestInvoiceApproval(requester(), invoice)
-    expect(await listApprovals(requester())).toEqual([])
+    expect(await listApprovals(requester())).toEqual({ items: [], nextCursor: null })
   })
 
   it('shows the pending request to an approver, newest first', async () => {
     const invoice = await makeInvoice()
     const { approvalId } = await requestInvoiceApproval(requester(), invoice)
-    const queue = await listApprovals(approver())
+    const queue = (await listApprovals(approver())).items
     const mine = queue.find((a) => a.id === approvalId)
     expect(mine).toMatchObject({
       status: 'pending', kind: 'invoice', module: 'finance',
@@ -1087,14 +1087,14 @@ describe('listApprovals — the queue', () => {
     const invoice = await makeInvoice()
     const { approvalId } = await requestInvoiceApproval(requester(), invoice)
     const engineeringOnly = approver({ moduleAccess: new Set(['engineering']) })
-    expect((await listApprovals(engineeringOnly)).map((a) => a.id)).not.toContain(approvalId)
+    expect((await listApprovals(engineeringOnly)).items.map((a) => a.id)).not.toContain(approvalId)
   })
 
   it('shows every module to a super admin, whose module gate is bypassed', async () => {
     const invoice = await makeInvoice()
     const { approvalId } = await requestInvoiceApproval(requester(), invoice)
     const sa = approver({ id: userId, roleKey: 'super_admin', moduleAccess: new Set(['admin']) })
-    expect((await listApprovals(sa)).map((a) => a.id)).toContain(approvalId)
+    expect((await listApprovals(sa)).items.map((a) => a.id)).toContain(approvalId)
   })
 
   it('is the PENDING queue by default, and can be asked for decided rows explicitly',
@@ -1103,15 +1103,55 @@ describe('listApprovals — the queue', () => {
       const { approvalId } = await requestInvoiceApproval(requester(), invoice)
       await decideApproval(approver(), { approvalId, decision: 'approved' })
 
-      expect((await listApprovals(approver())).map((a) => a.id)).not.toContain(approvalId)
+      expect((await listApprovals(approver())).items.map((a) => a.id)).not.toContain(approvalId)
       const decided = await listApprovals(approver(), { status: ['approved', 'rejected'] })
-      expect(decided.map((a) => a.id)).toContain(approvalId)
+      expect(decided.items.map((a) => a.id)).toContain(approvalId)
     })
 
   it('shows nothing to a deactivated approver', async () => {
     const invoice = await makeInvoice()
     await requestInvoiceApproval(requester(), invoice)
-    expect(await listApprovals(approver({ active: false }))).toEqual([])
+    expect(await listApprovals(approver({ active: false })))
+      .toEqual({ items: [], nextCursor: null })
+  })
+
+  /**
+   * Keyset paging, not OFFSET: the queue's whole purpose is that rows arrive while
+   * it is on screen, and an OFFSET page 2 would skip exactly the requests that
+   * landed since page 1 was rendered.
+   */
+  it('pages through the queue without repeating or dropping a row', async () => {
+    const wanted: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const invoice = await makeInvoice()
+      const { approvalId } = await requestInvoiceApproval(requester(), invoice)
+      wanted.push(approvalId)
+    }
+
+    const seen: string[] = []
+    let cursor: string | null | undefined
+    // Bounded so a paging bug fails the test rather than hanging the suite.
+    for (let page = 0; page < 50; page++) {
+      const result = await listApprovals(approver(), { limit: 1, cursor: cursor ?? undefined })
+      expect(result.items.length).toBeLessThanOrEqual(1)
+      seen.push(...result.items.map((a) => a.id))
+      cursor = result.nextCursor
+      if (!cursor) break
+    }
+
+    expect(new Set(seen).size).toBe(seen.length)          // nothing repeated
+    for (const id of wanted) expect(seen).toContain(id)   // nothing dropped
+  })
+
+  it('ignores an unparseable cursor rather than failing the page', async () => {
+    // The cursor reaches the service from a URL query string, so "not a cursor"
+    // is ordinary input; it must yield the first page, never a raw driver error.
+    const invoice = await makeInvoice()
+    const { approvalId } = await requestInvoiceApproval(requester(), invoice)
+    for (const cursor of ['nonsense', '', 'Zm9v', Buffer.from('not-a-date|x').toString('base64url')]) {
+      const result = await listApprovals(approver(), { cursor })
+      expect(result.items.map((a) => a.id)).toContain(approvalId)
+    }
   })
 })
 

@@ -8,6 +8,7 @@ import {
 } from '@/modules/engineering/domain/ecoStatus'
 import { FIRMWARE_INITIAL_STATUS, isValidFirmwareTransition } from '@/modules/engineering/domain/firmwareStatus'
 import { InvalidTransitionError } from '@/modules/engineering/domain/transition'
+import { assertEcoApprovalInTx } from '@/modules/engineering/services/ecoService'
 
 /**
  * Engineering write paths (spec §4/§7.5). Every entry point:
@@ -234,13 +235,26 @@ export type ChangeEcoStatusInput = z.input<typeof changeEcoStatusSchema>
  * edit_records every move needs. That second authorize() runs BEFORE
  * withTransaction opens, not inside it — which is fine, since it throws
  * before the transaction starts, so a denied approval still writes nothing.
+ *
+ * TWO GATES ON THAT EDGE, answering different questions (see ecoService.ts):
+ * `approve_requests` asks MAY THIS PERSON approve; `assertEcoApprovalInTx` asks
+ * IS THIS THE CHANGE THAT WAS AGREED TO — re-checking the immutable snapshot of
+ * any approval request raised for this ECO against the row as locked here, and
+ * refusing on drift with the field and both values named. The permission check is
+ * unchanged and is NOT replaced by the engine; both must hold.
+ *
+ * The snapshot check runs INSIDE the transaction, under the same FOR UPDATE that
+ * the UPDATE below writes through, so nothing can edit the ECO between the check
+ * and the write. Where no approval was ever requested it is a no-op and this edge
+ * behaves exactly as it always has.
  */
 export async function changeEcoStatus(
   actor: Actor, input: ChangeEcoStatusInput,
 ): Promise<{ status: string; version: number }> {
   authorize(actor, 'edit_records', 'engineering')
   const data = changeEcoStatusSchema.parse(input)
-  if (ecoTransitionRequiresApproval(data.toStatus)) {
+  const gated = ecoTransitionRequiresApproval(data.toStatus)
+  if (gated) {
     authorize(actor, 'approve_requests', 'engineering')
   }
   return withTransaction(actor.id, async (tx) => {
@@ -251,6 +265,9 @@ export async function changeEcoStatus(
     if (!isValidEcoTransition(cur.rows[0].status, data.toStatus)) {
       throw new InvalidTransitionError('ECO', cur.rows[0].status, data.toStatus)
     }
+    // AFTER the transition check: an illegal move should say it is illegal, not
+    // that its approval drifted — that would send the reader to the wrong fix.
+    if (gated) await assertEcoApprovalInTx(tx, data.id)
     const { rows } = await tx.query<{ version: number }>(
       `UPDATE eco SET status=$1, updated_at=now(), updated_by=$2, version=version+1
         WHERE id=$3 AND version=$4 RETURNING version`,

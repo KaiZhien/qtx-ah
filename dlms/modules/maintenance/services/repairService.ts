@@ -11,6 +11,18 @@ import {
   evaluateSignOff, messageForSignOffError, RepairSignOffError,
   type RepairStatus,
 } from '@/modules/maintenance/domain/repairStatus'
+import {
+  requestApprovalInTx, getGoverningApprovalInTx, getApprovalForInTx,
+  type ApprovalRecord,
+} from '@/modules/shared/approvals/services/approvalService'
+import { describeSnapshotDrift } from '@/modules/shared/approvals/domain/approvalDecision'
+import {
+  evaluateApprovalGate, ApprovalGateError,
+} from '@/modules/shared/approvals/domain/approvalGate'
+import {
+  REPAIR_SIGNOFF_ENTITY_TYPE, REPAIR_SIGNOFF_KIND, REPAIR_SIGNOFF_SUBJECT,
+  buildRepairSignOffSnapshot, repairSignOffRequestable, type RepairSignOffSnapshot,
+} from '@/modules/shared/approvals/domain/repairSignOffApproval'
 
 export class RepairNotFoundError extends Error {
   constructor(repairId: string) {
@@ -628,15 +640,28 @@ export async function signOffRepair(
     const current = rows[0]
     if (current.version !== data.version) throw new OptimisticLockError('repair', data.repairId)
 
+    // Counted ONCE and reused, so the precondition and the approval snapshot can
+    // never disagree about how much work backs the parts-replaced claim. Still
+    // read INSIDE this transaction, after the FOR UPDATE — see this function's
+    // header for why a count taken earlier would be a different rule.
+    const recordedReplacementCount = await countInstallationsForRepair(tx, data.repairId)
+
     const decision = evaluateSignOff({
       status: current.status,
       testingNotes: current.testing_notes,
       partsReplaced: current.parts_replaced,
-      recordedReplacementCount: await countInstallationsForRepair(tx, data.repairId),
+      recordedReplacementCount,
     })
     if (!decision.ok) {
       throw new RepairSignOffError(decision.error, messageForSignOffError(decision.error))
     }
+
+    // AFTER the three-fact precondition, deliberately. A repair that is not
+    // finishable at all must say so — "your approval drifted" would send the
+    // technician to the wrong fix — and the precondition is the older, stricter
+    // rule. Where no sign-off approval was ever requested this is a no-op and
+    // sign-off behaves exactly as it always has.
+    await assertRepairSignOffApprovalInTx(tx, data.repairId, recordedReplacementCount)
 
     const { rows: updated } = await tx.query<{ version: number }>(
       `UPDATE repair
@@ -664,5 +689,210 @@ export async function signOffRepair(
     }
 
     return { status: 'closed' as const, version: updated[0].version, deviceReturned }
+  })
+}
+
+// ══════════════ Sign-off approvals, on the shared engine (spec §6.3) ═════════
+//
+// WHAT THIS ADDS, AND WHAT IT DOES NOT REPLACE.
+//
+// `sign_off_repairs` remains the AUTHORISATION layer on signOffRepair, and
+// `evaluateSignOff`'s three facts remain the PRECONDITION. Neither is touched.
+// What the engine adds is the question neither of them asks: was the state being
+// signed off the state somebody else actually agreed to? A technician can hold
+// sign_off_repairs, satisfy all three facts, and still be closing a repair whose
+// testing notes were rewritten after an approver read them.
+//
+// The posture is "requested ⇒ binding" (approvalGate.ts's header explains it in
+// full): a repair nobody raised a request for signs off exactly as it does
+// today — no new permission, no new refusal, no behaviour difference — while a
+// request, once raised, blocks sign-off until it is approved and still describes
+// the repair.
+
+/** Raised when an approval exists and does not authorise the sign-off being made. */
+export class RepairSignOffApprovalError extends ApprovalGateError {}
+
+/** Raised when a sign-off approval cannot be REQUESTED for this repair right now. */
+export class RepairSignOffRequestError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RepairSignOffRequestError'
+  }
+}
+
+type RepairProjectionRow = {
+  repair_no: string
+  device_id: string
+  device_sn: string | null
+  assigned_to: string | null
+  assigned_to_name: string | null
+  parts_replaced: boolean
+  testing_notes: string | null
+  corrective_action: string | null
+  status: RepairStatus
+  version: number
+}
+
+const REPAIR_PROJECTION_SQL = `
+  SELECT r.repair_no, r.device_id, d.device_sn, r.assigned_to,
+         asg.full_name AS assigned_to_name, r.parts_replaced, r.testing_notes,
+         r.corrective_action, r.status, r.version
+    FROM repair r
+    JOIN device d ON d.id = r.device_id
+    LEFT JOIN app_user asg ON asg.id = r.assigned_to
+   WHERE r.id = $1 AND r.deleted_at IS NULL`
+
+/**
+ * The projection an approval is granted for.
+ *
+ * `recordedReplacementCount` is PASSED IN rather than counted here: signOffRepair
+ * already counts it under its own lock and must use one number for both the
+ * precondition and this snapshot. A second count would be a second question, and
+ * the two answers could differ.
+ */
+function toSignOffSnapshot(
+  row: RepairProjectionRow, recordedReplacementCount: number,
+): RepairSignOffSnapshot {
+  return buildRepairSignOffSnapshot({
+    repairNo: row.repair_no,
+    deviceId: row.device_id,
+    deviceSn: row.device_sn,
+    technicianId: row.assigned_to,
+    technicianName: row.assigned_to_name,
+    partsReplaced: row.parts_replaced,
+    recordedReplacementCount,
+    testingNotes: row.testing_notes,
+    correctiveAction: row.corrective_action,
+    version: row.version,
+  })
+}
+
+async function loadRepairProjection(
+  tx: Tx, repairId: string, lock = false,
+): Promise<RepairProjectionRow | null> {
+  // FOR UPDATE OF r only: `d` and `asg` are lookups, and locking a device row
+  // here would collide with Manufacturing for no reason.
+  const sql = lock ? `${REPAIR_PROJECTION_SQL} FOR UPDATE OF r` : REPAIR_PROJECTION_SQL
+  const { rows } = await tx.query<RepairProjectionRow>(sql, [repairId])
+  return rows[0] ?? null
+}
+
+/**
+ * THE GATE, called from signOffRepair inside its own transaction, under the lock
+ * it already holds, after the precondition has passed.
+ */
+async function assertRepairSignOffApprovalInTx(
+  tx: Tx, repairId: string, recordedReplacementCount: number,
+): Promise<void> {
+  const approval = await getGoverningApprovalInTx(
+    tx, REPAIR_SIGNOFF_ENTITY_TYPE, repairId, REPAIR_SIGNOFF_KIND)
+  // Nothing was ever requested — today's behaviour, and the common case. Skip the
+  // projection read entirely rather than build a snapshot nothing will compare.
+  if (!approval) return
+
+  const row = await loadRepairProjection(tx, repairId)
+  if (!row) return // locked by the caller; cannot vanish mid-transaction
+
+  const decision = evaluateApprovalGate({
+    subject: REPAIR_SIGNOFF_SUBJECT,
+    action: 'signed off',
+    requiredWithoutRequest: false,
+    current: toSignOffSnapshot(row, recordedReplacementCount),
+    approval: {
+      status: approval.status, snapshot: approval.snapshot, decisionNote: approval.decisionNote,
+    },
+  })
+  if (!decision.ok) throw new RepairSignOffApprovalError(decision.code, decision.message)
+}
+
+const requestSignOffApprovalSchema = z.object({
+  repairId: z.string().uuid(),
+  version: z.number().int().nonnegative(),
+})
+export type RequestRepairSignOffApprovalInput = z.input<typeof requestSignOffApprovalSchema>
+
+/**
+ * Ask for a second pair of eyes before a repair is signed off.
+ *
+ * Gated on `edit_records`, the REQUESTER's own workflow permission — not
+ * `sign_off_repairs`. Demanding the signer's permission to ASK for a sign-off
+ * review would mean only people who can sign off may request one, and since
+ * nobody may decide their own request that combination is close to useless: the
+ * technician who did the work is exactly the person who should be able to ask.
+ *
+ * `version` pins what the requester was looking at, so a request raised from a
+ * stale screen fails rather than silently capturing a state they never saw.
+ */
+export async function requestRepairSignOffApproval(
+  actor: Actor, input: RequestRepairSignOffApprovalInput,
+): Promise<{ approvalId: string }> {
+  authorize(actor, 'edit_records', 'maintenance')
+  const data = requestSignOffApprovalSchema.parse(input)
+
+  return withTransaction(actor.id, async (tx) => {
+    const row = await loadRepairProjection(tx, data.repairId, true)
+    if (!row) throw new RepairNotFoundError(data.repairId)
+    if (row.version !== data.version) throw new OptimisticLockError('repair', data.repairId)
+
+    const requestable = repairSignOffRequestable(row.status)
+    if (!requestable.ok) throw new RepairSignOffRequestError(requestable.message)
+
+    // Counted inside the same transaction that locked the repair, exactly as
+    // sign-off does, so the snapshot records the backing as it stood.
+    const recordedReplacementCount = await countInstallationsForRepair(tx, data.repairId)
+
+    return requestApprovalInTx(tx, actor, {
+      entityType: REPAIR_SIGNOFF_ENTITY_TYPE,
+      entityId: data.repairId,
+      kind: REPAIR_SIGNOFF_KIND,
+      permission: 'edit_records',
+      label: row.repair_no,
+      snapshot: toSignOffSnapshot(row, recordedReplacementCount),
+    })
+  })
+}
+
+export type RepairSignOffApprovalState = {
+  requestable: boolean
+  requestableReason: string | null
+  approval: ApprovalRecord | null
+  /** Empty unless an APPROVED snapshot no longer describes the repair. */
+  drift: string[]
+}
+
+/**
+ * Everything a repair screen needs to say something true about sign-off approval,
+ * in one read — including drift, which has to be visible BEFORE someone clicks
+ * Sign off rather than surfacing as a refusal afterwards.
+ *
+ * The DISPLAY path, so it uses `getApprovalForInTx` and pays its `view_records`
+ * guard; the enforcement path deliberately does not.
+ */
+export async function getRepairSignOffApprovalState(
+  actor: Actor, repairId: string,
+): Promise<RepairSignOffApprovalState | null> {
+  authorize(actor, 'view_records', 'maintenance')
+  const id = z.string().uuid().safeParse(repairId)
+  if (!id.success) return null
+
+  return withTransaction(actor.id, async (tx) => {
+    const row = await loadRepairProjection(tx, id.data)
+    if (!row) return null
+
+    const approval = await getApprovalForInTx(
+      tx, actor, REPAIR_SIGNOFF_ENTITY_TYPE, id.data, REPAIR_SIGNOFF_KIND)
+    const drift = approval?.status === 'approved'
+      ? describeSnapshotDrift(
+        approval.snapshot,
+        toSignOffSnapshot(row, await countInstallationsForRepair(tx, id.data)))
+      : []
+    const requestable = repairSignOffRequestable(row.status)
+
+    return {
+      requestable: requestable.ok,
+      requestableReason: requestable.ok ? null : requestable.message,
+      approval,
+      drift,
+    }
   })
 }

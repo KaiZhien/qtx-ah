@@ -224,17 +224,21 @@ function recordLabel(ctx: ApprovalContext): string {
 }
 
 /**
- * Keyed by `approval.kind`, and DELIBERATELY not exhaustive over the CHECK set.
+ * Keyed by `approval.kind`, and STILL deliberately not a blanket fallback.
  *
- * `invoice` is registered because Finance is the engine's first real consumer
- * (spec BR-4: records at or above finance_approval_threshold_sgd). `eco` and
- * `repair_signoff` are not: Engineering's ECO step and Maintenance's repair
- * sign-off still run through their own direct permission gates, so nothing yet
- * decides which queue such a request should land in or what the task should say.
- * Registering a placeholder for them would put a task that answers no question
- * into a real person's queue; leaving them unregistered parks the event where the
- * runbook can see it, and the approvals queue page reads the `approval` table
- * directly and so works for every kind regardless.
+ * All three kinds in the CHECK set are registered as of the consumer migration:
+ * `invoice` (Finance, spec BR-4), `eco` (Engineering's submitted → approved step)
+ * and `repair_signoff` (Maintenance's awaiting_sign_off → closed step). Each has
+ * a real destination queue and a task that says what the approver must actually
+ * check, which is what "unregistered" was withholding — not a missing feature but
+ * a missing DECISION about where such a request belongs.
+ *
+ * What has NOT changed is the behaviour for a kind nobody registered: it still
+ * parks. `buildApprovalTask` throws rather than inventing a generic task, the
+ * drain records the throw and parks the row after five attempts, and the runbook
+ * sees it. A task saying "something needs approving" is not visible as a problem
+ * and lands in a real person's queue; a parked event is visible and lands in
+ * nobody's.
  */
 export const APPROVAL_TEMPLATES: Record<string, (ctx: ApprovalContext) => HandoffTask> = {
   invoice: (ctx) => {
@@ -251,6 +255,55 @@ export const APPROVAL_TEMPLATES: Record<string, (ctx: ApprovalContext) => Handof
       department: MODULE_DEPARTMENTS[ctx.module],
       // An approval BLOCKS the work that asked for it — an invoice cannot be issued
       // until someone decides — so it outranks the ordinary department handoff.
+      priority: 'high',
+    }
+  },
+
+  /**
+   * Engineering, spec §4: the submitted → approved step. The task names what the
+   * approver has to compare, because the snapshot is the thing under review — an
+   * ECO whose effectivity moved after the request is a different change, and the
+   * gate will refuse it at the moment of approval rather than here.
+   */
+  eco: (ctx) => {
+    const record = recordLabel(ctx)
+    return {
+      title: truncate(`Approve ${record}`, TITLE_MAX),
+      description: truncate(
+        `${ctx.requestedByName} asked for approval of engineering change ${record}. Check the `
+        + 'change, the request it realises and the effectivity — which devices it applies to and '
+        + 'from when — against the snapshot the request captured, then approve or reject it. If '
+        + 'the ECO is edited after approval the change cannot be applied against this approval, '
+        + 'so it will have to be requested again. A rejection needs a note saying what has to '
+        + 'change, and nobody may decide their own request.',
+        DESCRIPTION_MAX,
+      ),
+      module: ctx.module,
+      department: MODULE_DEPARTMENTS[ctx.module],
+      priority: 'high',
+    }
+  },
+
+  /**
+   * Maintenance, spec §5.3/§5.4: the awaiting_sign_off → closed step. Sign-off
+   * asserts a device is fit to return to service, so the task points at the
+   * evidence rather than at the record in the abstract.
+   */
+  repair_signoff: (ctx) => {
+    const record = recordLabel(ctx)
+    return {
+      title: truncate(`Approve sign-off for ${record}`, TITLE_MAX),
+      description: truncate(
+        `${ctx.requestedByName} asked for approval to sign off repair ${record}. Signing off `
+        + 'returns the device to service, so check the testing notes, the corrective action, and '
+        + 'whether the parts-replaced claim matches the component replacements actually recorded '
+        + 'against the repair. Approve or reject against the snapshot the request captured; a '
+        + 'rejection needs a note saying what has to change, and nobody may decide their own '
+        + 'request.',
+        DESCRIPTION_MAX,
+      ),
+      module: ctx.module,
+      department: MODULE_DEPARTMENTS[ctx.module],
       priority: 'high',
     }
   },
