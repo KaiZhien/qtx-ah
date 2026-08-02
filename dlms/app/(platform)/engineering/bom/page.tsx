@@ -89,11 +89,26 @@ export default async function VariantBomPage({ searchParams }: PageProps) {
 
           {bom && (
             <>
+              {/* Two very different causes, so two very different messages — see
+                  resolveBomAt. Without a serial, an overlap usually just means the
+                  change was keyed to build serials and the question is genuinely
+                  under-specified; WITH a comparable serial it is a corrupt row,
+                  because the apply step cannot produce one. */}
               {bom.conflicts.length > 0 && (
                 <p className="rounded-md bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-                  {bom.conflicts.length} component type(s) have overlapping effectivity windows at
-                  this point. The line shown is the latest-starting one — the underlying data needs
-                  fixing.
+                  {serial ? (
+                    <>
+                      {bom.conflicts.length} component type(s) have overlapping effectivity windows
+                      even at this serial. The latest definition is shown — the underlying data
+                      needs fixing.
+                    </>
+                  ) : (
+                    <>
+                      {bom.conflicts.length} component type(s) changed by build serial rather than
+                      by date, so the BOM on a date alone is ambiguous. The latest definition is
+                      shown — enter a build serial above for an exact answer.
+                    </>
+                  )}
                 </p>
               )}
 

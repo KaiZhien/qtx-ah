@@ -176,6 +176,28 @@ describe('resolveBomAt', () => {
     expect(resolveBomAt([...overlapping].reverse(), { date: '2026-12-01' }).map((l) => l.id)).toEqual(['late'])
   })
 
+  it('breaks a MIXED-AXIS tie on the serial axis — the same order as the precedence rule', () => {
+    // This is the shape a serial-only ECO leaves behind: the superseded line is
+    // dated and serial-unbounded, the successor is serial-bounded and dateless
+    // (from = null = "beginning of time"). Ask without a serial and BOTH look
+    // effective. Comparing the date start first would pick the SUPERSEDED line —
+    // the serial start has to win, exactly as it does in lineAppliesAt.
+    const supersededBySerial = [
+      line({ id: 'old', effectiveFromDate: '2026-06-01', effectiveToSerial: 'QTX-P-00500' }),
+      line({ id: 'new', effectiveFromDate: null, effectiveFromSerial: 'QTX-P-00500', quantity: 7 }),
+    ]
+    const got = resolveBomAt(supersededBySerial, { date: '2030-01-01' })
+    expect(got.map((l) => l.id)).toEqual(['new'])
+    expect(resolveBomAt([...supersededBySerial].reverse(), { date: '2030-01-01' }).map((l) => l.id))
+      .toEqual(['new'])
+    // …and it is reported as ambiguous rather than silently resolved.
+    expect(findBomEffectivityConflicts(supersededBySerial, { date: '2030-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['old', 'new'] }])
+    // Supplying the serial removes the ambiguity entirely.
+    expect(findBomEffectivityConflicts(supersededBySerial, { date: '2030-01-01', serial: 'QTX-P-00600' }))
+      .toEqual([])
+  })
+
   it('treats a null from-bound as the beginning of time, not as the latest start', () => {
     const overlapping = [
       line({ id: 'always', effectiveFromDate: null, createdAt: '2026-09-01T00:00:00.000Z' }),
