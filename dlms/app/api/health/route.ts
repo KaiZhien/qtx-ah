@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getPool } from '@/lib/db/pool'
+import { getQueueHealth, type QueueHealth } from '@/modules/shared/outbox/services/queueHealth'
 
 /**
  * GET /api/health — app liveness, a database ping and the outbox queue depth (spec §13).
@@ -9,12 +9,17 @@ import { getPool } from '@/lib/db/pool'
  * pre-existing drift recorded in the handoff notes and closed here. (Left as-is, the entry
  * was harmless but misleading: it read as though a health check existed.)
  *
+ * THE QUEUE NUMBERS COME FROM getQueueHealth(), NOT FROM A QUERY HERE, and the Admin
+ * dashboard's job-queue widget (spec §8.5) calls the same function. Two independent
+ * implementations of "how deep is the queue" is precisely how an operator ends up trusting
+ * a green health check while the dashboard shows a backlog.
+ *
  * UNAUTHENTICATED, on purpose and within limits. A health check that needs a credential
  * cannot be used by the thing that needs it most — an uptime monitor, a load balancer, a
  * deploy gate. What it may therefore disclose is bounded to what an anonymous caller may
- * safely learn: whether the app is up, whether its database answers, and HOW MANY rows are
- * waiting in a queue. No row contents, no identities, no configuration, no error strings
- * from the database (see below).
+ * safely learn: whether the app is up, whether its database answers, and how many rows are
+ * waiting in a queue. No row contents, no identities, no configuration, and no error
+ * strings from the database (see below).
  *
  * DEGRADED IS A 503, NOT A 200. The point of the endpoint is to be machine-read: a monitor
  * that has to parse a body to discover the database is down will eventually be pointed at
@@ -29,8 +34,12 @@ type Health = {
   status: 'ok' | 'degraded'
   app: 'ok'
   database: 'ok' | 'unreachable'
-  /** Unprocessed outbox rows, and how many of those are parked. Null when unknown. */
-  queue: { pending: number; parked: number } | null
+  /**
+   * Queue depth, or null when UNKNOWN — which on this project means the outbox migration
+   * is committed but not yet applied. Never zeros in that case: zero is the reading an
+   * operator stands down on, and it would be false.
+   */
+  queue: QueueHealth | null
   checkedAt: string
 }
 
@@ -41,32 +50,10 @@ export async function GET() {
   }
 
   try {
-    // One round trip for the ping AND the depth. A second query would double the cost of an
-    // endpoint that gets polled every few seconds, and could report a database that answered
-    // the first and not the second.
-    //
-    // `to_regclass` guards the case that actually happens on this project: the outbox
-    // migration is committed but NOT YET APPLIED to cloud (four migrations sit unapplied).
-    // Querying `outbox` directly would make /api/health report the whole database as
-    // unreachable on a deployment whose database is perfectly fine — turning the diagnostic
-    // into the thing that needs diagnosing.
-    const { rows } = await getPool().query<{ pending: number | null; parked: number | null }>(
-      `SELECT
-         CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE
-           (SELECT count(*)::int FROM outbox WHERE processed_at IS NULL) END AS pending,
-         CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE
-           (SELECT count(*)::int FROM outbox WHERE processed_at IS NULL AND attempts >= 5) END
-           AS parked`)
-
+    body.queue = await getQueueHealth()
+    // Reached only if the query succeeded, so the ping and the depth are one round trip
+    // and cannot report a database that answered one and not the other.
     body.database = 'ok'
-    const row = rows[0]
-    // A missing outbox table leaves `queue: null` — UNKNOWN, not zero. Same discipline as
-    // DrainResult.parked: zero is the reading an operator stands down on, and it would be
-    // false here.
-    if (row?.pending !== null && row?.pending !== undefined
-        && row?.parked !== null && row?.parked !== undefined) {
-      body.queue = { pending: row.pending, parked: row.parked }
-    }
   } catch (err) {
     body.status = 'degraded'
     // The error is LOGGED, never returned. This endpoint is unauthenticated, and a Postgres

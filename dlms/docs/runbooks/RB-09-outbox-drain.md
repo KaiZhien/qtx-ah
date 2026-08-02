@@ -1,15 +1,37 @@
-# RB-09: Draining the outbox (cross-department handoffs)
+# RB-09: Draining the outbox (handoffs, approvals, notifications)
 
-Turns unprocessed `outbox` rows — one per boundary-crossing device status change,
-written in the same transaction as the status change itself — into cross-department
-handoff tasks (spec §5.5). The drain is the *only* thing that creates those tasks.
+Turns unprocessed `outbox` rows — written in the same transaction as the thing that
+caused them — into cross-department handoff tasks (spec §5.5), approval tasks
+(spec §6.3), and the **notifications** that tell the relevant people about both.
+The drain is the *only* thing that creates any of them.
 
-> **NOTHING SCHEDULES THE DRAIN TODAY.** No cron, no worker, no background job. A
-> handoff task appears **only when someone runs a drain**, by the route or by the
-> script below. Until a schedule is wired (see "Scheduling it"), the operational
-> contract is: the handoff is never *lost*, but it is not *timely* either — it waits
-> in the table until a drain runs. If a Logistics user asks why a shipped device
-> produced no task, this is the first thing to check, not last.
+> **THE DRAIN IS NOW SCHEDULED.** `vercel.json` runs it every five minutes via Vercel
+> Cron. Earlier revisions of this page said nothing scheduled it and that Vercel Cron
+> *could not* drive the route (cron issues `GET` with `Bearer $CRON_SECRET`; the route
+> was `POST`-only with its own secret). Both are fixed: the route now exports a `GET`
+> that accepts `CRON_SECRET` alongside the unchanged `POST` that accepts
+> `OUTBOX_DRAIN_SECRET`. **Both still refuse every request when their own secret is
+> unset.**
+>
+> **`CRON_SECRET` must be set on the deployment or the schedule silently does
+> nothing** — every cron invocation gets a `401` and the backlog grows with no task and
+> no notification. That is now the first thing to check when a shipped device produces
+> no handoff, and it is the only new way this can fail.
+
+## What one drain does
+
+For each claimed event, in **one transaction**:
+
+| Event | Task | Notifications |
+|---|---|---|
+| `device` / `device_status_changed` | the handoff task | everyone holding a role in `status_transition.notify_roles` who can enter the receiving module |
+| `approval` / `approval_requested` | the approval task | everyone who could actually decide it, minus the requester |
+| `approval` / `approval_decided` | **none** | the requester only |
+
+The task insert, the notification inserts and the `processed_at` stamp share that one
+transaction, so notifications inherit exactly-once from the drain rather than having a
+weaker guarantee of their own. **Emails are the deliberate exception** — a send cannot be
+rolled back, so they are queued during the transaction and sent after it commits.
 
 ## Deploy order — READ THIS FIRST
 
@@ -81,15 +103,19 @@ task.
 
 ## Status of this runbook
 
-Written 2026-07-31 alongside the two triggers it documents (commit under review here),
-completing the five-task handoff branch: the outbox migration and automation
-principal, the pure handoff templates, the producer inside the status-change
-transaction, the drain service, and now the triggers.
+Written 2026-07-31 with the handoff branch. **Substantially revised 2026-08-03** by the
+notifications-and-scheduling slice, which changed three things this page previously
+asserted:
 
-**The drain has never been run against the cloud project.** It has been exercised
-against the dockerized Postgres `npm run test:integration` uses, which is what the
-`__tests__/integration/outboxService.test.ts` suite runs on. Verification behind this
-runbook:
+- *"Nothing schedules the drain"* — it does now (Vercel Cron, `vercel.json`).
+- *"Vercel Cron cannot drive the route as written"* — it can now (`GET` + `CRON_SECRET`).
+- The drain creates **notifications** as well as tasks, and `status_transition.notify_roles`
+  is finally read by something.
+
+**The drain has never been run against the cloud project, and the schedule has never
+fired there** — no deploy has happened since the crons were added, and the five
+migrations it depends on are still unapplied. Everything below is verified against the
+dockerized Postgres `npm run test:integration` uses. Verification behind this runbook:
 
 - `__tests__/platform/shared/handoffTemplates.test.ts` — the pure template builder
   (unknown key throws rather than inventing a task, three-tier device labelling,
@@ -106,15 +132,39 @@ runbook:
   correct secret drains, a poison batch is still a `200`, and a convention pin that
   `/api/outbox/drain` stays in `middleware.ts`'s `PUBLIC_PATHS` (without which every
   request `307`s to `/login` before the handler runs, with the whole suite still green).
-- The whole suite green before this commit — see the report for the exact commands
-  and counts.
+- `__tests__/platform/shared/cronRoutes.test.ts` — the scheduling surface: the `GET`
+  path drains on `CRON_SECRET` and **refuses when it is unset**; the two secrets are
+  **not** interchangeable in either direction; the `POST` path's fail-closed behaviour is
+  unchanged; `?limit=` is honoured and junk values are ignored rather than refused; the
+  job runner checks the secret **before** the job lookup so jobs cannot be enumerated;
+  and `vercel.json` is pinned against the job registry path-for-path and
+  schedule-for-schedule.
+- `__tests__/platform/shared/healthRoute.test.ts` — `/api/health`: 503 when the database
+  is unreachable, the database error never returned to an unauthenticated caller, and a
+  missing `outbox` table reported as `queue: null` (**unknown**) rather than zero.
+- `__tests__/integration/notificationService.test.ts` — notifications end to end: the
+  fan-out's exactly-once under a re-drain, **no** notification when the event fails, the
+  module gate, the causer and the automation principal excluded, muted categories
+  honoured, `emailed_at` staying NULL when email is unconfigured, `approval_decided`
+  notifying the requester and creating no task, the **reminder sweep producing nothing on
+  a second run the same day** (and on a fifth), an overdue task re-notifying the next day,
+  and the override-expiry job soft-deleting only what has actually lapsed.
+- `__tests__/platform/shared/{notificationPreferences,taskReminders,notificationTemplates,emailDelivery,notificationAge}.test.ts`
+  — the pure halves, including the no-op mailer reporting `delivered: false` rather than
+  claiming a send.
+- The whole unit suite green: 1528 tests, up from 1441.
 
 **Fill in when the drain is first run against cloud:**
 
 - Date / environment: `___`
-- Trigger used (route / script): `___`
+- Trigger used (route / script / cron): `___`
 - `claimed` / `processed` / `failed`: `___`
 - `parked`: `___`
+- `notified` / `emailed`: `___`
+- Did the **cron** fire on its own (rather than a hand-run curl)? `yes / no`: `___`
+  (No, with a hand-run working, almost always means `CRON_SECRET` is unset or the plan
+  does not allow the cadence.)
+- Notification visible in the bell for a Logistics manager? `yes / no`: `___`
 - Handoff task visible on **`/tasks?scope=all`**? `yes / no`: `___`
   (`scope=all`, not the default tab — see "Where the handoff task shows up". The
   default is `scope=mine`, which filters on `assignee_id` and can never show an
@@ -126,12 +176,19 @@ runbook:
 
 ## Safety
 
-- The drain **only ever inserts and stamps**. It inserts `task`, `task_link` and
-  audit rows, and it `UPDATE`s `outbox` on two columns only: `processed_at` on
-  success, `attempts` + `last_error` on failure. It never deletes anything, never
-  touches `device`, and never re-reads a device row (the payload is self-contained by
-  design, so a device that has since moved on to another status cannot change what a
+- The drain **only ever inserts and stamps**. It inserts `task`, `task_link`,
+  `notification` and audit rows, and it `UPDATE`s `outbox` on two columns only:
+  `processed_at` on success, `attempts` + `last_error` on failure — plus
+  `notification.emailed_at`, and only on a confirmed send. It never deletes anything,
+  never touches `device`, and never re-reads a device row (the payload is self-contained
+  by design, so a device that has since moved on to another status cannot change what a
   past handoff says).
+- **The notification fan-out added NO authority to the automation principal.** It writes
+  on `create_records`, which the principal already holds in every module; the keep-list in
+  `fn_seed_system_actor()` is untouched and its resolved authority is still exactly
+  `create_records` + `view_records`. This matters because widening it is the one change
+  the four enforcement points in `20260731000000_platform_outbox.sql` cannot defend
+  against — they guard the ceiling, and raising the ceiling is a migration.
 - It runs as the **automation principal**, not as the human who caused the event —
   `22222222-2222-2222-2222-222222222222` / `system@qtx.internal`. That principal has
   every module (a handoff crosses departments by definition) narrowed to exactly two
@@ -208,13 +265,23 @@ template — the template's spelling is the one the code commits to.
 3. **`APP_ENV`** decides the pool's TLS posture: any value other than `development`
    sets `ssl: { rejectUnauthorized: true }`. Use `staging`/`production` against cloud;
    `development` only against a local container with no TLS listener.
-4. For the route only: **`OUTBOX_DRAIN_SECRET`** must be set on the deployment. If it
-   is unset or empty the route refuses **every** request with `401` — a missing
-   secret is a misconfiguration, and defaulting to open would leave an
-   unauthenticated drain endpoint reachable in production. The refusal is logged
-   server-side as `outbox drain endpoint refused a request: OUTBOX_DRAIN_SECRET is not
-   set`; the 401 body is identical to a wrong-secret 401 on purpose, so an
-   unauthenticated caller cannot tell which it hit.
+4. For the route only: **`OUTBOX_DRAIN_SECRET`** (POST) and **`CRON_SECRET`** (GET, and
+   every `/api/cron/*` job) must be set on the deployment. If either is unset or empty,
+   its method refuses **every** request with `401` — a missing secret is a
+   misconfiguration, and defaulting to open would leave an unauthenticated drain endpoint
+   reachable in production. The refusal is logged server-side as
+   `a scheduled endpoint refused a request: <VAR> is not set`; the 401 body is identical
+   to a wrong-secret 401 on purpose, so an unauthenticated caller cannot tell which it
+   hit. **`CRON_SECRET` unset is a silently dead schedule** — the crons fire, get 401,
+   and nothing accumulates but the backlog.
+6. **`20260803150000_platform_notifications.sql` must be applied** before the drain runs
+   against this code. Unlike the outbox migration, the failure here is *graceful*: the
+   notification insert throws inside the claim transaction, the whole event rolls back and
+   is recorded as a retryable failure (`relation "notification" does not exist`), so no
+   task appears either and nothing is lost — but **every event fails and parks after five
+   attempts**. The status change itself still commits; only the drain is affected.
+7. **`RESEND_API_KEY` is optional.** Unset is a supported, expected state — see "Email is
+   not configured" below.
 5. No snapshot is needed before a drain (unlike RB-07/RB-08). It creates tasks; it
    does not rewrite history. See Rollback.
 
@@ -247,22 +314,40 @@ Parked:    0
 
 ## Running it: the route
 
-`POST /api/outbox/drain`, authenticated by `OUTBOX_DRAIN_SECRET` as a bearer token:
+Two methods, two secrets, one drain. **They are deliberately not interchangeable** — an
+operator's drain secret and the platform's cron secret have different blast radii and
+different rotation stories, so neither is accepted on the other's path.
 
 ```bash
+# The operator trigger.
 curl -sS -X POST https://<deployment>/api/outbox/drain \
+  -H "Authorization: Bearer $OUTBOX_DRAIN_SECRET"
+
+# What Vercel Cron does, reproduced by hand.
+curl -sS https://<deployment>/api/outbox/drain \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+# A catch-up run over a large backlog (1..1000; anything else is IGNORED, not refused).
+curl -sS -X POST "https://<deployment>/api/outbox/drain?limit=1000" \
   -H "Authorization: Bearer $OUTBOX_DRAIN_SECRET"
 ```
 
 ```json
-{"claimed":3,"processed":3,"failed":0,"failures":[],"parked":0}
+{"claimed":3,"processed":3,"failed":0,"failures":[],"parked":0,"emailed":0,"notified":5}
 ```
 
 - The secret is compared in **constant time**. Both sides are SHA-256'd first, so the
   comparison is always 32 bytes against 32 bytes: no length is observable and
   `timingSafeEqual`'s differing-length throw is unreachable.
-- `401` means *either* a bad/absent secret *or* an unset `OUTBOX_DRAIN_SECRET`.
-  Check the deployment logs to tell them apart (see Prerequisites 4).
+- `401` means *either* a bad/absent secret *or* an unset secret for **that method**.
+  Check the deployment logs to tell them apart (see Prerequisites 4). A `GET` returning
+  401 while `POST` works means `CRON_SECRET` is missing — which is exactly what a
+  silently-dead schedule looks like.
+- **`maxDuration` is 300s.** Without it the route inherited the platform default (10–15s)
+  and a full 100-event batch could be killed mid-drain, returning a `504` with **no
+  `DrainResult` at all** — the events were safe either way, but the operator could not
+  tell how many had been processed. If you raise `limit` far above 100, keep this ceiling
+  in mind: the drain is not resumable mid-batch, it is merely re-runnable.
 - `500` is reserved for the drain **throwing**, which it does in exactly one case:
   the automation principal cannot be resolved (missing, inactive, migration not
   applied, or the `42501` above). The message is returned in the body — the caller
@@ -275,35 +360,53 @@ curl -sS -X POST https://<deployment>/api/outbox/drain \
   not answer it with a `307` to `/login` before the handler runs. Its own secret is
   the authentication.
 
-## Scheduling it — neither option is wired
+## Scheduling — what actually runs
 
-Both of these are **descriptions of what to do, not descriptions of what exists.**
-
-**Option A — Vercel Cron hitting the route.** Add `dlms/vercel.json` (it does not
-exist today):
+**Vercel Cron is the live path.** `dlms/vercel.json`:
 
 ```json
-{ "crons": [{ "path": "/api/outbox/drain", "schedule": "*/5 * * * *" }] }
+{ "crons": [
+  { "path": "/api/outbox/drain",           "schedule": "*/5 * * * *" },
+  { "path": "/api/cron/task-reminders",    "schedule": "0 8 * * *" },
+  { "path": "/api/cron/expire-overrides",  "schedule": "0 * * * *" }
+] }
 ```
 
-Vercel Cron sends `Authorization: Bearer $CRON_SECRET` using the deployment's
-`CRON_SECRET` environment variable. This route reads `OUTBOX_DRAIN_SECRET`, so
-scheduling it this way means setting **both variables to the same value** — or
-renaming the route's variable. Note also that Vercel Cron issues `GET`, not `POST`,
-and this route exports only `POST` — a `GET` answers `405` today. Adding a cron entry
-therefore also means exporting a `GET` handler (or fronting it with something that
-POSTs). Decide that when the schedule is actually built, not by guessing now.
+Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on a `GET`. All three paths
+accept exactly that, through one shared constant-time comparison
+(`modules/shared/outbox/services/cronAuth.ts`), and all three refuse everything when
+`CRON_SECRET` is unset.
 
-**Option B — the pg-boss worker (spec §7.3).** The intended end state: `outbox` on a
-pg-boss queue, drained by a worker service alongside the other scheduled jobs
-(backups, digests). The worker replaces **the scheduling, not the logic** — it calls
-the same `drainOutbox()`. Nothing about the outbox, the templates, or the drain needs
-to change for it.
+The three jobs are defined **once**, as data, in
+`modules/shared/outbox/jobs/registry.ts`. `vercel.json` duplicates their schedules
+because Vercel can only read its own file; the two are pinned against each other by
+`__tests__/platform/shared/cronRoutes.test.ts`, which fails if a path or a cadence
+drifts. **Add a job by adding a registry entry AND a `vercel.json` entry** — the test
+tells you if you did only one.
 
-**Whatever schedules it, keep the interval and the batch size in view together.** One
-run drains at most 100 events. A five-minute cron therefore has a ceiling of 1200
-events/hour; a backlog larger than that needs a bigger `limit` or a manual catch-up
-run, not patience.
+> **Vercel plan limits.** Hobby allows **2 cron jobs, daily only**; the three entries
+> above and the `*/5` cadence need **Pro**. On Hobby the extra crons are silently
+> dropped at deploy — check the project's Cron tab after the first deploy rather than
+> assuming.
+
+**pg-boss (spec §7.3) is scaffolded, NOT running.** `scripts/worker.ts` reads the same
+registry and schedules the same jobs, so moving to it changes the scheduling and
+nothing about the work. It is **not the live path and cannot be on Vercel**: pg-boss
+needs a long-running process holding a connection and waking on a timer, and Vercel
+freezes functions between requests. It is for the eventual AWS/Fargate (or any
+container) deployment. Two further honesty notes:
+
+- **`pg-boss` is not in `package.json`.** The worker imports it through a non-literal
+  specifier so the absent package neither breaks `tsc` nor ships in every Vercel build.
+  Running it means `npm install pg-boss` first; it exits with that instruction rather
+  than a stack trace.
+- **Do not run both.** Adopting the worker means **removing the `crons` from
+  `vercel.json`**, or every job runs twice.
+
+**Keep the interval and the batch size in view together.** One run drains at most
+`limit` events (100 by default). A five-minute cron therefore has a ceiling of 1200
+events/hour; a backlog larger than that needs a bigger `limit` — which is now an
+operator control, `?limit=`, not a code constant — or a manual catch-up run.
 
 ## Reading the result
 
@@ -316,6 +419,8 @@ Both triggers report the same `DrainResult`.
 | `failed` | Rows that threw. `attempts` incremented, `last_error` set, `processed_at` left NULL — **still owed**, retried by the next drain until the cap. |
 | `failures` | `{ outboxId, error }` per failed row. The error is truncated to 1000 characters — it is for a human to read, not to reconstruct a stack from. |
 | `parked` | Unprocessed rows at or beyond the attempts cap, counted **after** this drain. See below. |
+| `notified` | In-app notification **rows written**. Not the number of people the events concerned: a recipient who muted the category gets no row. |
+| `emailed` | Emails that **actually went out**. `0` is the expected value on this deployment — see "Email is not configured". |
 
 **`parked` is `number | null`, and `null` does not mean zero.**
 
@@ -329,6 +434,92 @@ Both triggers report the same `DrainResult`.
   that is precisely the reading a runbook stands down on, which is why the field is
   `null` rather than defaulting to `0`. Run the query under "Investigating a parked
   event" by hand before concluding anything.
+
+## Notifications: who gets told, and why somebody didn't
+
+A notification is created **only** if all of these hold. Walk them in order — the first
+three account for nearly every "why was I not told?".
+
+1. **The event named a role.** For handoffs the audience comes from
+   `status_transition.notify_roles`, which is admin-editable and **NULL on most edges**.
+   A NULL means nobody is notified, and the drain reports `notified: 0` while still
+   creating the task — which is a legitimate configuration, not a fault.
+   ```sql
+   SELECT from_status, to_status, task_template_key, notify_roles
+     FROM status_transition WHERE task_template_key IS NOT NULL;
+   ```
+2. **The person holds that role**, is active, and is not soft-deleted.
+3. **The person can enter the receiving module.** Gated on the *handoff's* module
+   (`logistics` for the one edge that exists), **not** on `manufacturing` — deliberately,
+   because that is the module the drain also links the task into, and a notification about
+   a record someone cannot open is a disclosure rather than a courtesy. A manager without
+   `logistics` in `module_access` is correctly silent.
+4. **They did not cause the event.** Nobody is told what they themselves just did.
+5. **They have not muted the category.** `notification_pref` — absent row means the
+   defaults (in-app on, email off).
+
+Roles are resolved to people **at drain time**, not when the event was produced: somebody
+who joined Logistics yesterday hears about today's handoff, and somebody who left does
+not.
+
+The **automation principal is never a recipient**, even though it holds the `operator`
+role and every module. It has no login path, so a bell it could never open would only
+accumulate.
+
+```sql
+-- What did the last drain actually deliver, and to whom?
+SELECT n.category, u.full_name, n.title, n.read_at, n.emailed_at, n.created_at
+  FROM notification n JOIN app_user u ON u.id = n.user_id
+ ORDER BY n.created_at DESC LIMIT 20;
+```
+
+### Email is not configured
+
+`RESEND_API_KEY` is **unset on this deployment**, and that is a supported state rather
+than a fault. The sender falls back to a no-op that logs what it would have sent and
+**truthfully reports the send as undelivered**, so:
+
+- `emailed` is `0` on every drain,
+- `notification.emailed_at` stays `NULL`,
+- the in-app notification is delivered normally and is the record of the event.
+
+**`emailed_at IS NULL` means "not emailed", for every reason** — not wanted, not
+configured, failed, or still queued. It is never stamped on intent, so the mail history
+is empty rather than fictional. Setting `RESEND_API_KEY` (and `NOTIFICATION_EMAIL_FROM`
+to a verified sender, plus `NEXT_PUBLIC_SITE_URL` so links in mail are absolute) is all
+that is needed to turn it on; a non-zero `emailed` is the only thing that proves it works.
+
+A bounced or refused email **never fails the drain**. The notification is already written
+and visible; email is the courtesy on top of it.
+
+### Wiring the decision notification
+
+`approval` / `approval_decided` is **consumed but not produced**. The drain handles it —
+it notifies the requester and creates no task — and
+`__tests__/integration/notificationService.test.ts` proves it end to end, but
+**nothing emits the event**, so deciding an approval notifies nobody today.
+
+Emitting it belongs in `approvalService.decideApproval`, inside the transaction that
+records the decision. That file belonged to another slice and was deliberately not edited
+here. The whole change is one statement:
+
+```ts
+await tx.query(
+  `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
+   VALUES ('approval', $1, 'approval_decided', $2::jsonb, $3)`,
+  [data.approvalId, JSON.stringify({
+    kind: current.kind, module: current.module,
+    entityType: current.entity_type, entityId: current.entity_id,
+    label: null, decision: data.decision, note: data.note,
+    requestedBy: current.requested_by,
+  }), actor.id])
+```
+
+`decideApproval`'s `SELECT ... FOR UPDATE` currently reads only `status`, `requested_by`
+and `module`, so it needs `kind`, `entity_type` and `entity_id` added to that list.
+`requestedBy` must be in the payload — unlike the other two families the recipient is
+*not* `created_by`, because for a decision the causer and the audience are different
+people.
 
 ## The attempts cap is global, not a per-drain retry budget
 
@@ -501,6 +692,74 @@ and exit 1 with nothing drained; route → `500` with the message.
 
 Nothing is half-written when this happens. The principal is resolved once, before any
 row is touched, precisely so a drain cannot fail halfway through a backlog.
+
+## Checking the backlog without a drain: `/api/health`
+
+```bash
+curl -sS https://<deployment>/api/health
+# {"status":"ok","app":"ok","database":"ok",
+#  "queue":{"unprocessed":3,"parked":0,"oldestUnprocessedAt":"2026-08-03T11:04:12.000Z"},
+#  "checkedAt":"2026-08-03T11:05:00.000Z"}
+```
+
+Unauthenticated on purpose — a health check that needs a credential cannot be used by an
+uptime monitor. It discloses liveness and a queue depth, nothing else; a database error is
+logged server-side and never returned.
+
+- **`503`, not `200`, when the database is unreachable.** A monitor that has to parse the
+  body would eventually be pointed at the status code and find a green one.
+- **`parked` is a SUBSET of `unprocessed`**, not a second bucket — parked rows are still
+  unprocessed, they are simply no longer retried. The backlog is `unprocessed`, not the sum.
+- **`queue: null` means UNKNOWN**, and on this project the live cause is the outbox
+  migration being committed but unapplied. It is never reported as zeros — same discipline
+  as `DrainResult.parked`.
+- **`oldestUnprocessedAt` is the field that tells you whether the SCHEDULE is alive**, which
+  neither count does. A steady `unprocessed: 3` is healthy at 30 seconds old and means the
+  drain has stopped running at 30 hours old. **This is the fastest check for a missing
+  `CRON_SECRET`.**
+
+The numbers come from `getQueueHealth()` in `modules/shared/outbox/services/queueHealth.ts`,
+which the Admin dashboard's job-queue widget (spec §8.5) also calls **directly** — one
+definition, so the dashboard and the health check cannot disagree. The dashboard does not
+fetch this endpoint.
+
+## The other two scheduled jobs
+
+They ride the same registry, the same secret and the same route shape, so they are
+documented here rather than in pages of their own.
+
+**`/api/cron/task-reminders` — daily at 08:00 UTC** (spec §8.3). Notifies the assignee of
+every task due tomorrow or already overdue.
+
+```bash
+curl -sS https://<deployment>/api/cron/task-reminders -H "Authorization: Bearer $CRON_SECRET"
+# {"job":"task-reminders","ms":412,"result":{"scanned":37,"due":4,"created":4,"emailed":0}}
+```
+
+**Running it twice is safe, by design and by construction.** Each reminder carries a
+deterministic `dedupe_key` — `task_reminder:<kind>:<taskId>:<UTC day>` — and
+`notification_dedupe_idx` makes the repeat a no-op. So a crashed half-run can simply be
+re-run: it finishes the remainder and re-notifies nobody. `due` stays the same on a
+re-run while `created` drops to `0`; **that is the success signal, not a fault.** The
+idempotency is a property of the data rather than of the job's memory, which is why it
+also survives two runs racing each other.
+
+The day component is what makes an overdue task nag **daily** rather than once forever.
+Unassigned tasks are skipped — a reminder needs somebody to remind, and handoff tasks are
+created unassigned on purpose.
+
+**`/api/cron/expire-overrides` — hourly** (spec §6.3, "Worker expires hourly").
+Soft-deletes `user_permission_override` rows whose `expires_at` has passed.
+
+**It changes nobody's authority, and that is why it needs no permission.** Both
+`fn_resolve_actor` and `fn_resolve_actor_by_user_id` already filter on
+`expires_at IS NULL OR expires_at > now()`, so a lapsed grant confers nothing and a
+lapsed revoke subtracts nothing, before and after this runs. All it does is stop the
+admin console showing rows that no longer do anything. If the resolver ever stops
+filtering on expiry, this job becomes a privilege change and needs a real gate.
+
+The automation principal's own overrides are unreachable from it: `trg_forbid_system_actor_grant`
+refuses a non-NULL `expires_at` on them, so none can ever match the predicate.
 
 ## Rollback
 
