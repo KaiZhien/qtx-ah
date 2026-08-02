@@ -4,11 +4,13 @@ import { revalidatePath } from 'next/cache'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   listStockTransfers, createStockTransfer, changeTransferStatus, receiveStockTransfer,
+  listTransferOptions,
   StockTransferNotFoundError, DuplicateTransferNumberError, InsufficientStockError,
   TrackingModeMismatchError, UnknownReferenceError, SerializedUnitNotAtSourceError,
   StockPostingError,
   type CreateStockTransferInput, type ChangeTransferStatusInput,
   type ReceiveStockTransferInput, type StockTransferFilter, type StockTransferListItem,
+  type TransferOptions,
 } from '@/modules/logistics/services/stockTransferService'
 import { InvalidTransferStatusChangeError } from '@/modules/logistics/domain/transferStatus'
 import { OptimisticLockError } from '@/lib/db/tx'
@@ -92,6 +94,18 @@ export async function receiveStockTransferAction(
     revalidatePath('/logistics/stock')
     revalidatePath('/logistics')
     return { ok: true, data: { status: res.status, version: res.version } }
+  } catch (err) {
+    return { ok: false, error: toMessage(err) }
+  }
+}
+
+/** Backs the create form's source-location change: what can move out of there. */
+export async function loadTransferOptionsAction(
+  fromLocationId: string,
+): Promise<ActionResult<TransferOptions>> {
+  try {
+    const actor = await requireAal2Actor()
+    return { ok: true, data: await listTransferOptions(actor, fromLocationId) }
   } catch (err) {
     return { ok: false, error: toMessage(err) }
   }

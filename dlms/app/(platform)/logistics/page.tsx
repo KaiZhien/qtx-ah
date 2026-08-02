@@ -5,7 +5,9 @@ import { can } from '@/modules/shared/authz/policy'
 import { MODULE_REGISTRY } from '@/modules/shared/navigation/moduleRegistry'
 import { iconFor } from '@/components/platform/moduleIcons'
 import { getDoStatusCounts } from '@/modules/logistics/services/deliveryOrderService'
+import { getStockByLocation, getTransferStatusCounts } from '@/modules/logistics/services/stockLevelService'
 import { DO_STATUS_LABELS } from '@/components/logistics/DoStatusPill'
+import { TRANSFER_STATUS_LABELS } from '@/components/logistics/TransferStatusPill'
 
 /**
  * Logistics module landing (replaces the Task-7 ModuleLanding stub). DO
@@ -20,8 +22,13 @@ export default async function LogisticsPage() {
   if (!can(actor, def.gate, def.key)) notFound()
 
   const Icon = iconFor(def.icon)
-  const counts = await getDoStatusCounts(actor)
+  const [counts, transferCounts, stockByLocation] = await Promise.all([
+    getDoStatusCounts(actor),
+    getTransferStatusCounts(actor),
+    getStockByLocation(actor),
+  ])
   const total = counts.reduce((sum, c) => sum + c.count, 0)
+  const transferTotal = transferCounts.reduce((sum, c) => sum + c.count, 0)
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -55,6 +62,62 @@ export default async function LogisticsPage() {
             </Link>
           ))}
         </div>
+      </div>
+
+      <div className="rounded-md border">
+        <div className="flex items-center justify-between border-b p-4">
+          <div>
+            <p className="text-sm font-medium text-slate-900">Stock transfers by status</p>
+            <p className="text-xs text-muted-foreground">
+              {transferTotal} transfer{transferTotal === 1 ? '' : 's'}
+            </p>
+          </div>
+          <Link href="/logistics/transfers" className="text-sm font-medium text-primary hover:underline">
+            View all transfers →
+          </Link>
+        </div>
+        <div className="grid grid-cols-2 divide-x divide-y sm:grid-cols-4">
+          {transferCounts.map((c) => (
+            <Link
+              key={c.status}
+              href={`/logistics/transfers?status=${c.status}`}
+              className="p-4 transition-colors hover:bg-muted/50"
+            >
+              <p className="text-2xl font-semibold text-slate-900">{c.count}</p>
+              <p className="text-sm text-muted-foreground">{TRANSFER_STATUS_LABELS[c.status]}</p>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-md border">
+        <div className="flex items-center justify-between border-b p-4">
+          <div>
+            <p className="text-sm font-medium text-slate-900">Batch stock on hand</p>
+            <p className="text-xs text-muted-foreground">
+              Serialized units are tracked on the unit, not counted here.
+            </p>
+          </div>
+          <Link href="/logistics/stock" className="text-sm font-medium text-primary hover:underline">
+            View stock levels →
+          </Link>
+        </div>
+        {stockByLocation.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground">No stock recorded at any location yet.</p>
+        ) : (
+          <div className="grid grid-cols-2 divide-x divide-y sm:grid-cols-4">
+            {stockByLocation.slice(0, 8).map((l) => (
+              <Link
+                key={l.locationId}
+                href={`/logistics/stock?location=${l.locationId}`}
+                className="p-4 transition-colors hover:bg-muted/50"
+              >
+                <p className="text-2xl font-semibold text-slate-900">{l.totalQty}</p>
+                <p className="text-sm text-muted-foreground">{l.locationName}</p>
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-3">

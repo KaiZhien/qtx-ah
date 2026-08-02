@@ -26,7 +26,7 @@ export const MODULE_REGISTRY: readonly ModuleDef[] = [
   { key: 'finance', label: 'Finance', href: '/finance', icon: 'Banknote',
     description: 'Sales invoices, buyers, approvals.', gate: 'view_records', sort: 2 },
   { key: 'logistics', label: 'Logistics', href: '/logistics', icon: 'Truck',
-    description: 'Delivery orders, stock locations, shipping documents.',
+    description: 'Delivery orders, stock levels, transfers, shipping documents.',
     gate: 'view_records', sort: 3 },
   { key: 'manufacturing', label: 'Manufacturing', href: '/manufacturing', icon: 'Factory',
     description: 'Device registry, production pipeline, imports.', gate: 'view_records', sort: 4 },

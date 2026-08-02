@@ -271,6 +271,81 @@ export async function getStockTransfer(
   })
 }
 
+// ─── Pickers for the create form ────────────────────────────────────────────
+
+export type TransferableBatchType = {
+  componentTypeId: string
+  code: string
+  name: string
+  /** On hand at the chosen source location. 0 when the location holds none. */
+  availableQty: number
+}
+
+export type TransferableUnit = {
+  componentUnitId: string
+  serialNo: string
+  componentTypeCode: string
+  /** null for a unit whose location was never recorded (pre-L1 rows). */
+  locationId: string | null
+}
+
+export type TransferOptions = {
+  batchTypes: TransferableBatchType[]
+  units: TransferableUnit[]
+}
+
+/**
+ * What can be moved out of `fromLocationId`, for the create-transfer form.
+ *
+ * Deliberately NOT manufacturing's listComponentTypes: that function is gated
+ * on `view_records` in the MANUFACTURING module, so a logistics clerk with only
+ * logistics access would be denied the picker for a screen they are allowed to
+ * use. This is the same catalogue read, re-gated on logistics. If a shared,
+ * module-agnostic catalogue read ever lands, this should collapse into it.
+ *
+ * Batch types are listed even at zero quantity (so the form can say "0 on hand"
+ * rather than hiding the type); serialized units are restricted to those AT the
+ * source, plus unlocated ones, matching what receiveStockTransfer will accept.
+ */
+export async function listTransferOptions(
+  actor: Actor, fromLocationId: string,
+): Promise<TransferOptions> {
+  authorize(actor, 'view_records', 'logistics')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows: typeRows } = await tx.query<{
+      id: string; code: string; name: string; qty: string | null
+    }>(
+      `SELECT ct.id, ct.code, ct.name, s.qty::text AS qty
+         FROM component_type ct
+         LEFT JOIN stock_level s
+           ON s.component_type_id = ct.id AND s.location_id = $1
+        WHERE ct.deleted_at IS NULL AND ct.active AND ct.tracking_mode = 'batch'
+        ORDER BY ct.sort, ct.name`, [fromLocationId])
+
+    const { rows: unitRows } = await tx.query<{
+      id: string; serial_no: string; code: string; location_id: string | null
+    }>(
+      `SELECT cu.id, cu.serial_no, ct.code, cu.location_id
+         FROM component_unit cu
+         JOIN component_type ct ON ct.id = cu.component_type_id
+        WHERE cu.deleted_at IS NULL AND ct.tracking_mode = 'serialized'
+          AND (cu.location_id = $1 OR cu.location_id IS NULL)
+        ORDER BY ct.code, cu.serial_no
+        LIMIT 500`, [fromLocationId])
+
+    return {
+      batchTypes: typeRows.map((r) => ({
+        componentTypeId: r.id, code: r.code, name: r.name, availableQty: Number(r.qty ?? 0),
+      })),
+      units: unitRows.map((r) => ({
+        componentUnitId: r.id, serialNo: r.serial_no,
+        componentTypeCode: r.code, locationId: r.location_id,
+      })),
+    }
+  })
+}
+
 // ─── Create ─────────────────────────────────────────────────────────────────
 
 const batchLineSchema = z.object({
