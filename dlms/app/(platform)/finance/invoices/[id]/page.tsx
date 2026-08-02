@@ -1,10 +1,12 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
+import { FileDown } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import {
   getInvoice, listAllowedInvoiceTransitions, getInvoiceApprovalState,
 } from '@/modules/finance/services/invoiceService'
+import { listInvoiceDocumentAccess } from '@/modules/finance/services/invoicePdfService'
 import { listBuyerOptions } from '@/modules/finance/services/buyerService'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { InvoiceStatusPill } from '@/components/finance/InvoiceStatusPill'
@@ -32,12 +34,16 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
   if (!invoice) notFound()
 
   const canEdit = can(actor, 'manage_finance', 'finance')
-  const [transitions, buyerOptions, approvalState] = await Promise.all([
+  // Who has downloaded the PDF is a staff-monitoring view, so it rides on
+  // view_full_audit rather than on ordinary finance reading.
+  const canSeeAccessLog = can(actor, 'view_full_audit', 'finance')
+  const [transitions, buyerOptions, approvalState, documentAccess] = await Promise.all([
     canEdit ? listAllowedInvoiceTransitions(actor, invoice.status) : Promise.resolve([]),
     canEdit ? listBuyerOptions(actor) : Promise.resolve([]),
     // Read for every view_finance actor, not only editors: whether this invoice is
     // blocked on someone else's decision is part of reading it.
     getInvoiceApprovalState(actor, invoice.id),
+    canSeeAccessLog ? listInvoiceDocumentAccess(actor, invoice.id) : Promise.resolve([]),
   ])
 
   return (
@@ -46,12 +52,33 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-semibold text-slate-900">{invoice.invoiceNo}</h1>
           <InvoiceStatusPill status={invoice.status} />
-          {canEdit && (
-            <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            {/*
+              A plain link, not a fetch: the route streams application/pdf with a
+              Content-Disposition attachment header, so the browser's own download
+              handling is exactly the right behaviour. Every click writes a
+              document_access_log row server-side (spec §10). No prefetch — a
+              prefetched download would log an access nobody asked for.
+            */}
+            <Link
+              href={`/finance/invoices/${invoice.id}/pdf`}
+              prefetch={false}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-slate-50"
+            >
+              <FileDown className="h-3.5 w-3.5" aria-hidden="true" />
+              Download PDF
+            </Link>
+            {canEdit && (
               <InvoiceEditDialog key={invoice.version} invoice={invoice} buyerOptions={buyerOptions} />
-            </div>
-          )}
+            )}
+          </div>
         </div>
+        {invoice.status === 'draft' && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            This invoice is still a draft — the PDF is watermarked DRAFT and must not be sent
+            to a buyer.
+          </p>
+        )}
         {canEdit && (
           <div className="mt-3">
             <InvoiceStatusChangeControl
@@ -140,8 +167,37 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
           <div className="flex justify-between font-medium"><span>Total</span><span>S${invoice.totalSgd ?? '0.00'}</span></div>
         </div>
       </div>
+
+      {canSeeAccessLog && (
+        <div>
+          <h2 className="mb-3 text-lg font-semibold text-slate-900">PDF downloads</h2>
+          {documentAccess.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nobody has downloaded this invoice&rsquo;s PDF yet.
+            </p>
+          ) : (
+            <ul className="space-y-1 rounded-md border p-3 text-sm text-slate-600">
+              {documentAccess.map((a) => (
+                <li key={a.id} className="flex flex-wrap gap-x-3">
+                  <span className="text-slate-900">{a.actorName ?? a.actorEmail ?? a.actorId}</span>
+                  <span>{formatDateTime(a.accessedAt)}</span>
+                  {a.entityStatus && (
+                    <span className="text-muted-foreground">· copy taken while {a.entityStatus}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
+}
+
+function formatDateTime(d: Date | string): string {
+  return new Date(d).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
 }
 
 function Field({ label, value }: { label: string; value: string }) {

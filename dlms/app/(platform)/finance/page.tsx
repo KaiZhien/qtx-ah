@@ -1,9 +1,10 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import { Banknote, Users } from 'lucide-react'
+import { Banknote, Users, ShieldCheck } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import { getInvoiceStatusCounts } from '@/modules/finance/services/invoiceService'
+import { getWarrantyExpiryCounts } from '@/modules/finance/services/warrantyService'
 import { InvoiceStatusPill } from '@/components/finance/InvoiceStatusPill'
 
 const STATUS_LABEL: Record<string, string> = { draft: 'Draft', issued: 'Issued', paid: 'Paid', void: 'Void' }
@@ -20,7 +21,15 @@ export default async function FinancePage() {
   const actor = await requireActor()
   if (!can(actor, 'view_finance', 'finance')) notFound()
 
-  const counts = await getInvoiceStatusCounts(actor)
+  // Warranty reads are gated on view_records-in-finance, a LOWER bar than this
+  // page's view_finance gate — so anyone who got here already passes it and the
+  // call cannot throw. (The reverse gap is real and deliberate: a Viewer with
+  // Finance module access may read /finance/warranties directly but cannot see
+  // this landing page, because it also shows invoice money.)
+  const [counts, warrantyCounts] = await Promise.all([
+    getInvoiceStatusCounts(actor),
+    getWarrantyExpiryCounts(actor),
+  ])
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -47,7 +56,36 @@ export default async function FinancePage() {
         </div>
       </div>
 
+      <div>
+        <h2 className="mb-3 text-sm font-medium text-muted-foreground">Warranty expiry</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {([30, 60, 90] as const).map((w) => (
+            <Link
+              key={w}
+              href={`/finance/warranties?within=${w}`}
+              className="rounded-md border p-4 hover:bg-slate-50"
+            >
+              <p className="text-2xl font-semibold text-slate-900">
+                {w === 30 ? warrantyCounts.within30 : w === 60 ? warrantyCounts.within60 : warrantyCounts.within90}
+              </p>
+              <p className="text-xs text-muted-foreground">Expiring within {w} days</p>
+            </Link>
+          ))}
+          <Link href="/finance/warranties" className="rounded-md border p-4 hover:bg-slate-50">
+            <p className="text-2xl font-semibold text-slate-900">{warrantyCounts.expired}</p>
+            <p className="text-xs text-muted-foreground">Already expired</p>
+          </Link>
+        </div>
+      </div>
+
       <div className="flex flex-wrap gap-3">
+        <Link
+          href="/finance/warranties"
+          className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
+        >
+          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+          Warranties
+        </Link>
         <Link
           href="/finance/invoices"
           className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"

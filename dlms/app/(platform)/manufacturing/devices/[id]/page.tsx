@@ -3,6 +3,8 @@ import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import { getDevice, listVariantOptions, listPhaseOptions } from '@/modules/manufacturing/services/deviceReadService'
 import { listAllowedTransitions } from '@/modules/manufacturing/services/deviceWriteService'
+import { listDeviceWarrantyHistory } from '@/modules/finance/services/warrantyService'
+import { DeviceWarrantyPanel } from '@/components/finance/DeviceWarrantyPanel'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
@@ -29,8 +31,9 @@ function formatDateTime(d: Date | string): string {
 // each naming the roadmap week (§17) its real build lands — a visible stub beats
 // a tab that silently pretends to be finished (same principle as ModuleLanding).
 const STUB_TABS = [
-  { value: 'post_sales', label: 'Post-sales',
-    week: 'Week 8 (Sep 11) — buyer, delivery orders, invoices, warranty' },
+  // 'usage' and 'post_sales' both left this list in the same wave — MA3 built the Usage
+  // tab, the warranty work built Post-sales. Two parallel branches each deleted one entry
+  // and added its own tab; keeping either stub back would re-shadow a real tab.
   { value: 'repairs', label: 'Repairs',
     week: 'Week 7 (Sep 4) — 6-state repair workflow and sign-off' },
   { value: 'modifications', label: 'Modifications',
@@ -61,11 +64,22 @@ export default async function DeviceDetailPage({ params }: PageProps) {
 
   const canEditDevice = can(actor, 'edit_records', 'manufacturing')
   const canChangeStatus = can(actor, 'change_device_status', 'manufacturing')
-  const [transitions, variantOptions, phaseOptions] = await Promise.all([
+  // Warranty lives in the Finance module (spec §6.3 post-sales). An actor without
+  // Finance module access sees the Post-sales tab with no warranty section rather
+  // than a 404 — graceful hide, not a strict refusal, because the device itself
+  // is legitimately readable (the Task-12 "graceful hide vs strict 404" rule).
+  const canSeeWarranty = can(actor, 'view_records', 'finance')
+  const canManageWarranty = can(actor, 'manage_finance', 'finance')
+  const [transitions, variantOptions, phaseOptions, warranties] = await Promise.all([
     canChangeStatus ? listAllowedTransitions(actor, device.status) : Promise.resolve([]),
     canEditDevice ? listVariantOptions(actor) : Promise.resolve([]),
     canEditDevice ? listPhaseOptions(actor) : Promise.resolve([]),
+    canSeeWarranty ? listDeviceWarrantyHistory(actor, device.id) : Promise.resolve([]),
   ])
+  // One query serves both the live row and the superseded ones: the live warranty
+  // is the single row with no supersededAt (guaranteed by warranty_device_live_unique).
+  const liveWarranty = warranties.find((w) => w.supersededAt === null) ?? null
+  const warrantyHistory = warranties.filter((w) => w.supersededAt !== null)
 
   return (
     <div className="space-y-6">
@@ -105,6 +119,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="components">Components</TabsTrigger>
           <TabsTrigger value="usage">Usage</TabsTrigger>
+          <TabsTrigger value="post_sales">Post-sales</TabsTrigger>
           {STUB_TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>
           ))}
@@ -172,6 +187,29 @@ export default async function DeviceDetailPage({ params }: PageProps) {
         */}
         <TabsContent value="usage">
           <DeviceUsageTab deviceId={device.id} />
+        </TabsContent>
+
+        {/*
+          Post-sales is FINANCE data on the same page, gated the other way round:
+          the warranty read is resolved in the page body (canSeeWarranty) rather
+          than inside the panel, so the section hides instead of throwing.
+        */}
+        <TabsContent value="post_sales">
+          {canSeeWarranty ? (
+            <DeviceWarrantyPanel
+              deviceId={device.id}
+              warranty={liveWarranty}
+              history={warrantyHistory}
+              canManage={canManageWarranty}
+            />
+          ) : (
+            <p className="inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
+              Warranty details need Finance module access.
+            </p>
+          )}
+          <p className="mt-6 inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
+            Buyer, delivery orders and invoices land Week 8 (Sep 11).
+          </p>
         </TabsContent>
 
         {STUB_TABS.map((t) => (
