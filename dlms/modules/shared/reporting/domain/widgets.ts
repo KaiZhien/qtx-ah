@@ -74,12 +74,15 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetDef[] = [
   { key: 'deliveriesDueThisWeek', label: 'Deliveries due this week',
     section: 'logisticsFinance', permission: 'view_records', module: 'logistics',
     status: 'live', sort: 30 },
-  { key: 'warrantiesExpiring', label: 'Warranties expiring 30/60/90 d',
-    section: 'logisticsFinance', permission: 'view_finance', module: 'finance',
+  // Gated on view_records + finance, NOT view_finance, matching agent FINANCE's own
+  // warrantyService: a warranty date is a service entitlement, not money, and the
+  // payload carries no buyer identity. This is deliberate, not a copy-paste slip.
+  { key: 'warrantiesExpiring', label: 'Warranties expiring (0-30 / 31-60 / 61-90 d)',
+    section: 'logisticsFinance', permission: 'view_records', module: 'finance',
     status: 'pending',
-    pendingOn: 'The platform `warranty` table, owned by agent FINANCE. The pure '
-      + '30/60/90 bucketing is built and tested (reporting/domain/expiry.ts); only '
-      + 'the query is missing. See reporting/adapters/warrantyAdapter.ts.',
+    pendingOn: 'agent FINANCE\'s `getWarrantyExpiryCounts(actor)`. Their windows are '
+      + 'CUMULATIVE (30 ⊆ 60 ⊆ 90); `disjointFromCumulative` converts them and is '
+      + 'unit-tested. See reporting/adapters/pendingSources.ts#fetchWarrantyExpiryCounts.',
     sort: 31 },
   { key: 'invoicesPendingApproval', label: 'Invoices pending approval',
     section: 'logisticsFinance', permission: 'view_finance', module: 'finance',
@@ -93,7 +96,13 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetDef[] = [
   { key: 'failedLogins', label: 'Failed logins', section: 'admin',
     permission: 'manage_users', module: 'admin', status: 'live', sort: 41 },
   { key: 'jobQueueHealth', label: 'Job queue health', section: 'admin',
-    permission: 'manage_settings', module: 'admin', status: 'live', sort: 42 },
+    permission: 'manage_settings', module: 'admin', status: 'pending',
+    pendingOn: 'agent NOTIFICATIONS\' `getQueueHealth()` in '
+      + '`modules/shared/outbox/services/queueHealth.ts`, which `/api/health` also '
+      + 'calls so the two can never disagree. A duplicate implementation reading '
+      + '`outbox` directly was written here and DELETED rather than kept as a '
+      + 'fallback. See reporting/adapters/pendingSources.ts#fetchQueueHealth.',
+    sort: 42 },
   { key: 'backupStatus', label: 'Backup status', section: 'admin',
     permission: 'manage_settings', module: 'admin', status: 'pending',
     pendingOn: 'Spec §12 puts nightly `pg_dump` → S3 with Object Lock on the worker, '

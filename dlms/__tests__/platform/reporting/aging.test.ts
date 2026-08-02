@@ -3,7 +3,7 @@ import {
   daysInState, agingBucket, AGING_BUCKETS,
 } from '@/modules/shared/reporting/domain/aging'
 import {
-  expiryBucket, EXPIRY_WINDOWS, daysUntil,
+  expiryBucket, EXPIRY_WINDOWS, daysUntil, disjointFromCumulative,
 } from '@/modules/shared/reporting/domain/expiry'
 
 const at = (iso: string) => new Date(iso)
@@ -115,5 +115,52 @@ describe('expiryBucket — warranties expiring 30/60/90 d (spec §8.5)', () => {
     // or a warranty expiring in 20 days is counted three times.
     const seen = ['2026-09-03', '2026-10-03', '2026-11-02'].map((d) => expiryBucket(d, today))
     expect(seen).toEqual([30, 60, 90])
+  })
+})
+
+describe('disjointFromCumulative — reconciling FINANCE nested windows', () => {
+  it('subtracts each window from the next so nothing is counted twice', () => {
+    // 10 within 30, 25 within 60 (so 15 more), 40 within 90 (so 15 more).
+    expect(disjointFromCumulative({
+      within30: 10, within60: 25, within90: 40, expired: 3, active: 50,
+    })).toEqual({
+      days0to30: 10, days31to60: 15, days61to90: 15, expired: 3, beyond90: 10,
+    })
+  })
+
+  it('passes `expired` through — the windows already exclude lapsed warranties', () => {
+    expect(disjointFromCumulative({
+      within30: 0, within60: 0, within90: 0, expired: 7, active: 0,
+    }).expired).toBe(7)
+  })
+
+  it('preserves the total: the disjoint piles sum back to `active` plus expired', () => {
+    const c = { within30: 4, within60: 9, within90: 12, expired: 2, active: 20 }
+    const d = disjointFromCumulative(c)
+    expect(d.days0to30 + d.days31to60 + d.days61to90 + d.beyond90).toBe(c.active)
+  })
+
+  it('handles all-zero counts without inventing a bucket', () => {
+    expect(disjointFromCumulative({
+      within30: 0, within60: 0, within90: 0, expired: 0, active: 0,
+    })).toEqual({ days0to30: 0, days31to60: 0, days61to90: 0, expired: 0, beyond90: 0 })
+  })
+
+  it('CLAMPS at zero rather than rendering a negative pile', () => {
+    // Non-monotonic input is possible mid-renewal (old row soft-deleted, new row
+    // minted between two counts). Zero is wrong by a row; a negative is visibly broken.
+    const d = disjointFromCumulative({
+      within30: 10, within60: 4, within90: 2, expired: 0, active: 1,
+    })
+    expect(d.days31to60).toBe(0)
+    expect(d.days61to90).toBe(0)
+    expect(d.beyond90).toBe(0)
+  })
+
+  it('never returns a negative count for any field', () => {
+    const d = disjointFromCumulative({
+      within30: 99, within60: 0, within90: 0, expired: -5, active: 0,
+    })
+    for (const v of Object.values(d)) expect(v).toBeGreaterThanOrEqual(0)
   })
 })

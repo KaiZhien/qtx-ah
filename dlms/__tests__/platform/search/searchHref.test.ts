@@ -26,11 +26,12 @@ describe('searchHref — a dead link is worse than no link', () => {
     expect(searchHref('ecos', 'E2')).not.toContain('/ecos/')
   })
 
-  it('returns null for a group with no detail page yet, rather than guessing', () => {
-    // modification has a service and a domain but no route (PROGRESS MA2:
-    // "there is no modification UI page yet"). Guessing would ship a dead link.
-    expect(searchHref('modifications', 'M1')).toBeNull()
-    // component_unit has no per-unit route either; units are shown on the device
+  it('routes modifications to the maintenance route agent MAINTENANCE confirmed', () => {
+    expect(searchHref('modifications', 'M1')).toBe('/maintenance/modifications/M1')
+  })
+
+  it('returns null for a group with no detail page, rather than guessing', () => {
+    // component_unit has no per-unit route; units are shown on the device
     // profile's Components tab.
     expect(searchHref('components', 'C1')).toBeNull()
     // People are administered through the users console, not a per-user page.
@@ -38,8 +39,7 @@ describe('searchHref — a dead link is worse than no link', () => {
   })
 
   it('lists exactly the unrouted groups, so the gap is inspectable', () => {
-    expect([...UNROUTED_GROUPS].sort())
-      .toEqual(['components', 'modifications', 'users'])
+    expect([...UNROUTED_GROUPS].sort()).toEqual(['components', 'users'])
   })
 
   it('gives every declared search group a decision — a route or an explicit null', () => {

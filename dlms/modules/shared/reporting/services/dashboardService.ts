@@ -5,13 +5,14 @@ import { can } from '@/modules/shared/authz/policy'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import { dashboardCacheKey, DASHBOARD_REVALIDATE_SECONDS } from '../domain/cacheKey'
 import { daysInState, agingBucket, type AgingBucket } from '../domain/aging'
+import { disjointFromCumulative, type DisjointExpiryCounts } from '../domain/expiry'
 import {
   ACTIVE_REPAIR_STATUSES, OPEN_DO_STATUSES, UNPAID_INVOICE_STATUSES,
 } from '../domain/activeStates'
 import { repairStatusLabel } from '@/modules/maintenance/domain/repairStatus'
 import {
-  fetchExpiringWarranties, fetchRepairsByRootCause, fetchBackupStatus,
-  type ExpiringWarrantyBucket, type RootCauseCount, type BackupStatus,
+  fetchWarrantyExpiryCounts, fetchRepairsByRootCause, fetchBackupStatus, fetchQueueHealth,
+  type RootCauseCount, type BackupStatus, type QueueHealthView,
 } from '../adapters/pendingSources'
 
 /**
@@ -87,7 +88,24 @@ export type MyApprovalsWidget = {
 /**
  * Scoped by the actor's module access exactly as the /approvals page is — a
  * manager who can enter Finance but not Engineering counts only Finance requests.
- * `super_admin` bypasses the module clause, matching `can()`.
+ * `super_admin` bypasses the module clause, matching `can()`. The
+ * `requested_by <> actor` clause is the "nobody decides their own" rule.
+ *
+ * ── TWO NOTES FOR WHOEVER TOUCHES THIS NEXT ────────────────────────────────
+ *
+ * NEVER swap this for `getGoverningApprovalInTx`. Agent APPROVALS added that as
+ * an ENFORCEMENT-only read — it takes no actor and runs no `authorize`, because
+ * its callers are gates already inside an authorized transaction. It is the
+ * obvious-looking helper to reach for here and it would strip the module scoping,
+ * leaking Engineering approvals to a Finance-only manager. A dashboard is a
+ * DISPLAY read and owes the full scoping.
+ *
+ * The count itself should move to `countPendingApprovals(actor)` once agent
+ * APPROVALS exports it. It is not called here only because it does not exist on
+ * this branch's base and importing it would not compile. The SQL below mirrors
+ * `listApprovals`' scoping deliberately, but a shared function is better than a
+ * faithful copy — module scoping from outside the owning module is exactly the
+ * thing that drifts.
  */
 export async function getMyApprovalsWidget(actor: Actor): Promise<MyApprovalsWidget> {
   authorize(actor, 'approve_requests')
@@ -317,15 +335,27 @@ export async function getDeliveriesDueThisWeek(actor: Actor): Promise<Deliveries
     }))
 }
 
-/** NOT WIRED — see adapters/pendingSources.ts (agent FINANCE owns `warranty`). */
+/**
+ * NOT WIRED — see adapters/pendingSources.ts (agent FINANCE owns `warranty`).
+ *
+ * GATED ON `view_records` + `finance`, NOT `view_finance`, matching FINANCE's own
+ * `warrantyService`. That looks like a copy-paste slip beside the two invoice
+ * widgets above and is not one: a warranty date is a SERVICE ENTITLEMENT, not
+ * money, and the payload deliberately carries no buyer identity. Tightening this
+ * to `view_finance` would hide service information from the maintenance-side
+ * users it exists for.
+ *
+ * Returns the DISJOINT cut of FINANCE's cumulative windows — see
+ * `disjointFromCumulative` for why the raw nested counts must not be rendered.
+ */
 export async function getWarrantiesExpiring(
   actor: Actor,
-): Promise<ExpiringWarrantyBucket[] | null> {
-  authorize(actor, 'view_finance', 'finance')
+): Promise<DisjointExpiryCounts | null> {
+  authorize(actor, 'view_records', 'finance')
   return withCache(actor, 'warrantiesExpiring', () =>
     withTransaction(actor.id, async (tx) => {
-      const { rows } = await tx.query<{ today: string }>(`SELECT current_date::text AS today`)
-      return fetchExpiringWarranties(tx, actor, rows[0].today)
+      const counts = await fetchWarrantyExpiryCounts(tx, actor)
+      return counts === null ? null : disjointFromCumulative(counts)
     }))
 }
 
@@ -469,47 +499,24 @@ export async function getFailedLogins(actor: Actor): Promise<FailedLoginsWidget>
   }))
 }
 
-export type JobQueueHealthWidget = {
-  unprocessed: number
-  parked: number
-  oldestUnprocessedAt: string | null
-}
-
 /**
- * Job-queue health (spec §8.5 Admin).
+ * Job-queue health (spec §8.5 Admin, §13).
  *
- * Reads the `outbox` table directly. NOTE FOR THE CONTROLLER: agent NOTIFICATIONS
- * owns `/api/health`, which spec §13 says reports queue depth, and this is a
- * DUPLICATE of that computation. It was written here because that endpoint did
- * not exist on `main` and inventing its response shape would have been a guess.
- * When `/api/health` lands, this should read ITS shape rather than the table, so
- * the dashboard and the health check can never disagree about the same number.
+ * NOT WIRED — delegates to the adapter, which will call agent NOTIFICATIONS'
+ * `getQueueHealth()`. `/api/health` calls that same function, so the dashboard and
+ * the health check cannot report different numbers.
  *
- * `parked` counts rows at or past the drain's 5-attempt cap (RB-09): they are not
- * lost, they are waiting for a human. Nothing schedules the drain today, so a
- * non-zero `unprocessed` here is expected rather than alarming — which is
- * precisely why an operator wants to see it.
+ * An earlier draft of this service computed the depth from the `outbox` table
+ * here, with its own literal `5` for the attempt cap. That was DELETED rather
+ * than kept as a fallback: two implementations of one number is the defect, and a
+ * hardcoded cap goes stale silently the day the drain's `MAX_ATTEMPTS` moves.
+ *
+ * `null` propagates as UNKNOWN and the widget says "unavailable" — never "0".
  */
-const OUTBOX_MAX_ATTEMPTS = 5
-
-export async function getJobQueueHealth(actor: Actor): Promise<JobQueueHealthWidget> {
+export async function getJobQueueHealth(actor: Actor): Promise<QueueHealthView | null> {
   authorize(actor, 'manage_settings', 'admin')
-  return withCache(actor, 'jobQueueHealth', () => withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{
-      unprocessed: string; parked: string; oldest: string | null
-    }>(
-      `SELECT count(*) FILTER (WHERE processed_at IS NULL)::text AS unprocessed,
-              count(*) FILTER (WHERE processed_at IS NULL AND attempts >= $1)::text AS parked,
-              min(occurred_at) FILTER (WHERE processed_at IS NULL)::text AS oldest
-         FROM outbox`, [OUTBOX_MAX_ATTEMPTS])
-
-    const r = rows[0]
-    return {
-      unprocessed: num(r?.unprocessed ?? '0'),
-      parked: num(r?.parked ?? '0'),
-      oldestUnprocessedAt: r?.oldest ?? null,
-    }
-  }))
+  return withCache(actor, 'jobQueueHealth', () =>
+    withTransaction(actor.id, (tx) => fetchQueueHealth(tx, actor)))
 }
 
 /** NOT WIRED — spec §12 backups live on the deferred AWS worker. */

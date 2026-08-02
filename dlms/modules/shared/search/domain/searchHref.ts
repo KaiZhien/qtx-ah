@@ -22,27 +22,29 @@ const SEARCH_ROUTES: Partial<Record<SearchGroupKey, string>> = {
   ecrs: '/engineering/ecr',
   ecos: '/engineering/eco',
   tasks: '/tasks',
+  // Confirmed with agent MAINTENANCE: their modification UI ships at
+  // /maintenance/modifications/[id] (plus a list and a /new route).
+  modifications: '/maintenance/modifications',
 }
 
 /**
  * Groups that are searchable but have no detail page to open, each for a reason:
  *
- *   modifications — the `modification` table, service and domain shipped with MA2,
- *                   but "there is no modification UI page yet" (PROGRESS). Agent
- *                   MAINTENANCE is building it. When `/maintenance/modifications/
- *                   [id]` exists, add it above and delete it from this set — the
- *                   test that every group is DECIDED will keep the two in step.
- *   components    — component units are shown on the owning device's Components
- *                   tab; there is no per-unit route by design.
- *   users         — people are administered through /admin/users, which is a
- *                   console, not a per-user page.
+ *   components — component units are shown on the owning device's Components tab;
+ *                there is no per-unit route, by design rather than by omission.
+ *   users      — people are administered through /admin/users, which is a console
+ *                keyed by search, not a per-user page.
  *
  * A hit in one of these groups still earns its place: it confirms the record
- * exists and shows its context (device serial, status), which is most of what a
+ * exists and shows its context (component type, email), which is most of what a
  * `⌘K` lookup is for. The UI renders it as plain text rather than a broken link.
+ *
+ * `modifications` was in this set until agent MAINTENANCE confirmed the route;
+ * it now resolves normally. The "every group is DECIDED" test is what keeps this
+ * set and SEARCH_ROUTES from drifting apart — a group in neither fails it.
  */
 export const UNROUTED_GROUPS: ReadonlySet<SearchGroupKey> = new Set<SearchGroupKey>([
-  'components', 'modifications', 'users',
+  'components', 'users',
 ])
 
 /** null when this group has no detail route — the caller renders plain text. */

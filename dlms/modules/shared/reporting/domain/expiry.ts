@@ -55,3 +55,60 @@ export function expiryBucket(date: string, today: string): ExpiryBucket {
   }
   return null
 }
+
+/** Counts as agent FINANCE's `getWarrantyExpiryCounts` returns them: NESTED. */
+export type CumulativeExpiryCounts = {
+  within30: number
+  within60: number
+  within90: number
+  expired: number
+  active: number
+}
+
+/** The same information, re-cut so each warranty is counted exactly once. */
+export type DisjointExpiryCounts = {
+  /** 0–30 days. */
+  days0to30: number
+  /** 31–60 days. */
+  days31to60: number
+  /** 61–90 days. */
+  days61to90: number
+  expired: number
+  /** Live warranties expiring beyond 90 days. */
+  beyond90: number
+}
+
+/**
+ * Converts FINANCE's CUMULATIVE windows into DISJOINT ones.
+ *
+ * ── THE OFF-BY-A-BUCKET THIS EXISTS TO PREVENT ─────────────────────────────
+ * `getWarrantyExpiryCounts` returns nested windows: 30 ⊆ 60 ⊆ 90, so a warranty
+ * expiring in 20 days is counted in ALL THREE. Rendering those three numbers
+ * under the labels "30 / 60 / 90" reads as three separate piles of work and
+ * triples the apparent backlog — and it is invisible, because every individual
+ * number is correct. The labels on DisjointExpiryCounts are ranges for the same
+ * reason: "61–90" cannot be misread the way "90" can.
+ *
+ * This platform's dashboards render the DISJOINT cut, deliberately, because the
+ * widget answers "how much is coming and when", and a warranty belongs to exactly
+ * one week of someone's attention.
+ *
+ * `expired` is passed through untouched — FINANCE's windows all exclude
+ * already-expired rows, which is the same rule expiryBucket() applies.
+ *
+ * CLAMPED AT ZERO. If the three cumulative counts ever arrive non-monotonic
+ * (a mid-flight renewal soft-deleting one row and minting another between two
+ * counts), a raw subtraction would render a negative pile. Zero is wrong by at
+ * most one row; a negative count is visibly broken and destroys trust in the
+ * whole widget.
+ */
+export function disjointFromCumulative(c: CumulativeExpiryCounts): DisjointExpiryCounts {
+  const clamp = (n: number) => (n > 0 ? n : 0)
+  return {
+    days0to30: clamp(c.within30),
+    days31to60: clamp(c.within60 - c.within30),
+    days61to90: clamp(c.within90 - c.within60),
+    expired: clamp(c.expired),
+    beyond90: clamp(c.active - c.within90),
+  }
+}

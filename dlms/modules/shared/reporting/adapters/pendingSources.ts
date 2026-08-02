@@ -1,6 +1,6 @@
 import type { Tx } from '@/lib/db/tx'
 import type { Actor } from '@/modules/shared/authz/catalog'
-import type { ExpiryWindow } from '@/modules/shared/reporting/domain/expiry'
+import type { CumulativeExpiryCounts } from '@/modules/shared/reporting/domain/expiry'
 
 /**
  * ── THE SEAM FOR TABLES THIS BRANCH DOES NOT OWN ────────────────────────────
@@ -27,26 +27,38 @@ import type { ExpiryWindow } from '@/modules/shared/reporting/domain/expiry'
  * `app.actor_id` GUC that fn_audit reads.
  */
 
-export type ExpiringWarrantyBucket = { window: ExpiryWindow | 'expired'; count: number }
-
 /**
  * Spec §8.5 "warranties expiring 30/60/90 d".
  *
- * OWNER: agent FINANCE (`warranty`). NOT WIRED — no platform `warranty` table
- * exists on `main`. (`supabase/migrations/20250104000000_warranty.sql` belongs to
- * the LEGACY DLMS project, a different Supabase database entirely; it is not this
- * platform's schema and must not be read here.)
+ * OWNER: agent FINANCE (`warranty`). NOT WIRED — their migration is not on this
+ * branch's base, so `modules/finance/services/warrantyService` does not exist in
+ * this worktree. (`supabase/migrations/20250104000000_warranty.sql` is the LEGACY
+ * DLMS project's table, a different Supabase database entirely; it is not this
+ * platform's schema and must never be read here.)
  *
- * TO IMPLEMENT: group live warranties by the bucket
- * `expiryBucket(expires_on::text, today)` returns — that pure function is already
- * built and tested (reporting/domain/expiry.ts), including the rule that the
- * buckets are DISJOINT so nothing is counted in all three windows at once. Read
- * the expiry column as `::text` and pass the ISO string; do not convert it to a
- * JS Date, which is how a previous slice shipped a one-day shift.
+ * TO IMPLEMENT — one call, no per-window round trips:
+ *
+ *     const counts = await getWarrantyExpiryCounts(actor)   // finance/services/warrantyService
+ *     return disjointFromCumulative(counts)
+ *
+ * FOUR THINGS THAT ARE EASY TO GET WRONG HERE, all confirmed with FINANCE:
+ *
+ *   1. THEIR WINDOWS ARE CUMULATIVE (30 ⊆ 60 ⊆ 90); this dashboard renders
+ *      DISJOINT ones. `disjointFromCumulative` (reporting/domain/expiry.ts) is the
+ *      conversion and it is unit-tested, including the clamp. Rendering the raw
+ *      nested numbers under "30 / 60 / 90" triples the apparent backlog while
+ *      every individual number stays correct — which is why it is never caught.
+ *   2. Their windows all EXCLUDE already-expired rows; `expired` is its own count.
+ *   3. Dates are 'YYYY-MM-DD' TEXT, never `Date`. Keep them strings end to end.
+ *   4. THERE IS NO `status` COLUMN — status is derived from dates, and an
+ *      integration test on their side asserts its absence. Do not group on one.
+ *
+ * Also: a renewal mints a NEW row and soft-deletes the old, so `warrantyId` is
+ * NOT stable across a renewal and must not be used as a durable key.
  */
-export async function fetchExpiringWarranties(
-  _tx: Tx, _actor: Actor, _today: string,
-): Promise<ExpiringWarrantyBucket[] | null> {
+export async function fetchWarrantyExpiryCounts(
+  _tx: Tx, _actor: Actor,
+): Promise<CumulativeExpiryCounts | null> {
   return null
 }
 
@@ -68,6 +80,63 @@ export type RootCauseCount = { rootCause: string; label: string; count: number }
 export async function fetchRepairsByRootCause(
   _tx: Tx, _actor: Actor, _windowDays: 30 | 90,
 ): Promise<RootCauseCount[] | null> {
+  return null
+}
+
+export type QueueHealthView = {
+  /** processed_at IS NULL. INCLUDES `parked` — see below. */
+  unprocessed: number
+  /** processed_at IS NULL AND attempts >= MAX_ATTEMPTS. A SUBSET of `unprocessed`. */
+  parked: number
+  /** ISO string, not a Date — see the note on serialisation below. */
+  oldestUnprocessedAt: string | null
+}
+
+/**
+ * Spec §8.5 Admin "job-queue health", §13 `/api/health` queue depth.
+ *
+ * OWNER: agent NOTIFICATIONS. NOT WIRED — `modules/shared/outbox/services/
+ * queueHealth.ts` is not on this branch's base.
+ *
+ * TO IMPLEMENT:
+ *
+ *     const h = await getQueueHealth()          // outbox/services/queueHealth
+ *     return h === null ? null : { ...h, oldestUnprocessedAt: h.oldestUnprocessedAt?.toISOString() ?? null }
+ *
+ * `/api/health` calls that same function, so the dashboard and the health check
+ * cannot report different numbers. An earlier draft of this file computed the
+ * depth from the `outbox` table directly; that duplicate was DELETED rather than
+ * kept as a fallback, because two implementations of one number is the defect.
+ *
+ * FOUR THINGS THIS ADAPTER MUST NOT GET WRONG:
+ *
+ *   1. `parked` IS A SUBSET OF `unprocessed`, not a sibling bucket. Parked rows
+ *      are still unprocessed, just no longer retried. Rendered as adjacent totals,
+ *      a reader adds them and double-counts the backlog — so the UI says
+ *      "of which N parked", nested under the total, never beside it.
+ *   2. `null` MEANS UNKNOWN, NEVER ZERO. The outbox migration is committed and
+ *      unapplied, so "the table does not exist" is a live case today. Zero is the
+ *      reading an operator stands down on; unknown is the one they investigate.
+ *      Same discipline as `DrainResult.parked` being `number | null`, which is a
+ *      standing carried finding in this repo. Do not collapse it.
+ *   3. NEVER write a literal for the parked threshold. `MAX_ATTEMPTS` lives with
+ *      the drain and moves with it; calling their function makes the question
+ *      disappear entirely.
+ *   4. CONVERT `oldestUnprocessedAt` TO AN ISO STRING AT THIS BOUNDARY. Their
+ *      function returns a `Date`, and every dashboard result crosses
+ *      `unstable_cache`, which serialises — a `Date` written on a cache miss comes
+ *      back a `string` on the hit, so a widget that calls `.getTime()` on it works
+ *      for sixty seconds and then throws.
+ *
+ * WHY `oldestUnprocessedAt` IS THE FIELD THAT MATTERS: neither count tells you
+ * whether the schedule is alive. `unprocessed: 3` is healthy at thirty seconds old
+ * and means the drain has stopped at thirty hours old — and nothing schedules the
+ * drain today (RB-09). This is the field that detects the real failure mode, which
+ * is why the widget leads with it rather than with a count.
+ */
+export async function fetchQueueHealth(
+  _tx: Tx, _actor: Actor,
+): Promise<QueueHealthView | null> {
   return null
 }
 
