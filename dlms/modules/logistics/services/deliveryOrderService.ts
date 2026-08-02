@@ -157,6 +157,20 @@ export async function getDeliveryOrder(actor: Actor, id: string): Promise<Delive
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
 
+/**
+ * pod_received_at is a timestamptz. This previously accepted any 1–40
+ * character string, which meant "yesterday" or "n/a" reached Postgres and blew
+ * up as a raw 22007 datetime parse error the action layer could only render as
+ * the generic "something went wrong" — a carried review finding from the L1
+ * slice. Accepts an ISO 8601 date-time with optional seconds/fraction and
+ * optional zone, which covers both a browser `datetime-local` value
+ * (2026-08-03T10:30) and a full instant (2026-08-03T10:30:00.000Z).
+ */
+const ISO_DATETIME = z.string().regex(
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:?\d{2})?$/,
+  'Expected an ISO 8601 date-time, e.g. 2026-08-03T10:30',
+)
+
 const lineInputSchema = z.object({
   deviceId: z.string().uuid().optional(),
   description: z.string().max(500).optional(),
@@ -227,7 +241,7 @@ const updateSchema = z.object({
   deliveredDate: DATE.nullish(),
   carrier: z.string().max(200).nullish(),
   podReference: z.string().max(200).nullish(),
-  podReceivedAt: z.string().min(1).max(40).nullish(),
+  podReceivedAt: ISO_DATETIME.nullish(),
   importExportRef: z.string().max(200).nullish(),
   notes: z.string().max(5000).nullish(),
 })
