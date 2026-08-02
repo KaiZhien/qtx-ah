@@ -7,6 +7,7 @@ import { nextEcoStatuses } from '@/modules/engineering/domain/ecoStatus'
 import { changeEcoStatusAction } from '@/app/(platform)/engineering/eco/ecoActions'
 import { EngStatusControl } from '@/components/engineering/EngStatusControl'
 import { EngStatusBadge } from '@/components/engineering/EngStatusBadge'
+import { EcoEffectivityPanel } from '@/components/engineering/EcoEffectivityPanel'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 
 type PageProps = { params: { id: string } }
@@ -73,6 +74,11 @@ export default async function EcoDetailPage({ params }: PageProps) {
           <dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-900">{eco.effectivityNotes ?? '—'}</dd>
         </div>
       </dl>
+
+      <EcoEffectivityPanel
+        ecoId={eco.id} status={eco.status}
+        effectivityDate={eco.effectivityDate} effectivitySerial={eco.effectivitySerial}
+      />
 
       <TaskPanel entityType="eco" entityId={eco.id} module="engineering" />
     </div>

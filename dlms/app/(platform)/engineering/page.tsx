@@ -9,6 +9,10 @@ import {
   getEngineeringCounts, type EngStatusCount,
 } from '@/modules/engineering/services/engineeringReadService'
 import { EngStatusBadge } from '@/components/engineering/EngStatusBadge'
+import {
+  getFailureStatusCounts, type FailureStatusCount,
+} from '@/modules/engineering/services/failureService'
+import { FailureStatusBadge } from '@/components/engineering/FailureBadges'
 
 /**
  * Engineering module landing (replaces the ModuleLanding stub). Status counts
@@ -24,6 +28,7 @@ export default async function EngineeringPage() {
 
   const Icon = iconFor(def.icon)
   const counts = await getEngineeringCounts(actor)
+  const failureCounts = await getFailureStatusCounts(actor)
   const canCreate = can(actor, 'create_records', 'engineering')
 
   return (
@@ -34,7 +39,7 @@ export default async function EngineeringPage() {
       </div>
       <p className="text-slate-600">{def.description}</p>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard
           title="Change requests" href="/engineering/ecr" newHref="/engineering/ecr/new"
           canCreate={canCreate} counts={counts.ecr}
@@ -47,6 +52,60 @@ export default async function EngineeringPage() {
           title="Firmware releases" href="/engineering/firmware" newHref="/engineering/firmware/new"
           canCreate={canCreate} counts={counts.firmware}
         />
+        {/* FI statuses carry underscores, so this card cannot reuse SummaryCard's
+            capitalize-only EngStatusBadge — it renders through the FI domain's
+            own labeller instead. */}
+        <FailureSummaryCard canCreate={canCreate} counts={failureCounts} />
+      </div>
+
+      <p className="text-sm text-slate-600">
+        <Link href="/engineering/bom" className="font-medium text-primary hover:underline">
+          Bill of materials →
+        </Link>{' '}
+        the BOM for any variant, as at a date or a build serial.
+      </p>
+    </div>
+  )
+}
+
+function FailureSummaryCard({
+  canCreate, counts,
+}: { canCreate: boolean; counts: FailureStatusCount[] }) {
+  const total = counts.reduce((sum, c) => sum + c.count, 0)
+  return (
+    <div className="flex flex-col rounded-md border">
+      <div className="border-b p-4">
+        <Link href="/engineering/failures" className="text-sm font-medium text-slate-900 hover:underline">
+          Failure investigations
+        </Link>
+        <p className="mt-1 text-2xl font-semibold text-slate-900">{total}</p>
+      </div>
+      <div className="flex flex-1 flex-col gap-2 p-4">
+        {counts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">None yet.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {counts.map((c) => (
+              <li key={c.status} className="flex items-center justify-between text-sm">
+                <FailureStatusBadge status={c.status} />
+                <span className="tabular-nums text-slate-700">{c.count}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="flex items-center justify-between border-t p-3">
+        <Link href="/engineering/failures" className="text-sm font-medium text-primary hover:underline">
+          View all →
+        </Link>
+        {canCreate && (
+          <Link
+            href="/engineering/failures/new"
+            className="inline-flex items-center text-sm font-medium text-primary hover:underline"
+          >
+            <Plus className="mr-1 h-3.5 w-3.5" /> New
+          </Link>
+        )}
       </div>
     </div>
   )
