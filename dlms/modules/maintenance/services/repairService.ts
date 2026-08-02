@@ -763,7 +763,6 @@ function toSignOffSnapshot(
     recordedReplacementCount,
     testingNotes: row.testing_notes,
     correctiveAction: row.corrective_action,
-    version: row.version,
   })
 }
 

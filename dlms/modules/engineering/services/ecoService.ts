@@ -109,7 +109,6 @@ function toSnapshot(row: EcoProjectionRow): EcoApprovalSnapshot {
     effectivityDate: row.effectivity_date,
     effectivitySerial: row.effectivity_serial,
     effectivityNotes: row.effectivity_notes,
-    version: row.version,
   })
 }
 

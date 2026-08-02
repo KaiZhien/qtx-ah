@@ -15,7 +15,6 @@ const facts = (over: Record<string, unknown> = {}) => ({
   recordedReplacementCount: 2,
   testingNotes: 'Burn-in 4 h at 45 °C, no resets.',
   correctiveAction: 'Replaced PCBA-A.',
-  version: 9,
   ...over,
 }) as Parameters<typeof buildRepairSignOffSnapshot>[0]
 
@@ -42,8 +41,18 @@ describe('buildRepairSignOffSnapshot — what a sign-off approver is agreeing to
       recordedReplacementCount: 2,
       testingNotes: 'Burn-in 4 h at 45 °C, no resets.',
       correctiveAction: 'Replaced PCBA-A.',
-      version: 9,
     })
+  })
+
+  it('leaves out the fields a sign-off does not vouch for', () => {
+    // Cost and warranty belong to the invoice that follows; fault/diagnosis are
+    // what was BELIEVED at the start; `version` would readmit all of them through
+    // the back door and make these exclusions decorative.
+    const keys = Object.keys(buildRepairSignOffSnapshot(facts()))
+    for (const absent of ['costSgd', 'warrantyFlag', 'warrantyJustification',
+                          'faultDescription', 'diagnosis', 'status', 'version']) {
+      expect(keys).not.toContain(absent)
+    }
   })
 
   it('keeps an unassigned technician as an explicit null', () => {

@@ -54,15 +54,22 @@ export const ECO_APPROVAL_FROM_STATUS = 'submitted'
  *                  after approval widens which devices the change touches —
  *                  precisely the "approved, then added an affected item" failure,
  *                  and it is caught here as ordinary field drift.
- *   version      — the catch-all, and the reason this snapshot does not go stale.
- *                  `updateEco` bumps it on every edit, so a column added to `eco`
- *                  AFTER this projection was written (an affected-items list, a
- *                  cost, a risk class) cannot slip past a snapshot that predates
- *                  it. Fail closed: the cost is that an edit which changes
- *                  nothing material still forces a re-request, which is the
- *                  cheaper error. Finance omits its equivalent and documents the
- *                  gap it leaves ("the day a line-edit path lands, add a line
- *                  digest"); this closes that gap by construction instead.
+ *
+ * `version` IS DELIBERATELY NOT HERE, and the reasoning is worth recording
+ * because carrying it looks strictly safer. These eight fields are exactly
+ * `ECO_UPDATE_COLUMNS` plus the two identifiers, so today `version` would detect
+ * nothing the content does not already detect — while costing the one behaviour
+ * Finance's gate has and this one would lose: an edit that is PUT BACK stops
+ * being drift. With `version` in the snapshot the counter never returns, so a
+ * mistaken keystroke and its correction would permanently invalidate an approval
+ * that describes the ECO perfectly. It would also quietly override the judgement
+ * this list represents — a snapshot that says "these fields are what an approver
+ * agreed to" but drifts on any column at all is not making that claim.
+ *
+ * The cost is the one Finance already documents and accepts: a column added to
+ * `eco` LATER is not covered until it is added here. That is a real obligation on
+ * whoever adds it, not a silent hole — pinned by a test that fails the moment the
+ * builder and the projection disagree.
  *
  * THE SEAM. Spec §6.3 describes an `ec_affected_item` table (component type /
  * variant + disposition) that does NOT exist in the schema today — Engineering's
@@ -82,7 +89,6 @@ export type EcoApprovalSnapshot = {
   effectivityDate: string | null
   effectivitySerial: string | null
   effectivityNotes: string | null
-  version: number
 }
 
 export type EcoApprovalFacts = EcoApprovalSnapshot
@@ -102,7 +108,6 @@ export function buildEcoApprovalSnapshot(facts: EcoApprovalFacts): EcoApprovalSn
     effectivityDate: facts.effectivityDate,
     effectivitySerial: facts.effectivitySerial,
     effectivityNotes: facts.effectivityNotes,
-    version: facts.version,
   }
 }
 

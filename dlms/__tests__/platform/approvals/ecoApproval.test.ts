@@ -14,7 +14,6 @@ const facts = (over: Record<string, unknown> = {}) => ({
   effectivityDate: '2026-09-01',
   effectivitySerial: 'EE-02A-2603-0001 to 0015',
   effectivityNotes: 'Retrofit at next service.',
-  version: 4,
   ...over,
 }) as Parameters<typeof buildEcoApprovalSnapshot>[0]
 
@@ -42,8 +41,17 @@ describe('buildEcoApprovalSnapshot — what an approver is agreeing to', () => {
       effectivityDate: '2026-09-01',
       effectivitySerial: 'EE-02A-2603-0001 to 0015',
       effectivityNotes: 'Retrofit at next service.',
-      version: 4,
     })
+  })
+
+  it('carries exactly the ECO’s editable content — no optimistic-lock counter', () => {
+    // `version` is excluded on purpose: it would readmit every field the type
+    // deliberately leaves out and would make an edit that is PUT BACK stay
+    // drifted forever, which Finance's gate does not do.
+    expect(Object.keys(buildEcoApprovalSnapshot(facts())).sort()).toEqual([
+      'description', 'ecoNo', 'ecrId', 'ecrNo',
+      'effectivityDate', 'effectivityNotes', 'effectivitySerial', 'title',
+    ])
   })
 
   it('is a non-empty plain object the engine will accept as a snapshot', () => {
@@ -114,16 +122,14 @@ describe('the ECO snapshot catches the edits that matter', () => {
     expect(result.message).toContain('ecrId')
   })
 
-  it('refuses when the row changed in a way no enumerated field describes', () => {
-    // `version` is the catch-all. Every updateEco writes it, so a column added to
-    // `eco` LATER — an affected-items list, a cost, a risk class — cannot slip
-    // past a snapshot written before that column existed. Fail closed by default;
-    // the alternative is a snapshot that silently stops covering the record.
-    const result = gate(
-      buildEcoApprovalSnapshot(facts({ version: 5 })),
-      buildEcoApprovalSnapshot(facts({ version: 4 })))
-    if (result.ok) throw new Error('unreachable')
-    expect(result.message).toContain('version')
+  it('agrees again once an edit is PUT BACK — the check is on state, not on edits', () => {
+    // The behaviour excluding `version` buys, and the reason Finance's gate has
+    // it too: a mistaken keystroke and its correction must not permanently
+    // invalidate an approval that describes the ECO perfectly.
+    const approvedSnap = buildEcoApprovalSnapshot(facts())
+    const edited = buildEcoApprovalSnapshot(facts({ effectivityNotes: 'oops' }))
+    expect(gate(edited, approvedSnap).ok).toBe(false)
+    expect(gate(buildEcoApprovalSnapshot(facts()), approvedSnap)).toEqual({ ok: true })
   })
 
   it('refuses when effectivity is CLEARED, not only when it is changed', () => {

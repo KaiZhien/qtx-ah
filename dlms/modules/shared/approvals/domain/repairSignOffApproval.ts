@@ -65,18 +65,29 @@ export const REPAIR_SIGNOFF_FROM_STATUS = 'awaiting_sign_off'
  *   correctiveAction
  *                 — what was actually done to fix it. Approving "replaced PCBA-A"
  *                   is not approving "resoldered a connector".
- *   version       — the catch-all, for the reason ecoApproval.ts documents: every
- *                   `updateRepair` bumps it, so a column added to `repair` after
- *                   this projection was written cannot silently fall outside it.
  *
- * DELIBERATELY ABSENT: `status`. It is pinned to awaiting_sign_off by the
- * precondition on both the request path and the sign-off path, so carrying it
- * would add a field that can only ever hold one value at either end — noise in
- * the drift message and in the approver's queue, detecting nothing the
- * precondition does not already refuse with a better sentence. `cost_sgd` and
- * the warranty fields are absent for a different reason: they are Finance's
- * concern on the invoice that follows, not part of the assertion that a device is
- * fit to return to service.
+ * DELIBERATELY ABSENT, and this list is the point of the type rather than an
+ * apology for it:
+ *
+ *   status  — pinned to awaiting_sign_off by the precondition on BOTH the request
+ *             path and the sign-off path, so it can only ever hold one value at
+ *             either end. Carrying it would add noise to the drift message and to
+ *             the approver's queue while detecting nothing the precondition does
+ *             not already refuse with a better sentence.
+ *   cost_sgd, warranty_flag, warranty_justification
+ *           — Finance's concern on the invoice that follows, not part of the
+ *             assertion that a device is fit to return to service. A warranty
+ *             reclassification should not invalidate an engineer's sign-off.
+ *   fault_description, diagnosis
+ *           — what was BELIEVED at the start. The sign-off vouches for the fix
+ *             and its evidence; correcting the original description after the
+ *             fact is housekeeping, not a change to what was approved.
+ *   version — the optimistic-lock counter, excluded for the reason ecoApproval.ts
+ *             sets out at length. Carrying it would silently readmit every field
+ *             just excluded, since `updateRepair` bumps it for all of them —
+ *             making the exclusions above decorative — and would mean an edit
+ *             that is PUT BACK stays drifted forever, which Finance's gate does
+ *             not do.
  */
 export type RepairSignOffSnapshot = {
   repairNo: string
@@ -88,7 +99,6 @@ export type RepairSignOffSnapshot = {
   recordedReplacementCount: number
   testingNotes: string | null
   correctiveAction: string | null
-  version: number
 }
 
 export type RepairSignOffFacts = RepairSignOffSnapshot
@@ -105,7 +115,6 @@ export function buildRepairSignOffSnapshot(facts: RepairSignOffFacts): RepairSig
     recordedReplacementCount: facts.recordedReplacementCount,
     testingNotes: facts.testingNotes,
     correctiveAction: facts.correctiveAction,
-    version: facts.version,
   }
 }
 
