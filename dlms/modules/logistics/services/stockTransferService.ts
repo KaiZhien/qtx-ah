@@ -653,14 +653,20 @@ export async function receiveStockTransfer(
       locked.set(lockKeyOf(key), rows[0])
     }
 
-    // Labels for readable errors, resolved once.
-    const { rows: labelRows } = await tx.query<{ id: string; code: string }>(
-      `SELECT id, code FROM component_type WHERE id = ANY($1)
-        UNION ALL
-       SELECT id, code FROM stock_location WHERE id = ANY($2)`,
-      [[...new Set(plan.lockKeys.map((k) => k.componentTypeId))],
-       [header.from_location_id, header.to_location_id]])
-    const labelOf = new Map(labelRows.map((r) => [r.id, r.code]))
+    // Labels for readable errors, resolved once. Two plain lookups rather than
+    // one UNION — the failure mode being served here is a user-facing error
+    // message, so clarity beats saving a round trip.
+    const labelOf = new Map<string, string>()
+    const typeIds = [...new Set(plan.lockKeys.map((k) => k.componentTypeId))]
+    if (typeIds.length > 0) {
+      const { rows } = await tx.query<{ id: string; code: string }>(
+        `SELECT id, code FROM component_type WHERE id = ANY($1)`, [typeIds])
+      for (const r of rows) labelOf.set(r.id, r.code)
+    }
+    const { rows: locRows } = await tx.query<{ id: string; code: string }>(
+      `SELECT id, code FROM stock_location WHERE id = ANY($1)`,
+      [[header.from_location_id, header.to_location_id]])
+    for (const r of locRows) labelOf.set(r.id, r.code)
 
     // ── 5. Apply the decrements. The floor is tested in SQL against the numeric
     //       column (`AND qty >= $1`), so the comparison is exact and the failure
@@ -703,9 +709,13 @@ export async function receiveStockTransfer(
 
     // ── 7. Relocate the serialized units. SECOND lock class: taken only after
     //       every stock_level lock is held, and ordered by id within itself, so
-    //       the two classes together form one total order. `FOR UPDATE OF cu`
-    //       locks only component_unit — locking component_type rows too would
-    //       block unrelated catalogue edits for no benefit.
+    //       the two classes together form one total order.
+    //
+    //       ORDER BY + FOR UPDATE is the ordering mechanism here: Postgres's
+    //       LockRows node sits above the Sort, so rows are locked in sorted id
+    //       order. Do NOT add a join to component_type to this query for
+    //       labelling — a joined table would be locked too (a third lock class,
+    //       out of order) and would block unrelated catalogue edits.
     if (plan.serializedUnitIds.length > 0) {
       const { rows: units } = await tx.query<{
         id: string; serial_no: string; location_id: string | null
