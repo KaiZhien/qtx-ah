@@ -27,18 +27,20 @@ import {
  * recorded by the §14 replacement primitive, which validates the modificationId
  * against the installation's own device (attributionService).
  *
- * THERE IS NO MODIFICATION UI. No page, no route, no server action exists, and
- * none is planned in this slice — this service has no non-test importer today.
- * The repair detail screen is Maintenance's only surface, and it is the only
- * place the §14 replacement control is reachable from.
+ * THE MODIFICATION UI NOW EXISTS: app/(platform)/maintenance/modifications
+ * (list / new / detail), with server actions in that directory's actions.ts —
+ * which is what finally puts this service under __tests__/actionAalPinning.test.ts.
+ * The detail page is where the §14 replacement control is reachable with a
+ * MODIFICATION attached, as the repair detail page is for a repair.
  *
- * Whoever builds the modification page must repeat the repair page's
- * MANUFACTURING permission gate around the components panel. The panel's
+ * THE GATE THAT PAGE MUST KEEP. The modification detail page repeats the repair
+ * page's MANUFACTURING permission gate around the components panel. The panel's
  * services are Manufacturing's (componentService.getDeviceComponents /
  * replaceComponentInstallation) and they THROW on a missing permission rather
  * than returning empty, so a page that renders the panel without first checking
  * `can(actor, 'view_records', 'manufacturing')` is a 500, not a quietly hidden
- * section. Maintenance access alone does not imply Manufacturing access.
+ * section. Maintenance access alone does not imply Manufacturing access. The
+ * same rule governs `listEcoOptions` below, which reaches into ENGINEERING.
  */
 
 export class ModificationNotFoundError extends Error {
@@ -96,6 +98,146 @@ async function assertReferenceExists(
 }
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+
+// ── Option lists (the create/edit forms) ────────────────────────────────────
+
+export type ModificationTypeOption = { id: string; code: string; name: string }
+
+/**
+ * The modification_type dropdown, in the vocabulary's own sort order.
+ *
+ * `active = false` rows are EXCLUDED here and only here. That is the whole
+ * meaning of the soft-disable (see the column's COMMENT): an inactive type
+ * disappears from the create FORM but stays resolvable on records that already
+ * use it, and `createModification` still accepts one so a caller replaying a
+ * historical record is not blocked. Filtering in the service instead would break
+ * that; filtering nowhere would put retired types back in front of users.
+ *
+ * CODES ARE NEVER HARDCODED anywhere against this list — the whole point of the
+ * table is that a Super Admin adds "Battery pack swap" without a migration, and
+ * CLAUDE.md records what assuming seeded codes has already cost this project.
+ */
+export async function listModificationTypeOptions(
+  actor: Actor,
+): Promise<ModificationTypeOption[]> {
+  authorize(actor, 'view_records', 'maintenance')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM modification_type
+        WHERE deleted_at IS NULL AND active = true
+        ORDER BY sort, name`)
+    return rows.map((r) => ({ id: r.id, code: r.code, name: r.name }))
+  })
+}
+
+export type ModifiableDevice = { id: string; deviceSn: string | null; statusLabel: string }
+
+/**
+ * Devices a modification can be raised against: every live device.
+ *
+ * Deliberately WITHOUT the `canMoveToUnderRepair` computation listRepairableDevices
+ * carries. A modification does not move the device — §6.3 gives it no
+ * device-status semantics at all — so there is no status edge to resolve and no
+ * offer that could go unhonoured.
+ */
+export async function listModifiableDevices(
+  actor: Actor, limit = 200,
+): Promise<ModifiableDevice[]> {
+  authorize(actor, 'view_records', 'maintenance')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{
+      id: string; device_sn: string | null; status_label: string
+    }>(
+      `SELECT d.id, d.device_sn, s.label_en AS status_label
+         FROM device d JOIN status_option s ON s.code = d.status
+        WHERE d.deleted_at IS NULL
+        ORDER BY d.created_at DESC
+        LIMIT $1`, [limit])
+    return rows.map((r) => ({
+      id: r.id, deviceSn: r.device_sn, statusLabel: r.status_label,
+    }))
+  })
+}
+
+export type RepairOption = { id: string; repairNo: string; status: string }
+
+/**
+ * The repairs a modification on THIS device may be linked to.
+ *
+ * Scoped to the device on purpose: `createModification`/`updateModification`
+ * enforce the same-device rule through `assertSameDevice`, so offering another
+ * device's repair would be offering a choice the write refuses — the trap the
+ * New Repair form's `canMoveToUnderRepair` fix already closed on the other side
+ * of this module.
+ *
+ * Reads the `repair` table directly rather than through repairService: this is
+ * Maintenance's own table, and a one-column picker does not need that service's
+ * detail projection.
+ */
+export async function listDeviceRepairOptions(
+  actor: Actor, deviceId: string, limit = 50,
+): Promise<RepairOption[]> {
+  authorize(actor, 'view_records', 'maintenance')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ id: string; repair_no: string; status: string }>(
+      `SELECT id, repair_no, status FROM repair
+        WHERE device_id = $1 AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT $2`, [deviceId, limit])
+    return rows.map((r) => ({ id: r.id, repairNo: r.repair_no, status: r.status }))
+  })
+}
+
+export type EcoOption = { id: string; ecoNo: string; title: string }
+
+/**
+ * The ECOs a retrofit modification may cite.
+ *
+ * GATED ON ENGINEERING, not Maintenance — `eco` is Engineering's table, and a
+ * Maintenance user with no Engineering access has no business enumerating its
+ * change orders. The caller must therefore check
+ * `can(actor, 'view_records', 'engineering')` before calling, exactly as the
+ * components panel's caller must check manufacturing: this throws rather than
+ * returning empty, so an ungated call is a 500 and not a hidden dropdown.
+ *
+ * The New Modification page omits the ECO field entirely for an actor without
+ * that access; `eco_id` stays nullable and the modification is still valid
+ * without it.
+ */
+export async function listEcoOptions(actor: Actor, limit = 100): Promise<EcoOption[]> {
+  authorize(actor, 'view_records', 'engineering')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ id: string; eco_no: string; title: string }>(
+      `SELECT id, eco_no, title FROM eco
+        WHERE deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT $1`, [limit])
+    return rows.map((r) => ({ id: r.id, ecoNo: r.eco_no, title: r.title }))
+  })
+}
+
+/**
+ * Modification counts by state, zero-filled across the fixed vocabulary so the
+ * module surface shows every state even when nothing is in it. The sibling of
+ * repairService.getRepairStatusCounts.
+ */
+export async function getModificationStatusCounts(
+  actor: Actor,
+): Promise<{ status: ModificationStatus; statusLabel: string; count: number }[]> {
+  authorize(actor, 'view_records', 'maintenance')
+
+  return withTransaction(actor.id, async (tx) => {
+    const { rows } = await tx.query<{ status: string; n: string }>(
+      `SELECT status, count(*)::text AS n FROM modification
+        WHERE deleted_at IS NULL GROUP BY status`)
+    const counts = new Map(rows.map((r) => [r.status, Number(r.n)]))
+    return MODIFICATION_STATUSES.map((s) => ({
+      status: s, statusLabel: modificationStatusLabel(s), count: counts.get(s) ?? 0,
+    }))
+  })
+}
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
@@ -203,6 +345,20 @@ export type ModificationDetail = {
   repairId: string | null
   repairNo: string | null
   costSgd: string | null
+  /**
+   * `requested_on` / `completed_on` as YYYY-MM-DD TEXT, alongside the Date
+   * fields below.
+   *
+   * node-postgres parses a bare `date` into a JS Date at LOCAL midnight, so on a
+   * host east of UTC `toISOString().slice(0,10)` yields the PREVIOUS day — the
+   * one-day shift already carried as a finding against delivery_order's
+   * delivered_date and DeviceEditDialog's seeded date. The edit form seeds
+   * <input type="date"> from these text fields so a save cannot silently walk a
+   * date backwards one day per round trip. The Date fields stay for display
+   * formatting and for any existing caller.
+   */
+  requestedOnText: string | null
+  completedOnText: string | null
   requestedOn: Date | null
   completedOn: Date | null
   requestedByName: string | null
@@ -235,6 +391,7 @@ export async function getModification(
       eco_id: string | null; eco_no: string | null
       repair_id: string | null; repair_no: string | null
       cost_sgd: string | null; requested_on: Date | null; completed_on: Date | null
+      requested_on_text: string | null; completed_on_text: string | null
       requested_by_name: string | null; approved_by_name: string | null
       completed_by_name: string | null; signed_off_by_name: string | null
       signed_off_at: Date | null; closed_at: Date | null; created_at: Date; version: number
@@ -245,6 +402,8 @@ export async function getModification(
               m.reason, m.description, m.previous_configuration, m.new_configuration,
               m.eco_id, e.eco_no, m.repair_id, r.repair_no, m.cost_sgd,
               m.requested_on, m.completed_on,
+              m.requested_on::text AS requested_on_text,
+              m.completed_on::text AS completed_on_text,
               req.full_name AS requested_by_name, apr.full_name AS approved_by_name,
               cmp.full_name AS completed_by_name, so.full_name AS signed_off_by_name,
               m.signed_off_at, m.closed_at, m.created_at, m.version
@@ -280,6 +439,7 @@ export async function getModification(
       previousConfiguration: m.previous_configuration, newConfiguration: m.new_configuration,
       ecoId: m.eco_id, ecoNo: m.eco_no, repairId: m.repair_id, repairNo: m.repair_no,
       costSgd: m.cost_sgd, requestedOn: m.requested_on, completedOn: m.completed_on,
+      requestedOnText: m.requested_on_text, completedOnText: m.completed_on_text,
       requestedByName: m.requested_by_name, approvedByName: m.approved_by_name,
       completedByName: m.completed_by_name, signedOffByName: m.signed_off_by_name,
       signedOffAt: m.signed_off_at, closedAt: m.closed_at, createdAt: m.created_at,

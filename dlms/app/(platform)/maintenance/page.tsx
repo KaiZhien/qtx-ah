@@ -6,6 +6,8 @@ import { can } from '@/modules/shared/authz/policy'
 import { MODULE_REGISTRY } from '@/modules/shared/navigation/moduleRegistry'
 import { iconFor } from '@/components/platform/moduleIcons'
 import { getRepairStatusCounts, listRepairs } from '@/modules/maintenance/services/repairService'
+import { getModificationStatusCounts } from '@/modules/maintenance/services/modificationService'
+import { getUsageOverview } from '@/modules/maintenance/services/usageService'
 import { RepairStatusPill } from '@/components/maintenance/RepairStatusPill'
 import { Button } from '@/components/ui/button'
 
@@ -21,10 +23,15 @@ export default async function MaintenancePage() {
   if (!can(actor, def.gate, def.key)) notFound()
 
   const Icon = iconFor(def.icon)
-  const [counts, { items: recent }] = await Promise.all([
+  const [counts, { items: recent }, modCounts, usage] = await Promise.all([
     getRepairStatusCounts(actor),
     listRepairs(actor, { limit: 8 }),
+    getModificationStatusCounts(actor),
+    getUsageOverview(actor),
   ])
+  const openModifications = modCounts
+    .filter((c) => c.status !== 'closed' && c.status !== 'cancelled')
+    .reduce((sum, c) => sum + c.count, 0)
   const total = counts.reduce((sum, c) => sum + c.count, 0)
   const canCreate = can(actor, 'create_records', 'maintenance')
 
@@ -44,7 +51,28 @@ export default async function MaintenancePage() {
           </Button>
         )}
       </div>
-      <p className="text-slate-600">Repairs — the six-state repair workflow and sign-off.</p>
+      <p className="text-slate-600">
+        Repairs, modifications and device usage — the six-state repair workflow and sign-off,
+        the modification lifecycle, and the append-only usage counter log.
+      </p>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <SectionCard
+          href="/maintenance/modifications"
+          title="Modifications"
+          value={openModifications}
+          caption={`open modification${openModifications === 1 ? '' : 's'}`}
+        />
+        <SectionCard
+          href="/maintenance/usage"
+          title="Usage"
+          value={usage.deviceCount}
+          caption={usage.devicesWithResets > 0
+            ? `device${usage.deviceCount === 1 ? '' : 's'} with readings · `
+              + `${usage.devicesWithResets} with a counter reset`
+            : `device${usage.deviceCount === 1 ? '' : 's'} with readings`}
+        />
+      </div>
 
       <div className="rounded-md border">
         <div className="flex items-center justify-between border-b p-4">
@@ -102,8 +130,20 @@ export default async function MaintenancePage() {
       </div>
 
       <p className="inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
-        Files, usage logs, modifications, and downtime reporting land later (spec §17, Weeks 7–8).
+        Files and photos land with file storage; downtime reporting lands later (spec §17).
       </p>
     </div>
+  )
+}
+
+function SectionCard(
+  { href, title, value, caption }: { href: string; title: string; value: number; caption: string },
+) {
+  return (
+    <Link href={href} className="rounded-md border p-4 transition-colors hover:bg-muted/50">
+      <p className="text-sm font-medium text-slate-900">{title} →</p>
+      <p className="mt-1 text-2xl font-semibold text-slate-900">{value}</p>
+      <p className="text-sm text-muted-foreground">{caption}</p>
+    </Link>
   )
 }
