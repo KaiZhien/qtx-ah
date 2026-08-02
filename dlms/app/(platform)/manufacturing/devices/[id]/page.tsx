@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { DeviceStatusPill } from '@/components/manufacturing/StatusPill'
 import { DeviceComponentsTab } from '@/components/manufacturing/DeviceComponentsTab'
+import { DeviceUsageTab } from '@/components/maintenance/DeviceUsageTab'
 import { DeviceEditDialog } from '@/components/manufacturing/DeviceEditDialog'
 import { StatusChangeControl } from '@/components/manufacturing/StatusChangeControl'
 
@@ -30,8 +31,6 @@ function formatDateTime(d: Date | string): string {
 const STUB_TABS = [
   { value: 'post_sales', label: 'Post-sales',
     week: 'Week 8 (Sep 11) — buyer, delivery orders, invoices, warranty' },
-  { value: 'usage', label: 'Usage',
-    week: 'Week 8 (Sep 11) — cumulative usage counter and log entries' },
   { value: 'repairs', label: 'Repairs',
     week: 'Week 7 (Sep 4) — 6-state repair workflow and sign-off' },
   { value: 'modifications', label: 'Modifications',
@@ -105,6 +104,7 @@ export default async function DeviceDetailPage({ params }: PageProps) {
           <TabsTrigger value="status_history">Status history</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="components">Components</TabsTrigger>
+          <TabsTrigger value="usage">Usage</TabsTrigger>
           {STUB_TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>
           ))}
@@ -162,6 +162,16 @@ export default async function DeviceDetailPage({ params }: PageProps) {
             deviceId={device.id}
             canEdit={can(actor, 'edit_records', 'manufacturing')}
           />
+        </TabsContent>
+
+        {/*
+          Usage is MAINTENANCE data on a MANUFACTURING page. DeviceUsageTab
+          re-checks view_records on maintenance itself and degrades to a notice,
+          because its service throws rather than returning empty — the same trap
+          the repair page's components panel carries in the other direction.
+        */}
+        <TabsContent value="usage">
+          <DeviceUsageTab deviceId={device.id} />
         </TabsContent>
 
         {STUB_TABS.map((t) => (
