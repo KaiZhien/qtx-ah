@@ -165,8 +165,8 @@ describe('resolveBomAt', () => {
   })
 
   it('is deterministic when overlapping windows exist: the latest-starting line wins', () => {
-    // A data defect the apply step cannot create — but the UI must never render a
-    // doubled BOM, so the resolver still returns exactly one line.
+    // The UI must never render a doubled BOM, so the resolver still returns
+    // exactly one line — see findBomEffectivityConflicts for surfacing it.
     const overlapping = [
       line({ id: 'early', effectiveFromDate: '2026-01-01', createdAt: '2026-01-01T00:00:00.000Z' }),
       line({ id: 'late', effectiveFromDate: '2026-06-01', createdAt: '2026-06-01T00:00:00.000Z' }),

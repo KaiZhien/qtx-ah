@@ -147,26 +147,31 @@ export function lineAppliesAt(line: BomLineEffectivity, at: BomAt): boolean {
 
 // ── Resolution ──────────────────────────────────────────────────────────────
 
-// Descending "how late does this line start" order. A null from-bound means
-// "beginning of time", so it must sort LOWEST, not highest — hence the explicit
-// -Infinity rather than a naive null-last comparator.
-function startRank(line: BomLineEffectivity): [string, number, string, string] {
-  const seq = serialSortKey(line.effectiveFromSerial)
-  return [
-    line.effectiveFromDate ?? '', // '' sorts before every 'YYYY-MM-DD'
-    seq ? seq.seq : -Infinity,
-    line.createdAt,
-    line.id,
-  ]
-}
-
+// "Which of these two is the LATER definition?" — used only when more than one
+// line is effective at the query point (see resolveBomAt).
+//
+// The keys are compared in the SAME order as the precedence rule: serial start
+// first, then date start. That is what makes the tie-break agree with the axis
+// rule instead of quietly contradicting it — a change keyed to serial 00500
+// supersedes a change keyed to a calendar date, exactly as a serial bound
+// overrides a date bound when both can be judged.
+//
+// A null from-bound means "since the beginning of time", so it must sort LOWEST,
+// not highest — hence the explicit -Infinity / '' rather than a naive
+// nulls-last comparator. createdAt then id break the remaining ties so the
+// answer never depends on input order.
 function laterStartFirst(a: BomLineEffectivity, b: BomLineEffectivity): number {
-  const ra = startRank(a)
-  const rb = startRank(b)
-  for (let i = 0; i < ra.length; i++) {
-    if (ra[i] === rb[i]) continue
-    return ra[i] > rb[i] ? -1 : 1
-  }
+  const seqA = serialSortKey(a.effectiveFromSerial)?.seq ?? -Infinity
+  const seqB = serialSortKey(b.effectiveFromSerial)?.seq ?? -Infinity
+  if (seqA !== seqB) return seqB - seqA
+
+  // '' sorts before every 'YYYY-MM-DD', which is what "beginning of time" needs.
+  const dateA = a.effectiveFromDate ?? ''
+  const dateB = b.effectiveFromDate ?? ''
+  if (dateA !== dateB) return dateA > dateB ? -1 : 1
+
+  if (a.createdAt !== b.createdAt) return a.createdAt > b.createdAt ? -1 : 1
+  if (a.id !== b.id) return a.id > b.id ? -1 : 1
   return 0
 }
 
@@ -175,11 +180,19 @@ function laterStartFirst(a: BomLineEffectivity, b: BomLineEffectivity): number {
  * the winning lines appear in `lines` (so the caller controls display order by
  * ordering its query — e.g. by component_type.sort).
  *
- * When several lines for one component type are simultaneously effective — a
- * data defect the apply step cannot produce, but which a hand-edited row could
- * — the LATEST-STARTING one wins, and the answer does not depend on input
- * order. Use findBomEffectivityConflicts to surface that defect rather than
- * letting it pass silently.
+ * When several lines for one component type are simultaneously effective, the
+ * LATEST definition wins (laterStartFirst), deterministically and independently
+ * of input order. That happens in two quite different situations, and
+ * findBomEffectivityConflicts reports both — the CALLER decides which it is:
+ *
+ *   1. AMBIGUOUS, not broken. The change was keyed to a build serial and the
+ *      query supplied no serial. "What is the BOM on date D" genuinely has no
+ *      single answer when the change was per-unit; the newest definition is
+ *      shown and the caller should offer to narrow it with a serial.
+ *   2. ACTUALLY BROKEN. The query named a comparable serial and two lines still
+ *      overlap. The apply step cannot produce this (it closes the outgoing line
+ *      before opening the incoming one, under a partial unique index) — so it
+ *      means a row was hand-edited.
  */
 export function resolveBomAt<L extends BomLineEffectivity>(
   lines: readonly L[], at: BomAt,
@@ -195,9 +208,11 @@ export function resolveBomAt<L extends BomLineEffectivity>(
 }
 
 /**
- * Component types with MORE THAN ONE effective line at `at`. Empty for a
- * well-formed BOM; non-empty means overlapping windows the UI should warn about
- * instead of quietly showing whichever line resolveBomAt picked.
+ * Component types with MORE THAN ONE effective line at `at`. Empty for a BOM
+ * whose changes are all date-keyed. Non-empty means resolveBomAt had to pick,
+ * which the UI must say out loud rather than quietly rendering one of the two —
+ * see resolveBomAt for the two causes (a serial-keyed change queried without a
+ * serial, versus a genuinely corrupt row).
  */
 export function findBomEffectivityConflicts<L extends BomLineEffectivity>(
   lines: readonly L[], at: BomAt,
