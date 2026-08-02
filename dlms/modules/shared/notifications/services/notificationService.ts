@@ -2,7 +2,6 @@ import { z } from 'zod'
 import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import { SYSTEM_ACTOR_ID } from '@/modules/shared/authz/actor'
-import { MODULES } from '@/modules/shared/authz/catalog'
 import type { Actor, ModuleKey } from '@/modules/shared/authz/catalog'
 import {
   NOTIFICATION_CATEGORIES, isNotificationCategory, resolveDelivery, DEFAULT_PREF,
@@ -442,7 +441,3 @@ export async function setPreference(actor: Actor, input: SetPreferenceInput): Pr
        version = notification_pref.version + 1`,
     [actor.id, data.category, data.inApp, data.email, data.digest]))
 }
-
-/** Re-exported so callers do not reach past this service into the domain for the vocabulary. */
-export { NOTIFICATION_CATEGORIES, type NotificationCategory }
-export const NOTIFICATION_MODULES = MODULES

@@ -156,6 +156,16 @@ COMMENT ON COLUMN notification_pref.digest IS
 -- every mutable table carries fn_audit — see the report's carried findings for the one
 -- observation that comes with it (a 50-row "mark all read" writes 50 audit rows; the
 -- volumes here are small enough that consistency was preferred to a bespoke exemption).
+--
+-- ONE CONSEQUENCE WORTH STATING, in the same spirit as the approvals migration noting that
+-- app_setting was the first AUDITED TEXT-KEYED table: `notification_pref` is the first
+-- AUDITED COMPOSITE-KEYED table in this schema. fn_audit derives audit_log.row_id from
+-- (new_values->>'id')::uuid inside an exception handler, so a table with no `id` column
+-- yields row_id NULL rather than an error — which is exactly what audit_log.row_id's own
+-- COMMENT already anticipates ("NULL for composite-keyed tables"). No change is needed
+-- anywhere; its trail rows are found by table_name plus new_values->>'user_id'. The trail
+-- stays cheap to query without audit_log_row_idx: preference rows are per-user-per-category
+-- and edited rarely, not a table's worth of traffic.
 SELECT fn_attach_audit(t) FROM unnest(ARRAY['notification','notification_pref']) AS t;
 
 ALTER TABLE notification ENABLE ROW LEVEL SECURITY;
