@@ -8,30 +8,43 @@ const mockList = vi.fn()
 
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
-  MfaRequiredError: class MfaRequiredError extends Error {},
+  MfaRequiredError: FakeMfaRequired,
 }))
+// The real error classes take structured constructor arguments (component code,
+// location code, requested, available). These stand-ins take a plain message so
+// each test can assert on the exact string the action surfaces, and are used
+// DIRECTLY in the assertions below rather than re-imported — re-importing would
+// bring the real constructor signatures back with them.
+class FakeNotFound extends Error {}
+class FakeDuplicateNo extends Error {}
+class FakeInsufficientStock extends Error {}
+class FakeTrackingMismatch extends Error {}
+class FakeUnknownReference extends Error {}
+class FakeUnitNotAtSource extends Error {}
+class FakeStockPosting extends Error {}
+class FakeInvalidTransition extends Error {}
+class FakePermission extends Error {}
+class FakeOptimisticLock extends Error {}
+class FakeMfaRequired extends Error {}
+
 vi.mock('@/modules/logistics/services/stockTransferService', () => ({
   listStockTransfers: mockList,
   createStockTransfer: mockCreate,
   changeTransferStatus: mockChangeStatus,
   receiveStockTransfer: mockReceive,
-  StockTransferNotFoundError: class StockTransferNotFoundError extends Error {},
-  DuplicateTransferNumberError: class DuplicateTransferNumberError extends Error {},
-  InsufficientStockError: class InsufficientStockError extends Error {},
-  TrackingModeMismatchError: class TrackingModeMismatchError extends Error {},
-  UnknownReferenceError: class UnknownReferenceError extends Error {},
-  SerializedUnitNotAtSourceError: class SerializedUnitNotAtSourceError extends Error {},
-  StockPostingError: class StockPostingError extends Error {},
+  StockTransferNotFoundError: FakeNotFound,
+  DuplicateTransferNumberError: FakeDuplicateNo,
+  InsufficientStockError: FakeInsufficientStock,
+  TrackingModeMismatchError: FakeTrackingMismatch,
+  UnknownReferenceError: FakeUnknownReference,
+  SerializedUnitNotAtSourceError: FakeUnitNotAtSource,
+  StockPostingError: FakeStockPosting,
 }))
 vi.mock('@/modules/logistics/domain/transferStatus', () => ({
-  InvalidTransferStatusChangeError: class InvalidTransferStatusChangeError extends Error {},
+  InvalidTransferStatusChangeError: FakeInvalidTransition,
 }))
-vi.mock('@/modules/shared/authz/authorize', () => ({
-  PermissionError: class PermissionError extends Error {},
-}))
-vi.mock('@/lib/db/tx', () => ({
-  OptimisticLockError: class OptimisticLockError extends Error {},
-}))
+vi.mock('@/modules/shared/authz/authorize', () => ({ PermissionError: FakePermission }))
+vi.mock('@/lib/db/tx', () => ({ OptimisticLockError: FakeOptimisticLock }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 const {
@@ -68,17 +81,13 @@ describe('createStockTransferAction', () => {
   })
 
   it('surfaces a duplicate transfer number verbatim', async () => {
-    const { DuplicateTransferNumberError } = await import(
-      '@/modules/logistics/services/stockTransferService')
-    mockCreate.mockRejectedValue(new DuplicateTransferNumberError('ST-1 already exists'))
+    mockCreate.mockRejectedValue(new FakeDuplicateNo('ST-1 already exists'))
     expect(await createStockTransferAction(CREATE_INPUT))
       .toEqual({ ok: false, error: 'ST-1 already exists' })
   })
 
   it('surfaces a tracking-mode mismatch so the user can fix the line', async () => {
-    const { TrackingModeMismatchError } = await import(
-      '@/modules/logistics/services/stockTransferService')
-    mockCreate.mockRejectedValue(new TrackingModeMismatchError(
+    mockCreate.mockRejectedValue(new FakeTrackingMismatch(
       'pcba_a is a serialized component — transfer it by unit serial number, not by quantity'))
     const res = await createStockTransferAction(CREATE_INPUT)
     expect(res).toEqual({ ok: false, error:
@@ -102,9 +111,7 @@ describe('receiveStockTransferAction', () => {
   })
 
   it('shows the insufficient-stock message verbatim — the clerk needs the detail', async () => {
-    const { InsufficientStockError } = await import(
-      '@/modules/logistics/services/stockTransferService')
-    mockReceive.mockRejectedValue(new InsufficientStockError(
+    mockReceive.mockRejectedValue(new FakeInsufficientStock(
       'Not enough pcba_a at SG-WH: tried to move 5.000, only 2.000 on hand'))
     expect(await receiveStockTransferAction(RECEIVE_INPUT)).toEqual({
       ok: false, error: 'Not enough pcba_a at SG-WH: tried to move 5.000, only 2.000 on hand' })
@@ -113,26 +120,21 @@ describe('receiveStockTransferAction', () => {
   it('maps a duplicate receive to the transition error, not a generic failure', async () => {
     // The idempotency guard's user-visible face: receiving twice says "already
     // received" rather than silently succeeding or dumping a raw error.
-    const { InvalidTransferStatusChangeError } = await import(
-      '@/modules/logistics/domain/transferStatus')
-    mockReceive.mockRejectedValue(new InvalidTransferStatusChangeError(
+    mockReceive.mockRejectedValue(new FakeInvalidTransition(
       'Cannot move a stock transfer from "received" to "received".'))
     expect(await receiveStockTransferAction(RECEIVE_INPUT)).toEqual({
       ok: false, error: 'Cannot move a stock transfer from "received" to "received".' })
   })
 
   it('maps a moved serialized unit to its own message', async () => {
-    const { SerializedUnitNotAtSourceError } = await import(
-      '@/modules/logistics/services/stockTransferService')
-    mockReceive.mockRejectedValue(new SerializedUnitNotAtSourceError(
+    mockReceive.mockRejectedValue(new FakeUnitNotAtSource(
       'Unit SN-9 is not at SG-WH — it was moved since this transfer was raised'))
     const res = await receiveStockTransferAction(RECEIVE_INPUT)
     expect((res as { error: string }).error).toContain('SN-9')
   })
 
   it('maps an optimistic lock clash to a reload prompt', async () => {
-    const { OptimisticLockError } = await import('@/lib/db/tx')
-    mockReceive.mockRejectedValue(new OptimisticLockError('boom'))
+    mockReceive.mockRejectedValue(new FakeOptimisticLock('boom'))
     expect(await receiveStockTransferAction(RECEIVE_INPUT))
       .toEqual({ ok: false, error: 'Someone else changed this transfer. Reload and try again.' })
   })
@@ -155,9 +157,7 @@ describe('changeTransferStatusAction', () => {
   })
 
   it('maps a forbidden transition to its message', async () => {
-    const { InvalidTransferStatusChangeError } = await import(
-      '@/modules/logistics/domain/transferStatus')
-    mockChangeStatus.mockRejectedValue(new InvalidTransferStatusChangeError(
+    mockChangeStatus.mockRejectedValue(new FakeInvalidTransition(
       'Cannot move a stock transfer from "cancelled" to "dispatched".'))
     const res = await changeTransferStatusAction({
       stockTransferId: 'st1', toStatus: 'dispatched', version: 1 })
@@ -175,14 +175,12 @@ describe('the AAL2 guard is inside the try block', () => {
       stockTransferId: 'st1', toStatus: 'cancelled' as const, version: 1 })],
     ['receiveStockTransferAction', () => receiveStockTransferAction(RECEIVE_INPUT)],
   ])('%s resolves to the friendly MFA error', async (_name, invoke) => {
-    const { MfaRequiredError } = await import('@/modules/shared/auth/session')
-    mockRequireAal2Actor.mockRejectedValue(new MfaRequiredError())
+    mockRequireAal2Actor.mockRejectedValue(new FakeMfaRequired())
     await expect(invoke()).resolves.toEqual({ ok: false, error: MFA_MESSAGE })
   })
 
   it('loadMoreStockTransfersAction resolves to the friendly MFA error', async () => {
-    const { MfaRequiredError } = await import('@/modules/shared/auth/session')
-    mockRequireAal2Actor.mockRejectedValue(new MfaRequiredError())
+    mockRequireAal2Actor.mockRejectedValue(new FakeMfaRequired())
     await expect(loadMoreStockTransfersAction({})).resolves.toEqual({ error: MFA_MESSAGE })
   })
 })
