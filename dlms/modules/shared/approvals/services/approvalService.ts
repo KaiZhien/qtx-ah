@@ -468,11 +468,18 @@ export async function decideApproval(
     // table's COMMENT) so it never re-reads an approval that has since changed. Taken
     // under the SAME `FOR UPDATE` rather than in a second statement: they are immutable on
     // a pending approval (trg_approval_guard), and reading them here costs nothing.
+    // `snapshot` rides along for the same reason and at the same zero cost: it is what
+    // NAMES the record in the notification the requester reads. Without it the decided
+    // event carried `label: null`, and `recordLabel` fell back to "sales invoice 3f2a1b9c"
+    // where the requested-side notification for the very same record says "INV-2026-014".
+    // A person being told their request was decided should recognise the thing decided.
     const { rows } = await tx.query<{
       status: ApprovalStatus; requested_by: string; module: ModuleKey
       kind: ApprovalKind; entity_type: string; entity_id: string
+      snapshot: Record<string, unknown> | null
     }>(
-      `SELECT status, requested_by, module, kind, entity_type, entity_id FROM approval
+      `SELECT status, requested_by, module, kind, entity_type, entity_id, snapshot
+         FROM approval
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.approvalId])
     if (rows.length === 0) throw new ApprovalNotFoundError(data.approvalId)
     const current = rows[0]
@@ -537,7 +544,10 @@ export async function decideApproval(
         module: current.module,
         entityType: current.entity_type,
         entityId: current.entity_id,
-        label: null,
+        // Same derivation as the requested-side event, so one record reads the same in
+        // both notifications. Still nullable — labelFromSnapshot returns null for a
+        // snapshot with no recognisable name, and recordLabel's id fallback handles it.
+        label: labelFromSnapshot(current.snapshot ?? {}),
         decision: data.decision,
         note: data.note,
         requestedBy: current.requested_by,
