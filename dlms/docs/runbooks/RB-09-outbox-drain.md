@@ -22,11 +22,15 @@ The drain is the *only* thing that creates any of them.
 
 For each claimed event, in **one transaction**:
 
-| Event | Task | Notifications |
-|---|---|---|
-| `device` / `device_status_changed` | the handoff task | everyone holding a role in `status_transition.notify_roles` who can enter the receiving module |
-| `approval` / `approval_requested` | the approval task | everyone who could actually decide it, minus the requester |
-| `approval` / `approval_decided` | **none** | the requester only |
+| Event | Producer | Task | Notifications |
+|---|---|---|---|
+| `device` / `device_status_changed` | `deviceWriteService.changeDeviceStatus` | the handoff task | everyone holding a role in `status_transition.notify_roles` who can enter the receiving module |
+| `approval` / `approval_requested` | `approvalService.requestApprovalInTx` | the approval task | everyone who could actually decide it, minus the requester |
+| `approval` / `approval_decided` | `approvalService.decideApproval` | **none** | the requester only |
+
+**All three families now have a producer.** `approval_decided` was consumed-but-unproduced
+until 2026-08-04; deciding an approval now tells the requester. See "The decision
+notification, and why its emit is where it is" below.
 
 The task insert, the notification inserts and the `processed_at` stamp share that one
 transaction, so notifications inherit exactly-once from the drain rather than having a
@@ -112,6 +116,14 @@ asserted:
 - The drain creates **notifications** as well as tasks, and `status_transition.notify_roles`
   is finally read by something.
 
+**Revised again 2026-08-04** by the cross-branch wire-ups, which closed two things this
+page previously described as open:
+
+- *"`approval_decided` is consumed but not produced"* — `approvalService.decideApproval`
+  emits it now, in the decision's own transaction.
+- A **fourth** scheduled job exists, `warranty-expiry` — the second poll on this page, and
+  the first notification family with no originating event at all.
+
 **The drain has never been run against the cloud project, and the schedule has never
 fired there** — no deploy has happened since the crons were added, and the five
 migrations it depends on are still unapplied. Everything below is verified against the
@@ -148,11 +160,23 @@ dockerized Postgres `npm run test:integration` uses. Verification behind this ru
   honoured, `emailed_at` staying NULL when email is unconfigured, `approval_decided`
   notifying the requester and creating no task, the **reminder sweep producing nothing on
   a second run the same day** (and on a fifth), an overdue task re-notifying the next day,
-  and the override-expiry job soft-deleting only what has actually lapsed.
+  the override-expiry job soft-deleting only what has actually lapsed, and — added
+  2026-08-04 — the **warranty sweep firing once EVER rather than once a day**, firing again
+  on a bucket crossing and after a renewal, addressing only `manage_finance` holders, and
+  leaving the automation principal's authority untouched.
+- `__tests__/integration/approvalService.test.ts` — added 2026-08-04, the decision's
+  producer: the payload's shape, the event rolling back when it cannot be written, and
+  **no event surviving a failure at COMMIT** (the direction that actually proves one
+  transaction — see "The decision notification" above).
+- `__tests__/platform/finance/warrantyExpiry.test.ts` — the milestone domain: cumulative
+  buckets, a key with **nothing date-shaped in it**, a new key per bucket crossing, and a
+  malformed date refused rather than silently landing in a bucket.
 - `__tests__/platform/shared/{notificationPreferences,taskReminders,notificationTemplates,emailDelivery,notificationAge}.test.ts`
   — the pure halves, including the no-op mailer reporting `delivered: false` rather than
-  claiming a send.
-- The whole unit suite green: 1528 tests, up from 1441.
+  claiming a send, and every shipped category having a label (both notification pages index
+  `CATEGORY_LABELS` by the stored string, so a missing one is a runtime crash on the bell).
+- The whole unit suite green: **2211 tests**; integration **1079**. (The 1528 figure this
+  line carried on 2026-08-03 was the unit count at that merge, before five further slices.)
 
 **Fill in when the drain is first run against cloud:**
 
@@ -189,6 +213,14 @@ dockerized Postgres `npm run test:integration` uses. Verification behind this ru
   `create_records` + `view_records`. This matters because widening it is the one change
   the four enforcement points in `20260731000000_platform_outbox.sql` cannot defend
   against — they guard the ceiling, and raising the ceiling is a migration.
+- **Neither did the warranty sweep**, and it was checked rather than assumed. It spends
+  `view_records` in finance (`getExpiringWarranties`' gate — deliberately the record gate,
+  not the `view_finance` money gate) and `create_records` in finance (the fan-out's). Both
+  were already held, so the keep-list is again untouched;
+  `__tests__/integration/notificationService.test.ts` asserts the principal's resolved
+  authority is still exactly those two **after** a sweep runs. A future field on that
+  notification needing a third permission is a security decision and a migration, not a
+  wiring change.
 - It runs as the **automation principal**, not as the human who caused the event —
   `22222222-2222-2222-2222-222222222222` / `system@qtx.internal`. That principal has
   every module (a handoff crosses departments by definition) narrowed to exactly two
@@ -368,26 +400,28 @@ curl -sS -X POST "https://<deployment>/api/outbox/drain?limit=1000" \
 { "crons": [
   { "path": "/api/outbox/drain",           "schedule": "*/5 * * * *" },
   { "path": "/api/cron/task-reminders",    "schedule": "0 8 * * *" },
+  { "path": "/api/cron/warranty-expiry",   "schedule": "30 8 * * *" },
   { "path": "/api/cron/expire-overrides",  "schedule": "0 * * * *" }
 ] }
 ```
 
-Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on a `GET`. All three paths
+Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on a `GET`. All four paths
 accept exactly that, through one shared constant-time comparison
-(`modules/shared/outbox/services/cronAuth.ts`), and all three refuse everything when
+(`modules/shared/outbox/services/cronAuth.ts`), and all four refuse everything when
 `CRON_SECRET` is unset.
 
-The three jobs are defined **once**, as data, in
+The four jobs are defined **once**, as data, in
 `modules/shared/outbox/jobs/registry.ts`. `vercel.json` duplicates their schedules
 because Vercel can only read its own file; the two are pinned against each other by
 `__tests__/platform/shared/cronRoutes.test.ts`, which fails if a path or a cadence
 drifts. **Add a job by adding a registry entry AND a `vercel.json` entry** — the test
 tells you if you did only one.
 
-> **Vercel plan limits.** Hobby allows **2 cron jobs, daily only**; the three entries
+> **Vercel plan limits.** Hobby allows **2 cron jobs, daily only**; the four entries
 > above and the `*/5` cadence need **Pro**. On Hobby the extra crons are silently
 > dropped at deploy — check the project's Cron tab after the first deploy rather than
-> assuming.
+> assuming. **The count went from three to four on 2026-08-04**, so a deployment that was
+> already at a plan ceiling is now further past it.
 
 **pg-boss (spec §7.3) is scaffolded, NOT running.** `scripts/worker.ts` reads the same
 registry and schedules the same jobs, so moving to it changes the scheduling and
@@ -436,6 +470,10 @@ Both triggers report the same `DrainResult`.
   event" by hand before concluding anything.
 
 ## Notifications: who gets told, and why somebody didn't
+
+This section is about the **drain's** fan-out. The warranty sweep selects its audience
+differently — by `manage_finance` rather than by a role list — and has no causer to
+exclude; see "The other three scheduled jobs".
 
 A notification is created **only** if all of these hold. Walk them in order — the first
 three account for nearly every "why was I not told?".
@@ -492,34 +530,43 @@ that is needed to turn it on; a non-zero `emailed` is the only thing that proves
 A bounced or refused email **never fails the drain**. The notification is already written
 and visible; email is the courtesy on top of it.
 
-### Wiring the decision notification
+### The decision notification, and why its emit is where it is
 
-`approval` / `approval_decided` is **consumed but not produced**. The drain handles it —
-it notifies the requester and creates no task — and
-`__tests__/integration/notificationService.test.ts` proves it end to end, but
-**nothing emits the event**, so deciding an approval notifies nobody today.
+**WIRED 2026-08-04.** `approval` / `approval_decided` is now produced as well as consumed:
+`approvalService.decideApproval` writes the event **inside the same transaction as the
+decision**, and the drain turns it into one notification for the requester and no task.
+Its `SELECT ... FOR UPDATE` reads `kind`, `entity_type` and `entity_id` alongside `status`,
+`requested_by` and `module` purely so the payload can be self-contained.
 
-Emitting it belongs in `approvalService.decideApproval`, inside the transaction that
-records the decision. That file belonged to another slice and was deliberately not edited
-here. The whole change is one statement:
+`requestedBy` is in the payload because, unlike the other two families, the recipient is
+*not* `created_by`: for a decision the causer and the audience are different people.
+`label` is `null` — the `FOR UPDATE` deliberately does not read `snapshot`, and the
+consumer's `recordLabel` falls back to `"<entity type> <short id>"` rather than rendering
+"null".
 
-```ts
-await tx.query(
-  `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
-   VALUES ('approval', $1, 'approval_decided', $2::jsonb, $3)`,
-  [data.approvalId, JSON.stringify({
-    kind: current.kind, module: current.module,
-    entityType: current.entity_type, entityId: current.entity_id,
-    label: null, decision: data.decision, note: data.note,
-    requestedBy: current.requested_by,
-  }), actor.id])
-```
+**The emit must never be moved out of that transaction**, and the trap is specific:
+`withTransaction` takes a fresh pooled connection per call, so wrapping the INSERT in one
+"to keep notification problems out of the decision path" makes it commit independently.
+That reintroduces exactly the bug the outbox exists to prevent, in whichever direction
+loses the race — a decision nobody is told about, or a notification announcing a decision
+that then rolled back. Two integration tests hold the line and they are **not**
+interchangeable:
 
-`decideApproval`'s `SELECT ... FOR UPDATE` currently reads only `status`, `requested_by`
-and `module`, so it needs `kind`, `entity_type` and `entity_id` added to that list.
-`requestedBy` must be in the payload — unlike the other two families the recipient is
-*not* `created_by`, because for a decision the causer and the audience are different
-people.
+- *rolls the DECISION back when the event cannot be written* — a `BEFORE INSERT` trigger on
+  `outbox`. Catches a swallowed emit (`try { … } catch {}`), but a
+  separately-committing emit **passes it**, because the inner transaction's exception still
+  propagates out of the outer one.
+- *leaves NO event behind when the decision's own transaction fails at COMMIT* — a
+  `DEFERRABLE INITIALLY DEFERRED` constraint trigger on `approval`. This is the one that
+  proves shared atomicity: it fires after both writes have been issued, so an independently
+  committed event survives the rollback and is still there to be found. `decideApproval` has
+  no `…InTx` variant a caller could abort from outside, so this is the only reachable
+  expression of that failure.
+
+Two behaviours on the consumer side look like omissions and are not: the decision creates
+**no task** (it is the end of the work, not the start of some), and a requester who has
+since been deactivated is **not an error** — there is nobody left to tell, and stamping the
+event processed is correct.
 
 ## The attempts cap is global, not a per-drain retry budget
 
@@ -723,10 +770,17 @@ which the Admin dashboard's job-queue widget (spec §8.5) also calls **directly*
 definition, so the dashboard and the health check cannot disagree. The dashboard does not
 fetch this endpoint.
 
-## The other two scheduled jobs
+## The other three scheduled jobs
 
 They ride the same registry, the same secret and the same route shape, so they are
 documented here rather than in pages of their own.
+
+**Two of them are POLLS, and that is not a design slip.** The drain discharges intents
+somebody's write created; `task-reminders` and `warranty-expiry` answer questions about the
+calendar, and **time passing is not a write**. Nothing can emit an event nobody caused, so
+there is no outbox row to drain and the only mechanism available is to look. If a future
+job is tempted to poll for something a user action *does* record, it should ride the outbox
+instead.
 
 **`/api/cron/task-reminders` — daily at 08:00 UTC** (spec §8.3). Notifies the assignee of
 every task due tomorrow or already overdue.
@@ -747,6 +801,42 @@ also survives two runs racing each other.
 The day component is what makes an overdue task nag **daily** rather than once forever.
 Unassigned tasks are skipped — a reminder needs somebody to remind, and handoff tasks are
 created unassigned on purpose.
+
+**`/api/cron/warranty-expiry` — daily at 08:30 UTC** (spec §8.5, "warranties expiring
+30/60/90 d"). Tells everyone who can renew a warranty that one is running out.
+
+```bash
+curl -sS https://<deployment>/api/cron/warranty-expiry -H "Authorization: Bearer $CRON_SECRET"
+# {"job":"warranty-expiry","ms":205,
+#  "result":{"scanned":37,"due":4,"created":8,"recipients":2,"emailed":0,"truncated":false}}
+```
+
+**Its dedupe key deliberately has NO day component**, and that is the single most likely
+thing to be "fixed" into a bug by somebody copying the reminder sweep sitting right above
+it. `warranty_expiring:<warrantyId>:<milestone>` — a task reminder *should* nag daily, a
+warranty milestone must fire **once ever**. Three notifications per warranty over its whole
+life: one as it crosses 90 days, one at 60, one at 30. Re-running the job today, tomorrow
+and every day for a month adds nothing, so a crashed run is free to re-run.
+
+Three more things worth knowing before triaging it:
+
+- **Keyed on the WARRANTY, never the device.** A renewal mints a new `warranty` row and
+  soft-deletes the old one (`warranty_device_live_unique` is partial on
+  `deleted_at IS NULL`). Keyed on the device, the successor would inherit the
+  predecessor's used keys and never notify again — silently, for that device's life.
+- **The audience is `manage_finance`, not `view_records`.** Warranty *reads* are
+  deliberately open to anyone with Finance module access, but this message is a call to
+  action, and `manager` does not hold `manage_finance` (spec §3.2) — so a Finance-capable
+  manager correctly hears nothing. `finance`, `admin` and `super_admin` do.
+- **`truncated: true` means the run did not see the whole horizon.** The scan is capped at
+  `getExpiringWarranties`' own limit of **200**, ordered by `end_date` ascending, so a
+  saturated run keeps the nearest expiries and loses the far end of the 90-day window.
+  Unlike a missed task reminder this does **not** self-heal tomorrow — the key has no day,
+  so nothing retries it — although a warranty that later moves into a tighter bucket does
+  get a fresh key and a fresh chance. It is logged server-side as
+  `the warranty expiry sweep hit its scan ceiling`. At ~1700 devices on two-year cover the
+  steady-state 90-day population is around 210, so this is reachable rather than
+  theoretical; the fix is to raise that ceiling in `warrantyService`.
 
 **`/api/cron/expire-overrides` — hourly** (spec §6.3, "Worker expires hourly").
 Soft-deletes `user_permission_override` rows whose `expires_at` has passed.
