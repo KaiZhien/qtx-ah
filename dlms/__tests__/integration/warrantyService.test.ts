@@ -1,11 +1,9 @@
 // __tests__/integration/warrantyService.test.ts
 //
-// Written but NOT run in this worktree — no docker here, and
-// `npm run test:integration` boots Postgres on the fixed port 55432 that every
-// parallel agent shares, so a concurrent run poisons the others. The controller
-// runs this serially at merge against __tests__/integration/setup.ts, which
-// picks up 20260803120000_platform_finance_warranty.sql automatically (the
-// filename matches PLATFORM_MIGRATION_RE).
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`). The
+// harness (__tests__/integration/setup.ts) picks up
+// 20260803120000_platform_finance_warranty.sql automatically — the filename
+// matches PLATFORM_MIGRATION_RE.
 //
 // Idiom mirrors __tests__/integration/financeService.test.ts: mock
 // @/lib/supabase/server, connect real pg via TEST_DATABASE_URL, runTag so rows

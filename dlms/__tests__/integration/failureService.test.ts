@@ -5,8 +5,7 @@
 // pg for setup/assertions, a per-run tag so every re-run against the same
 // non-rollback database is independent, cleanup in afterAll.
 //
-// NOT run in this worktree — the integration DB port is shared with the other
-// agents working in parallel; the controller runs this suite serially at merge.
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'

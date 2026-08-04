@@ -1,9 +1,7 @@
 // __tests__/integration/invoicePdfService.test.ts
 //
-// Written but NOT run in this worktree — no docker here, and
-// `npm run test:integration` boots Postgres on the fixed port 55432 shared with
-// every parallel agent. The controller runs this serially at merge; the harness
-// picks up 20260803120000_platform_finance_warranty.sql automatically.
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`); the
+// harness picks up 20260803120000_platform_finance_warranty.sql automatically.
 //
 // A separate file from financeService.test.ts on purpose: that file belongs to
 // the invoice/approval workstream and merging into it would collide.

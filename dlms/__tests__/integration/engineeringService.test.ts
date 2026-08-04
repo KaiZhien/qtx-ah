@@ -3,9 +3,8 @@
 // Integration tests for the Engineering services against a real Postgres
 // (TEST_DATABASE_URL), mirroring deviceWriteService.test.ts's harness idiom:
 // mock @/lib/supabase/server, real pg for setup/assertions, runTag for unique
-// values, cleanup in afterAll. NOT run in this worktree (the controller runs the
-// integration suite serially at merge — the DB port is shared with parallel
-// agents).
+// values, cleanup in afterAll. Run and green as of the 2026-08-04 merge
+// (`npm run test:integration`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'

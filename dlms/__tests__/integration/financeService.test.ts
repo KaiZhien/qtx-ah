@@ -1,11 +1,9 @@
 // __tests__/integration/financeService.test.ts
 //
-// Written but NOT run in this worktree — no docker / no `npm run test:integration`
-// available here (the ephemeral Postgres container's port is shared across
-// parallel agents building other modules). The controller runs this at merge
-// against the real test harness (__tests__/integration/setup.ts), which already
-// picks up 20260720120000_platform_finance.sql automatically (its filename
-// matches PLATFORM_MIGRATION_RE). Idiom mirrors
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`). The
+// harness (__tests__/integration/setup.ts) picks up
+// 20260720120000_platform_finance.sql automatically — its filename matches
+// PLATFORM_MIGRATION_RE. Idiom mirrors
 // __tests__/integration/deviceWriteService.test.ts: mock @/lib/supabase/server,
 // connect real pg via TEST_DATABASE_URL, runTag for unique invoice_nos,
 // afterAll cleanup of everything this file creates.
