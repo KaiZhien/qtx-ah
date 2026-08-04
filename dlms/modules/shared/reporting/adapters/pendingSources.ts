@@ -62,25 +62,66 @@ export async function fetchWarrantyExpiryCounts(
   return null
 }
 
-export type RootCauseCount = { rootCause: string; label: string; count: number }
+export type RootCauseCount = { code: string; label: string; count: number }
+
+/** See the note on the search adapter's copy: guards a cross-branch migration. */
+async function tableExists(tx: Tx, table: string): Promise<boolean> {
+  const { rows } = await tx.query<{ reg: string | null }>(
+    `SELECT to_regclass($1)::text AS reg`, [`public.${table}`])
+  return rows[0]?.reg !== null
+}
 
 /**
- * Spec §8.5 "repairs by root cause (30/90 d)".
+ * Spec §8.5 "repairs by root cause (30/90 d)" — WIRED.
  *
- * OWNER: agent ENGINEERING (failure/RCA records). NOT WIRED — and it is blocked
- * on a MODELLING gap, not just a missing table: `repair` records causes only as
- * free-text `fault_description` / `diagnosis`, which cannot be grouped. This
- * widget needs either a `failure_investigation` row per repair carrying a
- * structured cause, or a `root_cause_option` vocabulary referenced from `repair`.
+ * THE JOIN IS NOT THE OBVIOUS ONE, and this is the note worth reading. `repair`
+ * has no `root_cause` column — it never did, despite spec §6.3 listing one for
+ * that table. The structured cause lives on the failure investigation:
  *
- * TO IMPLEMENT: group repairs closed within the window by that structured cause,
- * resolving the label FROM THE VOCABULARY TABLE rather than a code list in TS —
- * this is precisely the admin-extensible case CLAUDE.md warns about.
+ *     repair → failure_investigation.repair_id
+ *            → failure_investigation.root_cause_id
+ *            → root_cause_option.code
+ *
+ * Anyone "simplifying" this to `repair.root_cause` will find no such column;
+ * anyone adding one will split the truth across two places.
+ *
+ * FOUR RULES THIS QUERY KEEPS:
+ *
+ *   1. COUNT CLASSIFIED ROWS ONLY. An investigation can sit `open`/`investigating`
+ *      with `root_cause_id` NULL, and an unclassified failure is not a root cause
+ *      called "none" — it is a row that has not been diagnosed. The WHERE clause
+ *      matches agent ENGINEERING's partial index `fi_root_cause_idx` predicate
+ *      exactly (`deleted_at IS NULL AND root_cause_id IS NOT NULL`) so the index
+ *      is actually used.
+ *   2. NOTHING BRANCHES ON A CODE. Labels come from `root_cause_option` and the
+ *      ordering from its `sort`, so the ten seeded causes, any admin-added
+ *      eleventh, and prod drift all work with no code change. This is the trap
+ *      CLAUDE.md records as having bitten this project in production.
+ *   3. THE WINDOW IS ON `opened_at`, matching the index's second key, and is
+ *      computed in SQL against `now()` so the database's clock decides.
+ *   4. GUARDED ON TABLE EXISTENCE — their migration is on another branch.
+ *
+ * The classification has teeth on their side: reaching `root_cause_identified` or
+ * `closed` REQUIRES a `root_cause_id`, not prose. So every closed investigation is
+ * countable and this widget cannot be defeated by someone typing a paragraph.
  */
 export async function fetchRepairsByRootCause(
-  _tx: Tx, _actor: Actor, _windowDays: 30 | 90,
+  tx: Tx, _actor: Actor, windowDays: 30 | 90,
 ): Promise<RootCauseCount[] | null> {
-  return null
+  if (!(await tableExists(tx, 'failure_investigation'))) return null
+  if (!(await tableExists(tx, 'root_cause_option'))) return null
+
+  const { rows } = await tx.query<{ code: string; label: string; n: string }>(
+    `SELECT o.code, o.name AS label, count(f.id)::text AS n
+       FROM failure_investigation f
+       JOIN root_cause_option o ON o.id = f.root_cause_id
+      WHERE f.deleted_at IS NULL
+        AND f.root_cause_id IS NOT NULL
+        AND f.opened_at > now() - ($1 || ' days')::interval
+      GROUP BY o.code, o.name, o.sort
+      ORDER BY count(f.id) DESC, o.sort`, [String(windowDays)])
+
+  return rows.map((r) => ({ code: r.code, label: r.label, count: Number(r.n) }))
 }
 
 export type QueueHealthView = {

@@ -36,6 +36,13 @@ export type ExportEntity = {
   /** Excludes soft-deleted rows unless the set IS the historical record. */
   liveOnly: boolean
   description: string
+  /**
+   * A schema change landing on another branch that this entry must be updated for
+   * BEFORE the export is trusted. Surfaced by a unit test so it cannot be merged
+   * unnoticed — a silently-wrong export is the worst kind, because manifest.json
+   * makes its row count look deliberate.
+   */
+  pendingSchemaChange?: string
 }
 
 const AUDIT_COLS = ['created_at', 'created_by', 'updated_at', 'updated_by', 'deleted_at', 'version']
@@ -156,6 +163,24 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
     orderBy: 'variant_id, component_type_id', liveOnly: false,
     description: 'Flat per-variant bill of materials — one line per component type, '
       + 'with quantity. No nested sub-assemblies (spec D17).',
+    pendingSchemaChange:
+      'agent ENGINEERING adds BOM EFFECTIVITY to this table: effective_from_date, '
+      + 'effective_to_date, effective_from_serial, effective_to_serial, '
+      + 'created_by_eco_id, superseded_by_eco_id — and DROPS '
+      + 'UNIQUE(variant_id, component_type_id) for a PARTIAL unique index over only '
+      + 'the still-open line. '
+      + 'CONSEQUENCE FOR THIS EXPORT: the table stops holding one row per '
+      + '(variant, component type) and starts holding SUPERSEDED HISTORY TOO, so this '
+      + 'CSV silently grows without anything looking wrong — and manifest.json will '
+      + 'report the inflated count as though it were intended, which is precisely what '
+      + 'makes it hard to catch. '
+      + 'ACTION AT INTEGRATION, pick one deliberately: (a) keep exporting every row '
+      + 'and add the six columns above so the history is READABLE rather than merely '
+      + 'present — the honest choice for a full-system export, whose job is fidelity; '
+      + 'or (b) restrict to the open line with '
+      + '`WHERE effective_to_date IS NULL AND effective_to_serial IS NULL`. '
+      + 'Do NOT leave it as-is: today\'s column list would export history rows while '
+      + 'omitting the very columns that say they are history.',
   },
 
   // ── Tasks ─────────────────────────────────────────────────────────────────

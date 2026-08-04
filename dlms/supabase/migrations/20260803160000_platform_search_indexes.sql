@@ -69,6 +69,28 @@ CREATE INDEX IF NOT EXISTS ecr_no_trgm ON ecr
 CREATE INDEX IF NOT EXISTS eco_no_trgm ON eco
   USING gin (lower(translate(eco_no, ' -', '')) gin_trgm_ops);
 
+-- failure_investigation.fi_no (spec §8.4 "FI refs") — agent ENGINEERING's table.
+--
+-- GUARDED, because this migration and the one creating that table land from two
+-- different branches and nothing guarantees the order. An unguarded CREATE INDEX
+-- on a missing relation fails the whole migration; skipping quietly is the wrong
+-- failure mode too, so it RAISES A NOTICE naming exactly what to do.
+--
+-- Their `fi_no_lower_idx` is a BTREE on `lower(fi_no)` for exact/prefix lookup.
+-- This is a TRIGRAM index on a different expression, serving partial match. The
+-- two do not collide and neither makes the other redundant.
+DO $$
+BEGIN
+  IF to_regclass('public.failure_investigation') IS NOT NULL THEN
+    CREATE INDEX IF NOT EXISTS failure_investigation_no_trgm ON failure_investigation
+      USING gin (lower(translate(fi_no, ' -', '')) gin_trgm_ops);
+  ELSE
+    RAISE NOTICE 'Skipped failure_investigation_no_trgm: table not present yet. '
+      'Re-run this statement after the Engineering failure/RCA migration applies, '
+      'or global search falls back to a sequential scan for FI- refs.';
+  END IF;
+END $$;
+
 -- ── Search: name family ────────────────────────────────────────────────────
 -- task.title already has task_title_trgm (20260719000000_platform_tasks.sql).
 

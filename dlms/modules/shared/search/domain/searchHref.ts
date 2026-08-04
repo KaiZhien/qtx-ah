@@ -21,6 +21,8 @@ const SEARCH_ROUTES: Partial<Record<SearchGroupKey, string>> = {
   deliveryOrders: '/logistics/delivery-orders',
   ecrs: '/engineering/ecr',
   ecos: '/engineering/eco',
+  // Confirmed with agent ENGINEERING: /engineering/failures and .../[id].
+  failures: '/engineering/failures',
   tasks: '/tasks',
   // Confirmed with agent MAINTENANCE: their modification UI ships at
   // /maintenance/modifications/[id] (plus a list and a /new route).

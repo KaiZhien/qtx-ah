@@ -9,6 +9,9 @@ import { searchHref } from '@/modules/shared/search/domain/searchHref'
 import {
   buildNeedles, isSearchable, MAX_QUERY_LENGTH, PER_GROUP_LIMIT, type Needles,
 } from '@/modules/shared/search/domain/searchQuery'
+import {
+  searchFailureInvestigations,
+} from '@/modules/shared/search/adapters/pendingGroups'
 
 /**
  * Global search (spec §8.4) — the I/O half.
@@ -269,6 +272,15 @@ async function runGroup(
           LIMIT ${p(limit)}`, params)
       return toHits(rows)
     }
+
+    case 'failures':
+      // Lives in the adapter because agent ENGINEERING's `failure_investigation`
+      // is on another branch. It guards on table existence and returns null until
+      // that migration lands — `runGroup`'s caller drops an empty group, so an
+      // unapplied migration costs a `to_regclass` lookup and nothing else. Without
+      // that guard a missing relation would abort the whole search transaction,
+      // taking every OTHER group down with it rather than just this one.
+      return (await searchFailureInvestigations(tx, actor, n, limit)) ?? []
 
     case 'tasks':
       return searchTasks(tx, actor, params, p, n, limit)

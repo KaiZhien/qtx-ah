@@ -32,7 +32,7 @@ import type { SearchFamily } from './searchQuery'
  */
 export type SearchGroupKey =
   | 'devices' | 'components' | 'buyers' | 'invoices' | 'deliveryOrders'
-  | 'repairs' | 'modifications' | 'ecrs' | 'ecos' | 'tasks' | 'users'
+  | 'repairs' | 'modifications' | 'ecrs' | 'ecos' | 'failures' | 'tasks' | 'users'
 
 export type SearchGroupDef = {
   key: SearchGroupKey
@@ -58,6 +58,11 @@ export const SEARCH_GROUPS: readonly SearchGroupDef[] = [
     family: 'ref', sort: 5 },
   { key: 'ecos', label: 'Change orders', permission: 'view_records', module: 'engineering',
     family: 'ref', sort: 6 },
+  // Spec §8.4 "FI refs". The query lives in adapters/pendingGroups.ts because
+  // agent ENGINEERING's table is on another branch; it guards on table existence
+  // and yields no group until that migration lands.
+  { key: 'failures', label: 'Failure investigations', permission: 'view_records',
+    module: 'engineering', family: 'ref', sort: 6.5 },
   { key: 'invoices', label: 'Invoices', permission: 'view_finance', module: 'finance',
     family: 'ref', sort: 7 },
   { key: 'buyers', label: 'Buyers', permission: 'view_finance', module: 'finance',

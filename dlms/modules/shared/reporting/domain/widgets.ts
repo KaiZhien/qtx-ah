@@ -61,14 +61,12 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetDef[] = [
   { key: 'activeRepairsByState', label: 'Active repairs by state (days in state)',
     section: 'maintenance', permission: 'view_records', module: 'maintenance',
     status: 'live', sort: 20 },
-  { key: 'repairsByRootCause', label: 'Repairs by root cause (30/90 d)',
-    section: 'maintenance', permission: 'view_records', module: 'maintenance',
-    status: 'pending',
-    pendingOn: 'A root-cause vocabulary. `repair` has only free-text '
-      + '`fault_description`/`diagnosis`, which cannot be grouped. Needs agent '
-      + "ENGINEERING's failure/RCA work (`failure_investigation`) or a "
-      + '`root_cause_option` vocabulary on `repair`.',
-    sort: 21 },
+  // Reads through failure_investigation, NOT a repair.root_cause column — there
+  // is none, and there never was, despite spec §6.3 listing one. Gated on
+  // ENGINEERING's module because that is whose table answers the question.
+  { key: 'repairsByRootCause', label: 'Failures by root cause (30/90 d)',
+    section: 'maintenance', permission: 'view_records', module: 'engineering',
+    status: 'live', sort: 21 },
 
   // ── Logistics / Finance ────────────────────────────────────────────────────
   { key: 'deliveriesDueThisWeek', label: 'Deliveries due this week',

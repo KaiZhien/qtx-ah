@@ -5,6 +5,7 @@ import {
 } from '@/modules/shared/navigation/moduleRegistry'
 import { ModuleNav } from '@/components/platform/ModuleNav'
 import { NotificationBell } from '@/components/notifications/NotificationBell'
+import { SearchPalette } from '@/components/search/SearchPalette'
 import { createClient } from '@/lib/supabase/server'
 import { requiresMfa, mfaGateStatus, type AalLevel } from '@/modules/shared/auth/mfaPolicy'
 
@@ -30,7 +31,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       <ModuleNav modules={modules} crossModuleLinks={crossModuleLinks} />
       <div className="flex flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b bg-white px-6">
-          <span className="text-sm text-slate-500">Search — coming in week 9</span>
+          <SearchPalette />
           <span className="flex items-center gap-3">
             <NotificationBell />
             <span className="text-sm font-medium text-slate-700">{actor.roleKey.replace('_', ' ')}</span>

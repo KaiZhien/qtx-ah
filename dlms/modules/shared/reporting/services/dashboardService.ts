@@ -286,11 +286,22 @@ export async function getActiveRepairsByState(actor: Actor): Promise<RepairState
     }))
 }
 
-/** NOT WIRED — see adapters/pendingSources.ts. Returns null until a cause exists. */
+/**
+ * Failures by root cause (spec §8.5 "repairs by root cause (30/90 d)").
+ *
+ * GATED ON `engineering`, not `maintenance`, and the widget registry agrees. The
+ * data is `failure_investigation` joined to `root_cause_option` — both
+ * Engineering's tables — because `repair` carries no structured cause. Gating it
+ * on Maintenance would hand Engineering's records to an actor who cannot open a
+ * single one of them.
+ *
+ * Returns null until agent ENGINEERING's migration lands; the widget then renders
+ * "not available" rather than an empty chart. See the adapter for the join.
+ */
 export async function getRepairsByRootCause(
   actor: Actor, windowDays: 30 | 90 = 30,
 ): Promise<RootCauseCount[] | null> {
-  authorize(actor, 'view_records', 'maintenance')
+  authorize(actor, 'view_records', 'engineering')
   return withCache(actor, `repairsByRootCause:${windowDays}`, () =>
     withTransaction(actor.id, (tx) => fetchRepairsByRootCause(tx, actor, windowDays)))
 }
