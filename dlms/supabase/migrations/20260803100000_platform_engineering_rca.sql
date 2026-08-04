@@ -70,7 +70,7 @@ CREATE TABLE root_cause_option (
   version integer NOT NULL DEFAULT 1
 );
 COMMENT ON TABLE root_cause_option IS
-  'Admin-extensible root-cause vocabulary (spec §6.3). A TABLE, not an enum: adding "ESD damage" is a row INSERT through the admin console, never a migration. Retiring one is `active = false` — never a delete, because closed investigations still reference it. This is what makes spec §8.5''s "repairs by root cause" widget possible: group failure_investigation.root_cause_id, join here for the label.';
+  'Extensible root-cause vocabulary (spec §6.3). A TABLE, not an enum: adding "ESD damage" is a row INSERT, never a migration, and no application code branches on a code. Retiring one is `active = false` — never a delete, because closed investigations still reference it. This is what makes spec §8.5''s "repairs by root cause" widget possible: group failure_investigation.root_cause_id, join here for the label. NO ADMIN SCREEN EXISTS YET — there is no /admin route over this table, so today an eleventh cause is added by SQL. The schema is what makes the console a later afternoon''s work rather than a migration; it is not evidence that the console is there.';
 COMMENT ON COLUMN root_cause_option.active IS
   'Soft-disable. An inactive cause disappears from the picker but stays resolvable on records that already use it.';
 COMMENT ON COLUMN root_cause_option.code IS
@@ -210,7 +210,7 @@ CREATE TABLE failure_status_history (
   changed_at timestamptz NOT NULL DEFAULT now()
 );
 COMMENT ON TABLE failure_status_history IS
-  'Append-only FI status-change log, mirroring repair_status_history. Written in the SAME transaction as each status change (and as the row''s creation), so the timeline can never disagree with failure_investigation.status.';
+  'FI status-change log, mirroring repair_status_history. Written in the SAME transaction as each status change (and as the row''s creation), so the timeline can never disagree with failure_investigation.status. APPEND-ONLY BY CONVENTION, NOT BY ENFORCEMENT: nothing in the service ever UPDATEs or DELETEs a row here, and fn_audit trails any write that did, but there is no refusing trigger of the fn_task_comment_guard / fn_component_installation_guard kind. Its two structural siblings repair_status_history and modification_status_history are in exactly the same position, so guarding this one alone would buy a third of the protection and a new inconsistency; the guard belongs to all three at once, in one migration. Do not read "append-only" here as a database guarantee — see the carried findings in docs/superpowers/PROGRESS.md.';
 CREATE INDEX fsh_failure ON failure_status_history(failure_id, changed_at DESC);
 
 -- Audit on both tables (history is append-only in practice — its INSERT is

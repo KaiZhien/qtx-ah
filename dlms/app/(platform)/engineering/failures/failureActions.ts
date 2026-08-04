@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { z } from 'zod'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
@@ -24,6 +25,13 @@ export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string
 function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
+  }
+  // A ZodError is the form disagreeing with the schema (an over-long title, a
+  // malformed date), which the user can act on. Four other action files map it;
+  // leaving it here to fall through would log a "failed" line for a typo and
+  // tell the user "something went wrong".
+  if (err instanceof z.ZodError) {
+    return err.errors[0]?.message ?? 'That change could not be read. Check the form and try again.'
   }
   if (err instanceof InvalidFailureTransitionError) return err.message
   if (err instanceof FailureEscalationError) return err.message

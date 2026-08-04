@@ -141,6 +141,49 @@ describe('createFailure', () => {
       title: 'x', deviceId: '00000000-0000-0000-0000-000000000000',
     })).rejects.toThrow(FailureSubjectNotFoundError)
   })
+
+  // root_cause_id had no such check, so a vocabulary row deleted while the form
+  // was open produced a raw 23503 and "Something went wrong" — the one FK on
+  // this table whose target is admin-editable, and so the likeliest to move.
+  it('refuses a root cause that does not exist, by name rather than by 23503', async () => {
+    const err = await createFailure(op(), {
+      title: `Bad-cause ${runTag}`, rootCauseId: '00000000-0000-0000-0000-000000000000',
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(FailureSubjectNotFoundError)
+    expect((err as FailureSubjectNotFoundError).subject).toBe('root cause')
+  })
+
+  it('refuses the same on update', async () => {
+    const c = await createFailure(op(), { title: `Bad-cause-update ${runTag}` })
+    failureIds.push(c.id)
+    await expect(updateFailure(op(), {
+      id: c.id, version: await versionOf(c.id),
+      rootCauseId: '00000000-0000-0000-0000-000000000000',
+    })).rejects.toThrow(FailureSubjectNotFoundError)
+  })
+
+  // …but an INACTIVE cause still writes: the picker filters on active, the write
+  // must not, or a record classified before the cause was retired becomes
+  // uneditable without silently losing its classification.
+  it('accepts an INACTIVE root cause, because the picker is not the boundary', async () => {
+    const retired = (await db.query<{ id: string }>(
+      `INSERT INTO root_cause_option (code, name, active, sort)
+       VALUES ($1,$2,false,999) RETURNING id`,
+      [`retired-${runTag}`, `Retired cause ${runTag}`])).rows[0].id
+    const c = await createFailure(op(), {
+      title: `Inactive-cause ${runTag}`, rootCauseId: retired,
+    })
+    failureIds.push(c.id)
+    const { rows } = await db.query(
+      `SELECT root_cause_id FROM failure_investigation WHERE id=$1`, [c.id])
+    expect(rows[0].root_cause_id).toBe(retired)
+
+    // The option list still hides it, which is the pairing that matters.
+    expect((await listRootCauseOptions(op())).map((o) => o.id)).not.toContain(retired)
+
+    await db.query(`UPDATE failure_investigation SET root_cause_id=NULL WHERE id=$1`, [c.id])
+    await db.query(`DELETE FROM root_cause_option WHERE id=$1`, [retired])
+  })
 })
 
 describe('reads', () => {
@@ -341,12 +384,55 @@ describe('escalation to a change order', () => {
     })).rejects.toThrow(FailureEscalationError)
   })
 
-  it('refuses escalation with no classified root cause', async () => {
+  /**
+   * I6 — createEco used to commit BEFORE any precondition was evaluated, so
+   * every refusal on the `newEco` path left a permanent unlinked draft ECO with
+   * an `eco_no` burned out of the year's sequence. This test PROVED it and did
+   * not notice: it never pushed the created ECO to `ecoIds`, so the leak
+   * accumulated in the test database on every run. The read-only pre-pass now
+   * refuses first, and the assertion below is the pin.
+   */
+  it('refuses escalation with no classified root cause, minting NO change order', async () => {
     const c = await createFailure(op(), { title: `No-cause ${runTag}` })
     failureIds.push(c.id)
+    const ecoTitle = `Never ${runTag}`
     await expect(escalateFailureToEco(op(), {
-      id: c.id, version: await versionOf(c.id), newEco: { title: `Never ${runTag}` },
+      id: c.id, version: await versionOf(c.id), newEco: { title: ecoTitle },
     })).rejects.toThrow(FailureEscalationError)
+
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM eco WHERE title = $1`, [ecoTitle])
+    expect(rows[0].n).toBe('0')
+  })
+
+  it('mints no change order for a STALE version either', async () => {
+    const fi = await openWithRootCause(`Stale-escalate ${runTag}`)
+    const ecoTitle = `Stale never ${runTag}`
+    await expect(escalateFailureToEco(op(), {
+      id: fi.id, version: fi.version + 99, newEco: { title: ecoTitle },
+    })).rejects.toThrow(OptimisticLockError)
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM eco WHERE title = $1`, [ecoTitle])
+    expect(rows[0].n).toBe('0')
+  })
+
+  it('mints no SECOND change order when a double-submitted form re-escalates', async () => {
+    // The realistic case: the user clicks Escalate twice. The first commits, the
+    // second used to create a whole new draft ECO and only THEN discover the FI
+    // was already linked.
+    const fi = await openWithRootCause(`Double-submit ${runTag}`)
+    const first = await escalateFailureToEco(op(), {
+      id: fi.id, version: fi.version, newEco: { title: `Double first ${runTag}` },
+    })
+    ecoIds.push(first.ecoId)
+
+    const secondTitle = `Double second ${runTag}`
+    await expect(escalateFailureToEco(op(), {
+      id: fi.id, version: first.version, newEco: { title: secondTitle },
+    })).rejects.toThrow(FailureEscalationError)
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM eco WHERE title = $1`, [secondTitle])
+    expect(rows[0].n).toBe('0')
   })
 
   it('refuses escalation from a terminal investigation', async () => {
@@ -367,6 +453,57 @@ describe('escalation to a change order', () => {
       const { rows } = await db.query<{ status: string }>(
         `SELECT status FROM eco WHERE id = ANY($1)`, [ids])
       expect(rows.every((r) => ['draft', 'submitted', 'approved'].includes(r.status))).toBe(true)
+    }
+  })
+})
+
+/**
+ * ORDERING, not merely outcome — the same property deviceWriteService.test.ts
+ * pins for changeDeviceStatus. authorize.ts is "the choke point. Every service
+ * entry point calls this before touching data": a denied call must never reach
+ * the pool, or a denial during a database outage surfaces as a connection error
+ * (a 500) instead of a PermissionError (a 403), and every other assertion in
+ * this file stays green while it happens.
+ *
+ * escalateFailureToEco is the one worth pinning hardest: it now runs a read-only
+ * pre-pass BEFORE createEco, which is exactly the kind of "just add a read at
+ * the top" edit that tends to arrive above the guard.
+ *
+ * Proven the only way the outcome distinguishes the two: point a FRESH module
+ * graph's pool at an unreachable port.
+ */
+describe('failureService — guards run before the connection', () => {
+  it('authorizes and validates before it ever acquires a connection', async () => {
+    const previous = process.env.DATABASE_URL
+    vi.resetModules()
+    process.env.DATABASE_URL = 'postgresql://nobody:nobody@127.0.0.1:1/unreachable'
+    try {
+      const svc = await import('@/modules/engineering/services/failureService')
+      const authz = await import('@/modules/shared/authz/authorize')
+
+      await expect(svc.createFailure(viewer(), { title: 'x' }))
+        .rejects.toThrow(authz.PermissionError)
+      await expect(svc.changeFailureStatus(viewer(), {
+        id: crypto.randomUUID(), version: 1, toStatus: 'investigating',
+      })).rejects.toThrow(authz.PermissionError)
+      await expect(svc.escalateFailureToEco(viewer(), {
+        id: crypto.randomUUID(), version: 1, newEco: { title: 'never' },
+      })).rejects.toThrow(authz.PermissionError)
+      await expect(svc.getFailureStatusCounts(outsider()))
+        .rejects.toThrow(authz.PermissionError)
+
+      // …and validation, which must also fail before a connection is asked for —
+      // including the refine that forbids naming BOTH escalation targets, since
+      // that one lives on the schema rather than in the transaction.
+      await expect(svc.updateFailure(op(), { id: 'not-a-uuid', version: 1 }))
+        .rejects.toThrow(/uuid/i)
+      await expect(svc.escalateFailureToEco(op(), {
+        id: crypto.randomUUID(), version: 1,
+        ecoId: crypto.randomUUID(), newEco: { title: 'both' },
+      })).rejects.toThrow(/exactly one/i)
+    } finally {
+      process.env.DATABASE_URL = previous
+      vi.resetModules()
     }
   })
 })

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { z } from 'zod'
 
 // ---------------------------------------------------------------------------
 // Failure-investigation action layer: the sanitization contract.
@@ -113,6 +114,20 @@ describe('error sanitization', () => {
     mockCreate.mockRejectedValue(new PermissionError('create_records', 'engineering'))
     await expect(createFailureAction({ title: 'x' })).resolves.toEqual({
       ok: false, error: "You don't have permission to do that.",
+    })
+  })
+
+  it('renders a ZodError as the field message the user can act on', async () => {
+    // A ZodError is the form disagreeing with the schema, not an internal fault.
+    // Untreated it fell to the generic branch, which also logged an error line
+    // for every over-long title someone typed.
+    const zerr = new z.ZodError([{
+      code: 'too_big', maximum: 200, type: 'string', inclusive: true,
+      path: ['title'], message: 'String must contain at most 200 character(s)',
+    }] as never)
+    mockCreate.mockRejectedValue(zerr)
+    await expect(createFailureAction({ title: 'x'.repeat(400) })).resolves.toEqual({
+      ok: false, error: 'String must contain at most 200 character(s)',
     })
   })
 

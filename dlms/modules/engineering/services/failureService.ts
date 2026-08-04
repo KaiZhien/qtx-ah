@@ -36,10 +36,12 @@ export class FailureNotFoundError extends Error {
   }
 }
 
-/** A device / repair / ECO named on an FI that does not exist (or is deleted). */
+/** A device / repair / ECO / root cause named on an FI that does not exist. */
+export type FailureSubject = 'device' | 'repair' | 'change order' | 'root cause'
+
 export class FailureSubjectNotFoundError extends Error {
-  readonly subject: 'device' | 'repair' | 'change order'
-  constructor(subject: 'device' | 'repair' | 'change order') {
+  readonly subject: FailureSubject
+  constructor(subject: FailureSubject) {
     super(`That ${subject} no longer exists`)
     this.name = 'FailureSubjectNotFoundError'
     this.subject = subject
@@ -363,10 +365,15 @@ export type CreateFailureInput = z.input<typeof createSchema>
 
 // Verifies an optional FK target is live before we point at it. Runs inside the
 // caller's transaction so the check and the INSERT cannot straddle a delete.
+//
+// root_cause_option is checked for EXISTENCE only, never for `active`: the
+// picker filters on active, but an inactive cause must stay writable so a record
+// carrying one can be edited without silently losing its classification (the
+// same rule modification types follow in createModification).
 async function assertSubjectExists(
   tx: { query: (t: string, v?: unknown[]) => Promise<{ rows: unknown[] }> },
-  table: 'device' | 'repair' | 'eco', id: string,
-  subject: 'device' | 'repair' | 'change order',
+  table: 'device' | 'repair' | 'eco' | 'root_cause_option', id: string,
+  subject: FailureSubject,
 ): Promise<void> {
   const { rows } = await tx.query(
     `SELECT 1 FROM ${table} WHERE id = $1 AND deleted_at IS NULL`, [id])
@@ -388,6 +395,9 @@ export async function createFailure(
   return withTransaction(actor.id, async (tx) => {
     if (data.deviceId) await assertSubjectExists(tx, 'device', data.deviceId, 'device')
     if (data.repairId) await assertSubjectExists(tx, 'repair', data.repairId, 'repair')
+    if (data.rootCauseId) {
+      await assertSubjectExists(tx, 'root_cause_option', data.rootCauseId, 'root cause')
+    }
 
     const { rows } = await tx.query<{ id: string; fi_no: string }>(
       `INSERT INTO failure_investigation
@@ -454,6 +464,9 @@ export async function updateFailure(
     }
     if (data.deviceId) await assertSubjectExists(tx, 'device', data.deviceId, 'device')
     if (data.repairId) await assertSubjectExists(tx, 'repair', data.repairId, 'repair')
+    if (data.rootCauseId) {
+      await assertSubjectExists(tx, 'root_cause_option', data.rootCauseId, 'root cause')
+    }
 
     const params: unknown[] = []
     const p = (v: unknown) => { params.push(v); return `$${params.length}` }
@@ -554,6 +567,46 @@ const escalateSchema = z.object({
 })
 export type EscalateFailureInput = z.input<typeof escalateSchema>
 
+type EscalationSubject = {
+  status: FailureStatus; version: number
+  root_cause_id: string | null; eco_id: string | null
+}
+
+/**
+ * The escalation preconditions, in ONE place so the read-only pre-pass and the
+ * locked write can never drift apart — the pre-pass exists to stop a doomed
+ * request minting an ECO, which only works if it refuses exactly what the write
+ * refuses. Returns 'noop' for the idempotent re-link so the caller can short out.
+ *
+ * `targetEcoId` is null from the pre-pass, where the target does not exist yet;
+ * an FI already linked to anything is `already_escalated` there by construction.
+ */
+function assertEscalatable(
+  current: EscalationSubject, expectedVersion: number, failureId: string,
+  targetEcoId: string | null,
+): 'link' | 'noop' {
+  if (current.version !== expectedVersion) {
+    throw new OptimisticLockError('failure_investigation', failureId)
+  }
+  if (isTerminalFailureStatus(current.status)) {
+    throw new FailureEscalationError(
+      'terminal',
+      `A ${failureStatusLabel(current.status).toLowerCase()} investigation cannot be escalated.`)
+  }
+  if (!current.root_cause_id) {
+    throw new FailureEscalationError(
+      'root_cause_required',
+      'Classify the root cause before escalating to a change order.')
+  }
+  if (current.eco_id && targetEcoId && current.eco_id === targetEcoId) return 'noop'
+  if (current.eco_id) {
+    throw new FailureEscalationError(
+      'already_escalated',
+      'This investigation is already escalated to a change order.')
+  }
+  return 'link'
+}
+
 /**
  * Escalate an investigation to a change order (spec §6.3's "eng_change FK when
  * escalated" — here `eco_id`, see the migration header for why the ORDER).
@@ -576,12 +629,41 @@ export type EscalateFailureInput = z.input<typeof escalateSchema>
  * re-usable via the `ecoId` path — never a lost or half-written FI. Collapsing
  * this into one transaction needs a tx-taking insertEco(tx, ...) from whoever
  * owns the ECO service; see ASSUMPTIONS in the branch report.
+ *
+ * THE SEAM IS A CRASH WINDOW, NOT A REFUSAL PATH — and it used to be both.
+ * createEco committed before ANY precondition had been evaluated, so a stale
+ * `version`, a terminal investigation, an unclassified root cause or an
+ * already-escalated FI each left a permanent unlinked draft ECO behind with an
+ * `eco_no` burned out of the year's sequence. Every one of those is a routine
+ * refusal (a double-submitted form hits the last one every time), so the ordinary
+ * cost of using the feature was a growing pile of orphan drafts. The READ-ONLY
+ * PRE-PASS below evaluates the same preconditions BEFORE minting anything. It
+ * weakens nothing: every check is made again inside the linking transaction
+ * under FOR UPDATE, which is where the answers actually bind. It only stops the
+ * ECO being minted for a request that was never going to succeed.
  */
 export async function escalateFailureToEco(
   actor: Actor, input: EscalateFailureInput,
 ): Promise<{ ecoId: string; ecoNo: string | null; version: number }> {
   authorize(actor, 'edit_records', 'engineering')
   const data = escalateSchema.parse(input)
+
+  // Only the newEco path can leak — the ecoId path mints nothing, so paying for
+  // an extra round trip there would buy an answer the locked read gives anyway.
+  if (data.newEco) {
+    await withTransaction(actor.id, async (tx) => {
+      const { rows } = await tx.query<{
+        status: FailureStatus; version: number; root_cause_id: string | null; eco_id: string | null
+      }>(
+        `SELECT status, version, root_cause_id, eco_id FROM failure_investigation
+          WHERE id = $1 AND deleted_at IS NULL`, [data.id])
+      if (rows.length === 0) throw new FailureNotFoundError(data.id)
+      // targetEcoId is null: a brand-new ECO cannot be the one already linked, so
+      // ANY existing link is `already_escalated` here. That is the double-submit
+      // case, and it is now refused without minting a second draft.
+      assertEscalatable(rows[0], data.version, data.id, null)
+    })
+  }
 
   // createEco authorizes create_records itself, before it takes a connection.
   const target = data.newEco
@@ -596,24 +678,8 @@ export async function escalateFailureToEco(
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
     if (rows.length === 0) throw new FailureNotFoundError(data.id)
     const current = rows[0]
-    if (current.version !== data.version) {
-      throw new OptimisticLockError('failure_investigation', data.id)
-    }
-    if (isTerminalFailureStatus(current.status)) {
-      throw new FailureEscalationError(
-        'terminal',
-        `A ${failureStatusLabel(current.status).toLowerCase()} investigation cannot be escalated.`)
-    }
-    if (!current.root_cause_id) {
-      throw new FailureEscalationError(
-        'root_cause_required',
-        'Classify the root cause before escalating to a change order.')
-    }
-    if (current.eco_id && current.eco_id === target.id) return current.version // idempotent
-    if (current.eco_id) {
-      throw new FailureEscalationError(
-        'already_escalated',
-        'This investigation is already escalated to a change order.')
+    if (assertEscalatable(current, data.version, data.id, target.id) === 'noop') {
+      return current.version
     }
 
     await assertSubjectExists(tx, 'eco', target.id, 'change order')
