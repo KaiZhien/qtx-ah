@@ -47,7 +47,29 @@ export function normalizeRef(raw: string): string {
   return raw.toLowerCase().replace(/[\s-]/g, '')
 }
 
-/** Name/title family: lowercase, collapse whitespace runs, trim. Separators kept. */
+/**
+ * Name/title family: lowercase, collapse whitespace runs, trim. Separators kept.
+ *
+ * ── THE COLLAPSE IS ONE-SIDED, AND KNOWING WHICH SIDE MATTERS ──────────────
+ * This normalizes the QUERY. The COLUMN is matched raw — `b.name ILIKE '%…%'` —
+ * because the name-family index is a plain `gin_trgm_ops` over the raw column
+ * (20260803160000_platform_search_indexes.sql), and gin_trgm_ops supports ILIKE
+ * on it directly. So the two directions are not symmetric:
+ *
+ *   typed "acme  corp"  → "acme corp"  → MATCHES a stored "Acme Corp"   ✓
+ *   typed "acme corp"   → "acme corp"  → MISSES  a stored "Acme  Corp"  ✗
+ *
+ * The collapse fixes sloppy typing, which is the common case; it cannot fix a
+ * doubled space in the stored value, which is the rare one. Closing that second
+ * gap means matching `regexp_replace(lower(name), '\s+', ' ', 'g')`, and a
+ * Postgres expression index is used only when the query's expression matches it
+ * character for character — so it is a MIGRATION (a new expression index on
+ * every name-family column), not a change to this function. Editing only the
+ * TypeScript would leave the predicate unable to use any index and turn every
+ * keystroke into a sequential scan of every searchable table at once, which is
+ * the failure this module's header warns about. Left as-is deliberately; see the
+ * carried findings.
+ */
 export function normalizeName(raw: string): string {
   return raw.toLowerCase().replace(/\s+/g, ' ').trim()
 }

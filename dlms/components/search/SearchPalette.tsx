@@ -73,18 +73,34 @@ export function SearchPalette() {
 
     const seq = ++requestSeq.current
     setLoading(true)
+    // THE CALLBACK IS ASYNC, SO IT MUST CATCH ITS OWN REJECTION. `setTimeout` has
+    // nowhere to put a rejected promise: an expired session, a dropped connection
+    // or a server-action transport error would surface as an unhandled rejection
+    // in the console while the palette sat on "Searching…" forever. This is the
+    // same uncaught-async-in-a-callback shape already carried against
+    // DeviceTable's "Load more".
     const timer = setTimeout(async () => {
-      const res = await searchAction(query)
-      if (seq !== requestSeq.current) return // a newer keystroke already won
-      setLoading(false)
-      if (res.ok) {
-        setGroups(res.result.groups)
-        setError(null)
-      } else {
+      try {
+        const res = await searchAction(query)
+        if (seq !== requestSeq.current) return // a newer keystroke already won
+        setLoading(false)
+        if (res.ok) {
+          setGroups(res.result.groups)
+          setError(null)
+        } else {
+          setGroups([])
+          setError(res.error)
+        }
+        setActive(0)
+      } catch {
+        // A stale response's failure must not overwrite a newer query's results,
+        // exactly as its success would not.
+        if (seq !== requestSeq.current) return
+        setLoading(false)
         setGroups([])
-        setError(res.error)
+        setError('Search is unavailable right now. Try again in a moment.')
+        setActive(0)
       }
-      setActive(0)
     }, DEBOUNCE_MS)
 
     return () => clearTimeout(timer)
