@@ -19,7 +19,7 @@ import { expireOverrides } from '@/modules/shared/outbox/jobs/expireOverrides'
  *
  * `schedule` is the cron expression BOTH runners use, and it is duplicated into
  * `vercel.json` because Vercel reads its schedule from that file and cannot read this one.
- * The pin in __tests__/platform/shared/cronSchedule.test.ts is what stops the two drifting.
+ * The pin in __tests__/platform/shared/cronRoutes.test.ts is what stops the two drifting.
  */
 
 export type JobResult = Record<string, unknown>
