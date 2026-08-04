@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DeviceStatusPill } from './StatusPill'
 import { loadMoreDevicesAction } from '@/app/(platform)/manufacturing/devices/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import type { DeviceFilter, DeviceListItem } from '@/modules/manufacturing/services/deviceReadService'
 
 type DeviceTableProps = {
@@ -37,14 +38,23 @@ export function DeviceTable({ initialItems, initialCursor, filter }: DeviceTable
   function loadMore() {
     if (!cursor) return
     setError(null)
+    // The callback is async, so it must catch its own rejection: the action's
+    // own failures come back as `{ error }`, but the INVOCATION can still reject
+    // (expired session, dropped connection, stale action id after a redeploy) and
+    // React rethrows that into the error boundary, losing every page already
+    // accumulated in this table.
     startTransition(async () => {
-      const res = await loadMoreDevicesAction({ ...filter, cursor })
-      if ('error' in res) {
-        setError(res.error)
-        return
+      try {
+        const res = await loadMoreDevicesAction({ ...filter, cursor })
+        if ('error' in res) {
+          setError(res.error)
+          return
+        }
+        setItems((prev) => [...prev, ...res.items])
+        setCursor(res.nextCursor)
+      } catch (err) {
+        setError(callFailed('device load-more', err))
       }
-      setItems((prev) => [...prev, ...res.items])
-      setCursor(res.nextCursor)
     })
   }
 

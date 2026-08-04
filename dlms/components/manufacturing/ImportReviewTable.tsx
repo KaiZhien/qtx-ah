@@ -8,7 +8,7 @@ import type { ImportRowView } from '@/modules/manufacturing/services/importCommi
 import {
   IMPORT_ROW_PAGE_LIMIT, type ImportRowStatus,
 } from '@/modules/manufacturing/domain/importUi'
-import { callFailed } from '@/components/manufacturing/importCallFailed'
+import { callFailed } from '@/components/platform/callFailed'
 import { Button } from '@/components/ui/button'
 
 const TABS = [
@@ -119,7 +119,7 @@ export function ImportReviewTable(
                             if (!res.ok) { setError(res.error); return }
                             router.refresh()
                           } catch (err) {
-                            setError(callFailed('skip', err))
+                            setError(callFailed('import skip', err))
                           }
                         })
                       }}

@@ -9,7 +9,7 @@ import {
   advanceCommit, ZERO_COMMIT_TOTALS, MAX_COMMIT_PASSES,
   type CommitTotals, type CommitStop,
 } from '@/modules/manufacturing/domain/importUi'
-import { callFailed } from '@/components/manufacturing/importCallFailed'
+import { callFailed } from '@/components/platform/callFailed'
 import { Button } from '@/components/ui/button'
 
 const tally = (t: CommitTotals) =>
@@ -77,7 +77,7 @@ export function ImportCommitPanel(
         } catch (err) {
           // Whatever already committed is committed — say so, or 400 imported
           // rows read as "nothing happened".
-          setMessage(`${callFailed('commit', err)} ${tally(totals)} before this.`)
+          setMessage(`${callFailed('import commit', err)} ${tally(totals)} before this.`)
           return
         }
         if (!res.ok) {
@@ -122,7 +122,7 @@ export function ImportCommitPanel(
                   ? `Requeued ${res.data.requeued} failed row${res.data.requeued === 1 ? '' : 's'} — import again to retry.`
                   : res.error)
               } catch (err) {
-                setMessage(callFailed('retry', err))
+                setMessage(callFailed('import retry', err))
               }
             })
           }}
@@ -146,7 +146,7 @@ export function ImportCommitPanel(
               const res = await cancelBatchAction({ batchId })
               if (!res.ok) setMessage(res.error)
             } catch (err) {
-              setMessage(callFailed('cancel', err))
+              setMessage(callFailed('import cancel', err))
             }
           })
         }}

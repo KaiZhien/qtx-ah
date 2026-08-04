@@ -6,6 +6,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Button } from '@/components/ui/button'
 import { InvoiceStatusPill } from './InvoiceStatusPill'
 import { loadMoreInvoicesAction } from '@/app/(platform)/finance/invoices/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import type { InvoiceFilter, InvoiceListItem } from '@/modules/finance/services/invoiceService'
 
 type InvoiceTableProps = {
@@ -33,14 +34,21 @@ export function InvoiceTable({ initialItems, initialCursor, filter }: InvoiceTab
   function loadMore() {
     if (!cursor) return
     setError(null)
+    // The callback is async, so it must catch its own rejection — see
+    // components/platform/callFailed.ts. Without it a transport failure escalates
+    // to the error boundary and every accumulated page is lost.
     startTransition(async () => {
-      const res = await loadMoreInvoicesAction({ ...filter, cursor })
-      if ('error' in res) {
-        setError(res.error)
-        return
+      try {
+        const res = await loadMoreInvoicesAction({ ...filter, cursor })
+        if ('error' in res) {
+          setError(res.error)
+          return
+        }
+        setItems((prev) => [...prev, ...res.items])
+        setCursor(res.nextCursor)
+      } catch (err) {
+        setError(callFailed('invoice load-more', err))
       }
-      setItems((prev) => [...prev, ...res.items])
-      setCursor(res.nextCursor)
     })
   }
 

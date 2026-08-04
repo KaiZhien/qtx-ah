@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { uploadImportAction } from '@/app/(platform)/manufacturing/import/actions'
 import type { VocabOption } from '@/modules/manufacturing/services/deviceReadService'
 import { MAX_UPLOAD_LABEL } from '@/modules/manufacturing/domain/importLimits'
-import { callFailed } from '@/components/manufacturing/importCallFailed'
+import { callFailed } from '@/components/platform/callFailed'
 import { Button } from '@/components/ui/button'
 
 /**
@@ -46,7 +46,7 @@ export function ImportUploadForm({ variants }: { variants: VocabOption[] }) {
             }
             setError(res.error)
           } catch (err) {
-            setError(callFailed('upload', err))
+            setError(callFailed('import upload', err))
           }
           setUploading(false)
         })

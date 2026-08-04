@@ -6,6 +6,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui/table'
 import { setNotificationPreferenceAction } from '@/app/(platform)/notifications/actions'
+import { callFailed } from '@/components/platform/callFailed'
 
 export type PreferenceRowView = {
   category: string
@@ -43,15 +44,24 @@ export function PreferenceTable({ rows }: { rows: PreferenceRowView[] }) {
 
     setState((prev) => prev.map((r) => (r.category === category ? next : r)))
 
+    // Revert: a switch that shows a setting the server rejected is a lie the user will
+    // act on — and a CALL that rejects is the same lie, so both paths revert. Uncaught,
+    // the rejection would additionally take the page to the error boundary.
+    const revert = () =>
+      setState((prev) => prev.map((r) => (r.category === category ? current : r)))
+
     startTransition(async () => {
-      const result = await setNotificationPreferenceAction({
-        category: next.category, inApp: next.inApp, email: next.email, digest: next.digest,
-      })
-      if (!result.ok) {
-        // Revert: a switch that shows a setting the server rejected is a lie the user will
-        // act on.
-        setState((prev) => prev.map((r) => (r.category === category ? current : r)))
-        toast.error(result.error)
+      try {
+        const result = await setNotificationPreferenceAction({
+          category: next.category, inApp: next.inApp, email: next.email, digest: next.digest,
+        })
+        if (!result.ok) {
+          revert()
+          toast.error(result.error)
+        }
+      } catch (err) {
+        revert()
+        toast.error(callFailed('notification preference', err))
       }
     })
   }

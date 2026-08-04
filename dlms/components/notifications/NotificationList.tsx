@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import {
   markNotificationReadAction, markAllNotificationsReadAction,
 } from '@/app/(platform)/notifications/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import { cn } from '@/lib/utils'
 
 export type NotificationRow = {
@@ -45,17 +46,27 @@ export function NotificationList({ rows, unread }: Props) {
   const open = (row: NotificationRow) => {
     if (!isRead(row)) {
       setReadIds((prev) => new Set(prev).add(row.id))
+      // The revert lives in the failure branch, so the CALL rejecting — rather
+      // than the action refusing — has to revert too, or the row stays optimistically
+      // read forever against a database that never heard about it. Uncaught, that
+      // rejection would also take the whole page to the error boundary.
+      const revert = () => setReadIds((prev) => {
+        const next = new Set(prev)
+        next.delete(row.id)
+        return next
+      })
       startTransition(async () => {
-        const result = await markNotificationReadAction(row.id)
-        if (!result.ok) {
-          // Put it back: a badge that disagrees with the database is worse than a
-          // notification that stayed unread.
-          setReadIds((prev) => {
-            const next = new Set(prev)
-            next.delete(row.id)
-            return next
-          })
-          toast.error(result.error)
+        try {
+          const result = await markNotificationReadAction(row.id)
+          if (!result.ok) {
+            // Put it back: a badge that disagrees with the database is worse than a
+            // notification that stayed unread.
+            revert()
+            toast.error(result.error)
+          }
+        } catch (err) {
+          revert()
+          toast.error(callFailed('notification mark-read', err))
         }
       })
     }
@@ -64,15 +75,20 @@ export function NotificationList({ rows, unread }: Props) {
 
   const markAll = () => {
     startTransition(async () => {
-      const result = await markAllNotificationsReadAction()
-      if (result.ok) {
-        setReadIds(new Set(rows.map((r) => r.id)))
-        toast.success(result.data.marked === 0
-          ? 'Nothing was unread.'
-          : `Marked ${result.data.marked} as read.`)
-        router.refresh()
-      } else {
-        toast.error(result.error)
+      try {
+        const result = await markAllNotificationsReadAction()
+        if (result.ok) {
+          setReadIds(new Set(rows.map((r) => r.id)))
+          toast.success(result.data.marked === 0
+            ? 'Nothing was unread.'
+            : `Marked ${result.data.marked} as read.`)
+          router.refresh()
+        } else {
+          toast.error(result.error)
+        }
+      } catch (err) {
+        // Nothing to revert here — this one only marks read on success.
+        toast.error(callFailed('notification mark-all-read', err))
       }
     })
   }

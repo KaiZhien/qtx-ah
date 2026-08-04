@@ -7,6 +7,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Button } from '@/components/ui/button'
 import { TransferStatusPill } from './TransferStatusPill'
 import { loadMoreStockTransfersAction } from '@/app/(platform)/logistics/transfers/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import type {
   StockTransferFilter, StockTransferListItem,
 } from '@/modules/logistics/services/stockTransferService'
@@ -32,11 +33,18 @@ export function StockTransferTable({ initialItems, initialCursor, filter }: Prop
   function loadMore() {
     if (!cursor) return
     setError(null)
+    // The callback is async, so it must catch its own rejection — see
+    // components/platform/callFailed.ts. Without it a transport failure escalates
+    // to the error boundary and every accumulated page is lost.
     startTransition(async () => {
-      const res = await loadMoreStockTransfersAction({ ...filter, cursor })
-      if ('error' in res) { setError(res.error); return }
-      setItems((prev) => [...prev, ...res.items])
-      setCursor(res.nextCursor)
+      try {
+        const res = await loadMoreStockTransfersAction({ ...filter, cursor })
+        if ('error' in res) { setError(res.error); return }
+        setItems((prev) => [...prev, ...res.items])
+        setCursor(res.nextCursor)
+      } catch (err) {
+        setError(callFailed('stock transfer load-more', err))
+      }
     })
   }
 

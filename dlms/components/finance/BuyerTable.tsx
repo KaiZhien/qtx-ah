@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { loadMoreBuyersAction } from '@/app/(platform)/finance/buyers/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import type { BuyerFilter, BuyerListItem } from '@/modules/finance/services/buyerService'
 
 type BuyerTableProps = {
@@ -27,14 +28,21 @@ export function BuyerTable({ initialItems, initialCursor, filter }: BuyerTablePr
   function loadMore() {
     if (!cursor) return
     setError(null)
+    // The callback is async, so it must catch its own rejection — see
+    // components/platform/callFailed.ts. Without it a transport failure escalates
+    // to the error boundary and every accumulated page is lost.
     startTransition(async () => {
-      const res = await loadMoreBuyersAction({ ...filter, cursor })
-      if ('error' in res) {
-        setError(res.error)
-        return
+      try {
+        const res = await loadMoreBuyersAction({ ...filter, cursor })
+        if ('error' in res) {
+          setError(res.error)
+          return
+        }
+        setItems((prev) => [...prev, ...res.items])
+        setCursor(res.nextCursor)
+      } catch (err) {
+        setError(callFailed('buyer load-more', err))
       }
-      setItems((prev) => [...prev, ...res.items])
-      setCursor(res.nextCursor)
     })
   }
 

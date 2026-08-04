@@ -6,6 +6,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Button } from '@/components/ui/button'
 import { DoStatusPill } from './DoStatusPill'
 import { loadMoreDeliveryOrdersAction } from '@/app/(platform)/logistics/delivery-orders/actions'
+import { callFailed } from '@/components/platform/callFailed'
 import type {
   DeliveryOrderFilter, DeliveryOrderListItem,
 } from '@/modules/logistics/services/deliveryOrderService'
@@ -35,14 +36,21 @@ export function DeliveryOrderTable({ initialItems, initialCursor, filter }: Deli
   function loadMore() {
     if (!cursor) return
     setError(null)
+    // The callback is async, so it must catch its own rejection — see
+    // components/platform/callFailed.ts. Without it a transport failure escalates
+    // to the error boundary and every accumulated page is lost.
     startTransition(async () => {
-      const res = await loadMoreDeliveryOrdersAction({ ...filter, cursor })
-      if ('error' in res) {
-        setError(res.error)
-        return
+      try {
+        const res = await loadMoreDeliveryOrdersAction({ ...filter, cursor })
+        if ('error' in res) {
+          setError(res.error)
+          return
+        }
+        setItems((prev) => [...prev, ...res.items])
+        setCursor(res.nextCursor)
+      } catch (err) {
+        setError(callFailed('delivery order load-more', err))
       }
-      setItems((prev) => [...prev, ...res.items])
-      setCursor(res.nextCursor)
     })
   }
 
