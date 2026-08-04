@@ -52,6 +52,37 @@ const superAdmin = (over: Partial<Actor> = {}): Actor => ({
 
 const requester = () => ({ id: userId, name: `Exporter ${TOK}`, email: `${TOK}@example.com` })
 
+/**
+ * Splits ONE already-line-separated CSV record into fields, honouring RFC 4180
+ * quoting (`""` is a literal quote, a quoted field may contain commas).
+ *
+ * Written here rather than imported: the point of these assertions is to read the
+ * archive back with something that does not share code with the writer, so a
+ * quoting bug cannot cancel itself out. The fixture row contains `无 wifi 版本,
+ * "special"` precisely to exercise both rules.
+ */
+function splitCsvLine(line: string): string[] {
+  const fields: string[] = []
+  let field = ''
+  let quoted = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (quoted) {
+      if (ch !== '"') { field += ch; continue }
+      if (line[i + 1] === '"') { field += '"'; i++; continue }
+      quoted = false
+    } else if (ch === '"') {
+      quoted = true
+    } else if (ch === ',') {
+      fields.push(field); field = ''
+    } else {
+      field += ch
+    }
+  }
+  fields.push(field)
+  return fields
+}
+
 /** Reads the ZIP back through its central directory — an independent parse. */
 function readZip(zip: Buffer): Map<string, Buffer> {
   let eocd = -1
@@ -81,6 +112,11 @@ function readZip(zip: Buffer): Map<string, Buffer> {
 }
 
 beforeAll(async () => {
+  // The service under test opens its OWN connection through getPool(), which
+  // reads DATABASE_URL. Without this line the pool falls back to libpq defaults
+  // and tries to open a database named after the OS user; only this file's own
+  // `db` client would reach the test container.
+  process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await db.connect()
 
@@ -107,6 +143,11 @@ afterAll(async () => {
   await db.query(`DELETE FROM audit_log WHERE table_name = 'full_system_export'
                     AND actor_id = $1`, [userId])
   await db.query(`DELETE FROM device WHERE id = ANY($1::uuid[])`, [createdDeviceIds])
+  // The fixture user cannot be deleted — audit rows reference it — but it must not
+  // be left as a SECOND ACTIVE SUPER ADMIN in a shared, non-rollback database.
+  // userService's last-Super-Admin tests assert a GLOBAL property, and this row
+  // silently satisfied the guard for them (this file sorts before that one).
+  await db.query(`UPDATE app_user SET active = false WHERE id = $1`, [userId])
   await db.end()
   await getPool().end()
 })
@@ -287,13 +328,23 @@ describe('date columns survive the trip — CLAUDE.md\'s ::text rule', () => {
   it('writes build_date and ship_date as bare YYYY-MM-DD', async () => {
     const built = await buildFullExport(superAdmin(), requester(), freshMfa)
     const csv = readZip(built.zip).get('csv/device.csv')!.toString('utf8')
-    const line = csv.split('\r\n').find((l) => l.includes(`EXP-${TOK}-1`))!
+    const lines = csv.split('\r\n')
+    const header = splitCsvLine(lines[0].replace(/^﻿/, ''))
+    const row = splitCsvLine(lines.find((l) => l.includes(`EXP-${TOK}-1`))!)
+    const cell = (column: string) => row[header.indexOf(column)]
 
-    expect(line).toContain('2026-08-04')
-    expect(line).toContain('2026-01-01')
-    // The failure mode, named: a date must never arrive carrying a time.
-    expect(line).not.toMatch(/2026-08-0\dT\d{2}:\d{2}/)
-    expect(line).not.toContain('2026-08-03')
+    // ASSERTED PER FIELD, not by searching the whole line. The original searched
+    // the joined row for `/2026-08-0\dT\d{2}:\d{2}/` — which the row's own
+    // `created_at` matches, because it is a timestamptz and legitimately an
+    // instant. So the test passed or failed on WHAT DAY IT WAS RUN: green on
+    // 2026-08-12, red on 2026-08-04. Naming the two columns is both narrower and
+    // stricter — an exact equality rather than a substring hunt.
+    expect(cell('build_date')).toBe('2026-08-04')
+    expect(cell('ship_date')).toBe('2026-01-01')
+    // The failure mode, named: a date must never arrive carrying a time — and the
+    // UTC+8 day-shift that comes with it (`2026-08-03T16:00:00.000Z`) is ruled out
+    // by the equality above in every host timezone.
+    for (const c of ['build_date', 'ship_date']) expect(cell(c)).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
   it('writes date columns in the JSON sets as strings too', async () => {

@@ -17,6 +17,12 @@ const actorOf = (id: string, roleKey: Actor['roleKey'], perms: string[]): Actor 
   permissions: new Set(perms as never), moduleAccess: new Set(['admin']), active: true,
 })
 
+/**
+ * Super admins this file stood down so `saId` is genuinely the last one, restored
+ * in afterAll — see beforeAll.
+ */
+let standDownIds: string[] = []
+
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
@@ -26,8 +32,28 @@ beforeAll(async () => {
     INSERT INTO app_user (email, full_name, role_id, module_access, active)
     SELECT 'op@test.local', 'Op Test', r.id, ARRAY['manufacturing']::text[], true
       FROM role r WHERE r.key = 'operator' RETURNING id`)).rows[0].id
+
+  // "THE LAST SUPER ADMIN" IS A GLOBAL PROPERTY, SO IT HAS TO BE ESTABLISHED, NOT
+  // ASSUMED. These tests share a non-rollback database with forty other files, and
+  // any of them may leave an active super admin behind — exportService did exactly
+  // that, and because it sorts before this file, `assertNotLastSuperAdmin` was
+  // correctly finding a second admin and correctly NOT throwing. The guard was
+  // never broken; the precondition was. Stood down here, restored in afterAll, so
+  // the fixture is this file's own doing rather than the run order's.
+  standDownIds = (await db.query<{ id: string }>(`
+    UPDATE app_user u SET active = false
+      FROM role r
+     WHERE r.id = u.role_id AND r.key = 'super_admin'
+       AND u.active AND u.deleted_at IS NULL AND u.id <> $1
+    RETURNING u.id`, [saId])).rows.map((r) => r.id)
 })
-afterAll(async () => { await db.end(); await getPool().end() })
+afterAll(async () => {
+  if (standDownIds.length) {
+    await db.query(`UPDATE app_user SET active = true WHERE id = ANY($1::uuid[])`, [standDownIds])
+  }
+  await db.end()
+  await getPool().end()
+})
 
 const versionOf = async (id: string) =>
   (await db.query(`SELECT version FROM app_user WHERE id = $1`, [id])).rows[0].version

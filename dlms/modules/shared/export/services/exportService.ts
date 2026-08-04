@@ -304,14 +304,32 @@ async function readEntity(
  * (which applies the migration files directly). An export that refuses to build
  * because it cannot name its own schema version would be a worse outcome than one
  * that admits it does not know.
+ *
+ * ── THE SAVEPOINT IS THE FALLBACK; A BARE try/catch WAS NOT ────────────────
+ * This began as `try { … } catch { return 'unknown' }`, which cannot work here
+ * and never did: in Postgres a failed statement ABORTS its transaction, so
+ * swallowing the error in JavaScript leaves the connection poisoned and every
+ * later statement fails with 25P02 "current transaction is aborted". The next
+ * statement is `recordExportEvent(…, 'built')`, so the export died anyway — with
+ * an error naming neither the missing schema nor the export. The guard was
+ * unreachable in exactly the situation it was written for, which is why it looked
+ * fine everywhere `supabase_migrations` happens to exist.
+ *
+ * A savepoint gives Postgres its own place to roll back to, so `ROLLBACK TO`
+ * returns the transaction to a usable state and the caller's single-snapshot
+ * guarantee survives. It also covers the case `to_regclass` would not: the schema
+ * present but unreadable by this role.
  */
 async function readSchemaVersion(tx: Tx): Promise<string> {
+  await tx.query('SAVEPOINT export_schema_version')
   try {
     const { rows } = await tx.query<{ version: string }>(
       `SELECT version FROM supabase_migrations.schema_migrations
         ORDER BY version DESC LIMIT 1`)
+    await tx.query('RELEASE SAVEPOINT export_schema_version')
     return rows[0]?.version ?? 'unknown'
   } catch {
+    await tx.query('ROLLBACK TO SAVEPOINT export_schema_version')
     return 'unknown'
   }
 }
@@ -330,14 +348,26 @@ export type ExportEventKind = 'requested' | 'built' | 'downloaded'
  * `row_id` is the export id. `audit_log.row_id` is nullable and `fn_audit` is
  * shape-agnostic by design, so a synthetic subject is a shape this table already
  * accommodates rather than an abuse of it.
+ *
+ * ── occurred_at IS clock_timestamp(), NOT THE COLUMN DEFAULT ───────────────
+ * `audit_log.occurred_at` defaults to `now()`, which in Postgres is TRANSACTION
+ * start time and therefore identical for every row a transaction writes.
+ * 'requested' and 'built' are written by the SAME transaction, so under the
+ * default they carry the same instant to the microsecond — and a trail whose
+ * whole value is "these three things happened, in this order" cannot be sorted
+ * into that order at all. Worse, it reads as if the export took no time, which is
+ * the one thing an auditor might reasonably want to know. `clock_timestamp()` is
+ * the real wall clock at statement time, so the two rows are distinct and
+ * `ORDER BY occurred_at` means what every reader assumes it means.
  */
 export async function recordExportEvent(
   tx: Tx, actor: Actor, exportId: string, kind: ExportEventKind,
   detail: Record<string, unknown> = {},
 ): Promise<void> {
   await tx.query(
-    `INSERT INTO audit_log (table_name, row_id, action, actor_id, new_values, reason)
-     VALUES ('full_system_export', $1, 'insert', $2, $3::jsonb, $4)`,
+    `INSERT INTO audit_log (table_name, row_id, action, actor_id, new_values, reason,
+                            occurred_at)
+     VALUES ('full_system_export', $1, 'insert', $2, $3::jsonb, $4, clock_timestamp())`,
     [exportId, actor.id, JSON.stringify({ event: kind, ...detail }),
       `Full-system export ${kind}`])
 }
