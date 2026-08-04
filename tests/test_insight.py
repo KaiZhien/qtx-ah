@@ -210,9 +210,10 @@ def test_saving_insight_stores_embedding(db_session, monkeypatch):
 
     row = db_session.query(PatientInsight).filter_by(patient_id=p.id).one()
     assert row.embedding is not None
-    # Embedding may be stored as a numpy array by the pgvector column type
+    # pgvector stores vectors as float32, so values round-trip with reduced precision
     stored = list(row.embedding) if hasattr(row.embedding, "tolist") else row.embedding
-    assert stored == fake_vec
+    assert len(stored) == len(fake_vec)
+    assert stored == pytest.approx(fake_vec, rel=1e-6)
 
 
 def test_saving_insight_with_null_embedding_persists_row(db_session, monkeypatch):
