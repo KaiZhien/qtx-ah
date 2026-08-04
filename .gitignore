@@ -46,3 +46,4 @@ logs/
 .vercel
 .env*
 .env.example
+HANDOVER.md
