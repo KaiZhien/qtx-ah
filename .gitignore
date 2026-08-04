@@ -47,3 +47,6 @@ logs/
 .env*
 .env.example
 HANDOVER.md
+
+# Secrets vault template — NEVER commit (hand over via credential channel, then delete)
+VAULT.md
