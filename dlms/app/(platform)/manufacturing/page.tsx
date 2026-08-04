@@ -57,13 +57,28 @@ export default async function ManufacturingPage() {
         </div>
       </div>
 
-      {can(actor, 'import_data', 'manufacturing') && can(actor, 'view_records', 'manufacturing') && (
-        <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-4">
+        {can(actor, 'import_data', 'manufacturing') && can(actor, 'view_records', 'manufacturing') && (
           <Link href="/manufacturing/import" className="text-sm font-medium text-primary hover:underline">
             Import devices →
           </Link>
-        </div>
-      )}
+        )}
+        {/*
+          The component-type catalogue was an ORPHAN — built, gated and tested,
+          with nothing anywhere in the app linking to it, so it was reachable only
+          by typing the URL. Found by routeReachability.test.ts while closing the
+          same defect on /search.
+
+          No `can()` around it, deliberately: the catalogue page enforces
+          `view_records` in manufacturing, which is the very gate this landing page
+          already required to render at all (MODULE_REGISTRY's manufacturing gate).
+          Re-checking it here would imply the two could differ; they cannot, and
+          the offer can never dead-end at a 404.
+        */}
+        <Link href="/manufacturing/components" className="text-sm font-medium text-primary hover:underline">
+          Component types →
+        </Link>
+      </div>
 
       <p className="inline-block rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-500">
         Create, edit, and status-change actions land Week 3.

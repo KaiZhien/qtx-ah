@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Search } from 'lucide-react'
+import { Search, ArrowUpRight } from 'lucide-react'
 import { searchAction } from '@/app/(platform)/search/actions'
 import { MIN_QUERY_LENGTH } from '@/modules/shared/search/domain/searchQuery'
+import { searchResultsPageHref } from '@/modules/shared/search/domain/searchHref'
 import type { SearchGroupResult } from '@/modules/shared/search/services/searchService'
 import { cn } from '@/lib/utils'
 
@@ -115,6 +116,27 @@ export function SearchPalette() {
       })))
   }, [groups])
 
+  /**
+   * The results page for what is currently typed, or null while the query is too
+   * short for either surface to run it.
+   *
+   * `/search` was an ORPHAN before this: nothing in the app linked to it, so a
+   * built, tested, permission-aware page was reachable only by typing its URL.
+   * It is not a "see all results" link — both surfaces share PER_GROUP_LIMIT and
+   * return the same rows — it is the link to a version of these results that has
+   * a URL, so it survives navigation and can be sent to someone.
+   */
+  const resultsPageHref = searchResultsPageHref(query)
+
+  /**
+   * The results-page row is the LAST NAVIGABLE STOP, not a mouse-only button.
+   * This palette's contract is that ↑/↓ walk a flattened list and a single Enter
+   * opens whatever is highlighted; an affordance reachable only by clicking would
+   * break that for the one action that leaves the palette entirely.
+   */
+  const seeAllIndex = resultsPageHref ? flat.length : -1
+  const navCount = flat.length + (resultsPageHref ? 1 : 0)
+
   const close = useCallback(() => {
     setOpen(false)
     setQuery('')
@@ -123,23 +145,25 @@ export function SearchPalette() {
     setActive(0)
   }, [])
 
-  const go = useCallback((hit: FlatHit | undefined) => {
-    if (!hit?.href) return   // unrouted groups are informational, not clickable
+  const go = useCallback((index: number) => {
+    // `close()` resets the query, so the destination is resolved BEFORE it runs.
+    const href = index === seeAllIndex ? resultsPageHref : flat[index]?.href
+    if (!href) return   // unrouted groups are informational, not clickable
     close()
-    router.push(hit.href)
-  }, [close, router])
+    router.push(href)
+  }, [close, router, flat, seeAllIndex, resultsPageHref])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { e.preventDefault(); close(); return }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setActive((a) => (flat.length === 0 ? 0 : (a + 1) % flat.length))
+      setActive((a) => (navCount === 0 ? 0 : (a + 1) % navCount))
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setActive((a) => (flat.length === 0 ? 0 : (a - 1 + flat.length) % flat.length))
+      setActive((a) => (navCount === 0 ? 0 : (a - 1 + navCount) % navCount))
     }
-    if (e.key === 'Enter') { e.preventDefault(); go(flat[active]) }
+    if (e.key === 'Enter') { e.preventDefault(); go(active) }
   }
 
   if (!open) {
@@ -217,7 +241,7 @@ export function SearchPalette() {
                         type="button"
                         disabled={!h.href}
                         onMouseEnter={() => item && setActive(item.index)}
-                        onClick={() => go(item)}
+                        onClick={() => item && go(item.index)}
                         className={cn(
                           'flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm',
                           isActive && 'bg-slate-100',
@@ -237,6 +261,29 @@ export function SearchPalette() {
               </ul>
             </div>
           ))}
+
+          {/*
+            Rendered whenever the query is long enough to run — including when the
+            palette found nothing. That is deliberate: a user who sees "Nothing
+            matches" is exactly the one who wants a page they can keep, re-word and
+            re-run, rather than an overlay that vanishes the moment they look away.
+          */}
+          {!loading && resultsPageHref && (
+            <button
+              type="button"
+              onMouseEnter={() => setActive(seeAllIndex)}
+              onClick={() => go(seeAllIndex)}
+              className={cn(
+                'flex w-full items-center gap-2 border-t px-4 py-2 text-left text-sm text-slate-600',
+                active === seeAllIndex && 'bg-slate-100',
+              )}
+            >
+              <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+              <span className="truncate">
+                Open results page for “{query.trim()}”
+              </span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-3 border-t bg-slate-50 px-4 py-2 text-xs text-slate-500">

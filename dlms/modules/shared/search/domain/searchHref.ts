@@ -1,4 +1,5 @@
 import type { SearchGroupKey } from './searchGroups'
+import { MIN_QUERY_LENGTH } from './searchQuery'
 
 /**
  * Where each search group's hit points.
@@ -53,4 +54,34 @@ export const UNROUTED_GROUPS: ReadonlySet<SearchGroupKey> = new Set<SearchGroupK
 export function searchHref(group: SearchGroupKey, id: string): string | null {
   const base = SEARCH_ROUTES[group]
   return base ? `${base}/${id}` : null
+}
+
+/**
+ * The full results page for a query — the link that keeps `/search` from being
+ * an orphan.
+ *
+ * `/search` shipped with NOTHING pointing at it: no nav entry, and the palette
+ * only ever pushed a hit's own href. It was reachable exclusively by someone
+ * typing the URL, which is close to not having shipped it at all.
+ *
+ * WHAT THE PAGE IS ACTUALLY FOR, because the obvious label would be a lie. Both
+ * surfaces call the same `globalSearch` with the same `PER_GROUP_LIMIT`, so the
+ * page does NOT show more results than the palette — calling this "see all
+ * results" would promise rows that do not exist. What the page has that a
+ * transient overlay cannot is a URL: it survives navigation, it can be
+ * bookmarked, and it can be sent to a colleague (whose own permissions are
+ * re-applied server-side, which is why sharing one is safe). The palette's label
+ * says that instead.
+ *
+ * Returns null below MIN_QUERY_LENGTH, so the caller never offers a link to a
+ * page that can only answer "enter at least 2 characters" — the same "do not
+ * offer what the destination refuses" rule the rest of the app follows.
+ */
+export function searchResultsPageHref(rawQuery: string): string | null {
+  const q = rawQuery.trim()
+  if (q.length < MIN_QUERY_LENGTH) return null
+  // encodeURIComponent, not a template literal: an unencoded `&` or `=` in the
+  // query would arrive as a SECOND `q` parameter, and which one the page reads
+  // is then the framework's choice rather than ours.
+  return `/search?q=${encodeURIComponent(q)}`
 }
