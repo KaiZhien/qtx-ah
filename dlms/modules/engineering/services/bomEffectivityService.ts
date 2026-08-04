@@ -539,7 +539,10 @@ export async function applyEcoEffectivityTx(
     // never cost correctness. Deadlock is prevented by the canonical iteration
     // order established in the item query above.
     await tx.query(
-      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      // ::text is explicit rather than inferred: node-postgres sends parameters
+      // with no declared type, and leaving hashtext() to resolve `unknown` is
+      // the kind of thing that works until a parameter arrives as something else.
+      `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`,
       [item.variant_id, item.component_type_id])
 
     // The still-open line for this (variant, component type), if any. The
