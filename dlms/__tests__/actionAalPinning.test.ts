@@ -126,13 +126,17 @@ describe('platform server actions enforce AAL2', () => {
     // Guards against a silently-empty it.each (a broken scan would make the
     // convention checks below register zero tests and pass vacuously).
     //
-    // RAISE THIS FLOOR WHEN MODULES ARE ADDED. It sat at 7 while the app had 22
-    // action modules, which made the guard almost decorative: a scan that broke
-    // badly enough to find only a third of them would still have passed. 20 is
-    // deliberately just under the current count — low enough that deleting one
-    // module in an ordinary refactor doesn't fail the build, high enough that a
-    // broken glob or a changed directory layout does.
-    expect(serverActionFiles.length).toBeGreaterThanOrEqual(20)
+    // RAISE THIS FLOOR WHEN MODULES ARE ADDED — and note that the instruction has
+    // now been ignored twice. It sat at 7 against 22 modules, was raised to 20,
+    // and was still 20 when the app reached 29: a scan finding two thirds of the
+    // modules would have passed while nine went unchecked. 28 is deliberately
+    // just under the current 29 — low enough that deleting one module in an
+    // ordinary refactor doesn't fail the build, high enough that a broken glob or
+    // a changed directory layout does.
+    //
+    // The slack is ONE module, not a third of them. If this number is more than a
+    // little under `serverActionFiles.length`, it is already rotting.
+    expect(serverActionFiles.length).toBeGreaterThanOrEqual(28)
   })
 
   it.each(serverActionFiles)(
@@ -145,7 +149,18 @@ describe('platform route handlers enforce AAL2', () => {
   it('the scan actually found the known route handlers', () => {
     // Same anti-vacuity guard. If this drops to zero, the scan broke — it does
     // NOT mean the convention is satisfied.
-    expect(routeHandlerFiles.length).toBeGreaterThanOrEqual(1)
+    //
+    // NO SLACK HERE, AND THAT IS THE POINT. There are exactly two handlers, one
+    // of which is exempted from (b) by STRICTER_GATE_EXEMPTIONS. At a floor of 1
+    // a scan that broke and found only `admin/export/download/route.ts` — the
+    // exempted one — would have passed while `finance/invoices/[id]/pdf/route.ts`
+    // went completely unchecked, which is the exact failure this assertion is
+    // for. With n this small the "don't fail on an ordinary deletion" argument
+    // that justifies slack on the action floor does not apply: deleting a route
+    // handler is a deliberate act, and updating this number is part of it.
+    //
+    // RAISE THIS WHEN A HANDLER IS ADDED.
+    expect(routeHandlerFiles.length).toBeGreaterThanOrEqual(2)
   })
 
   it.each(routeHandlerFiles)(
