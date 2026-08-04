@@ -221,14 +221,28 @@ export function TaskDetail({
 
       <div>
         <h2 className="text-sm font-semibold text-slate-900">Subtasks</h2>
-        {/* Task 11's TaskListItem/TaskDetail never return parentTaskId, so there
-            is no way to query "children of this task" without reimplementing
-            canSeeTask's filtering outside the service — that's exactly the
-            visibility duplication the brief says not to do. Real subtask
-            listing needs that service surface first. */}
+        {/* A STUB, deliberately, in the STUB_TABS voice used on the device profile
+            (app/(platform)/manufacturing/devices/[id]/page.tsx): visibly unfinished
+            beats silently pretending.
+
+            LISTING is the small half — `task.parent_task_id` exists, and listTasks
+            already applies canSeeTask, so a parentTaskId filter would inherit the
+            visibility rule for free rather than duplicating it. The missing half is
+            CREATION: nothing in the app ever sets parentTaskId. createTask's schema
+            accepts it and no caller passes it, so the column is NULL on every row
+            that will ever exist. Wiring the list alone would render "No subtasks" on
+            every task in the system forever — an empty truth that reads as a working
+            feature, which is the failure this stub exists to avoid.
+
+            Subtasks are §8.3 scope that "tasks v1" (Week 2, Jul 31) shipped without,
+            and §17 schedules no later week for them — so the copy below names no
+            date rather than inventing one.
+
+            __tests__/platform/tasks/subtasksStub.test.ts fails the moment a creation
+            path appears, which is the signal to build the listing and delete this. */}
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Subtask listing isn't available yet — the task service doesn't expose parent/child
-          linkage to the UI.
+          Subtasks aren't built yet — nothing in the app creates one, so there is nothing to
+          list here. No scheduled week.
         </p>
       </div>
 

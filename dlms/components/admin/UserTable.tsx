@@ -23,6 +23,13 @@ import { KeyRound, Mail, Pencil, Power, PowerOff, ShieldCheck, UserPlus } from '
 type UserTableProps = {
   users: UserListRow[]
   currentUserId: string
+  /**
+   * May this actor open /admin/users/[id]/overrides? Decided on the server by the
+   * page, from the permission that page itself enforces — not inferred here, and
+   * never the authorization: the destination re-checks and 404s regardless. This
+   * only stops the button being offered into a dead end.
+   */
+  canManageOverrides: boolean
 }
 
 const EMPTY_INVITE: UserFormValues = {
@@ -42,7 +49,7 @@ function statusBadge(user: UserListRow) {
   return <Badge variant="success">Active</Badge>
 }
 
-export function UserTable({ users, currentUserId }: UserTableProps) {
+export function UserTable({ users, currentUserId, canManageOverrides }: UserTableProps) {
   const router = useRouter()
 
   const [inviteOpen, setInviteOpen] = useState(false)
@@ -222,14 +229,16 @@ export function UserTable({ users, currentUserId }: UserTableProps) {
                             <Mail className="h-4 w-4" />
                           </Button>
                         )}
-                        <Button
-                          size="sm" variant="ghost" asChild
-                          title="Permission exceptions"
-                        >
-                          <Link href={`/admin/users/${user.id}/overrides`}>
-                            <ShieldCheck className="h-4 w-4" />
-                          </Link>
-                        </Button>
+                        {canManageOverrides && (
+                          <Button
+                            size="sm" variant="ghost" asChild
+                            title="Permission exceptions"
+                          >
+                            <Link href={`/admin/users/${user.id}/overrides`}>
+                              <ShieldCheck className="h-4 w-4" />
+                            </Link>
+                          </Button>
+                        )}
                         <Button
                           size="sm" variant="ghost"
                           title={isSelf ? 'You cannot change your own access' : 'Edit access'}

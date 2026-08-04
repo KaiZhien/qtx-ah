@@ -6,6 +6,7 @@ import type { Actor, ModuleKey } from '@/modules/shared/authz/catalog'
 import { isValidTaskTransition, isOverdue, TASK_STATUSES, type TaskStatus }
   from '@/modules/shared/tasks/domain/taskStatus'
 import { canSeeTask } from '@/modules/shared/tasks/domain/visibility'
+import { normalizeDueDate } from '@/modules/shared/tasks/domain/dueDate'
 
 export class TaskNotFoundError extends Error {
   constructor(taskId: string) {
@@ -40,23 +41,6 @@ const createSchema = z.object({
   status: z.enum(['draft', 'open']).default('open'),
 })
 export type CreateTaskInput = z.input<typeof createSchema>
-
-/**
- * A due date arriving as a bare calendar day (e.g. `new Date('2026-07-20')`)
- * parses to UTC midnight, which is the FIRST instant of that day — a task "due
- * today" would already read overdue the moment the clock ticks past midnight.
- * Detect that shape (all-zero time-of-day) and push it to the last instant of
- * the day instead, so the whole calendar day counts as "not yet overdue". A
- * caller that means a precise moment (e.g. "due at 9am UTC") never hits this
- * branch because its time-of-day isn't all zero.
- */
-function normalizeDueDate(d: Date | undefined): Date | undefined {
-  if (!d) return d
-  const isBareDate = d.getUTCHours() === 0 && d.getUTCMinutes() === 0
-    && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
-  if (!isBareDate) return d
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999))
-}
 
 function moduleAllowed(actor: Actor, module: ModuleKey): boolean {
   return actor.roleKey === 'super_admin' || actor.moduleAccess.has(module)
