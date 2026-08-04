@@ -3,11 +3,15 @@ import Link from 'next/link'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import { getEco } from '@/modules/engineering/services/engineeringReadService'
+import { getEcoApprovalState } from '@/modules/engineering/services/ecoService'
 import { nextEcoStatuses } from '@/modules/engineering/domain/ecoStatus'
-import { changeEcoStatusAction } from '@/app/(platform)/engineering/eco/ecoActions'
+import {
+  changeEcoStatusAction, requestEcoApprovalAction,
+} from '@/app/(platform)/engineering/eco/ecoActions'
 import { EngStatusControl } from '@/components/engineering/EngStatusControl'
 import { EngStatusBadge } from '@/components/engineering/EngStatusBadge'
 import { EcoEffectivityPanel } from '@/components/engineering/EcoEffectivityPanel'
+import { ApprovalRequestPanel } from '@/components/platform/ApprovalRequestPanel'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 
 type PageProps = { params: { id: string } }
@@ -34,6 +38,13 @@ export default async function EcoDetailPage({ params }: PageProps) {
   const statusOptions = canEdit
     ? nextEcoStatuses(eco.status).map((s) => ({ value: s, label: cap(s) }))
     : []
+
+  // The approval state, which this page rendered NOWHERE until now — so an ECO
+  // blocked by a drifted approval refused the move to `approved` with no warning
+  // anywhere on the screen that led to it. Read unconditionally: a reader who
+  // cannot request still needs to see a pending or drifted approval, and the
+  // panel itself decides whether there is anything worth showing them.
+  const approvalState = await getEcoApprovalState(actor, eco.id)
 
   return (
     <div className="space-y-6">
@@ -74,6 +85,27 @@ export default async function EcoDetailPage({ params }: PageProps) {
           <dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-900">{eco.effectivityNotes ?? '—'}</dd>
         </div>
       </dl>
+
+      {approvalState && (
+        <ApprovalRequestPanel
+          subject="change order"
+          gatedAct="approved"
+          canRequest={canEdit}
+          requestable={approvalState.requestable}
+          requestableReason={approvalState.requestableReason}
+          approval={approvalState.approval && {
+            status: approvalState.approval.status,
+            requestedByName: approvalState.approval.requestedByName,
+            requestedAt: approvalState.approval.requestedAt.toISOString(),
+            decidedByName: approvalState.approval.decidedByName,
+            decidedAt: approvalState.approval.decidedAt?.toISOString() ?? null,
+            decisionNote: approvalState.approval.decisionNote,
+          }}
+          drift={approvalState.drift}
+          requestInput={{ ecoId: eco.id, version: eco.version }}
+          requestAction={requestEcoApprovalAction}
+        />
+      )}
 
       <EcoEffectivityPanel
         ecoId={eco.id} status={eco.status}

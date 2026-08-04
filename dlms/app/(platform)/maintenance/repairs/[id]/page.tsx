@@ -2,8 +2,12 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
-import { getRepair } from '@/modules/maintenance/services/repairService'
+import {
+  getRepair, getRepairSignOffApprovalState,
+} from '@/modules/maintenance/services/repairService'
 import { allowedNextRepairStatuses, repairStatusLabel } from '@/modules/maintenance/domain/repairStatus'
+import { requestRepairSignOffApprovalAction } from '@/app/(platform)/maintenance/repairs/actions'
+import { ApprovalRequestPanel } from '@/components/platform/ApprovalRequestPanel'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 import { RepairStatusPill } from '@/components/maintenance/RepairStatusPill'
 import { RepairStatusControl } from '@/components/maintenance/RepairStatusControl'
@@ -36,6 +40,13 @@ export default async function RepairDetailPage({ params }: PageProps) {
   const canSignOff = can(actor, 'sign_off_repairs', 'maintenance')
   const transitions = canEdit ? allowedNextRepairStatuses(repair.status) : []
   const showSignOff = canSignOff && repair.status === 'awaiting_sign_off'
+
+  // THIS PAGE DID NOT CALL getRepairSignOffApprovalState AT ALL, which made a
+  // drift refusal invisible: a signer met it only as the failure of the Sign off
+  // click, on a screen that had said nothing about an approval existing. Now the
+  // state has a surface, and — see the panel — the signer sees it even without
+  // `edit_records`, because they are the person the gate is about to stop.
+  const approvalState = await getRepairSignOffApprovalState(actor, repair.id)
 
   // The components panel reads and writes MANUFACTURING's component registry,
   // under manufacturing's own permissions — a maintenance-only user simply does
@@ -91,6 +102,33 @@ export default async function RepairDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {/*
+        Immediately under the Sign off button on purpose: the drift refusal this
+        surfaces is a refusal of THAT button, and an explanation placed further
+        down the page than the control it explains is one the user reads after
+        they have already been refused.
+      */}
+      {approvalState && (
+        <ApprovalRequestPanel
+          subject="repair"
+          gatedAct="signed off"
+          canRequest={canEdit}
+          requestable={approvalState.requestable}
+          requestableReason={approvalState.requestableReason}
+          approval={approvalState.approval && {
+            status: approvalState.approval.status,
+            requestedByName: approvalState.approval.requestedByName,
+            requestedAt: approvalState.approval.requestedAt.toISOString(),
+            decidedByName: approvalState.approval.decidedByName,
+            decidedAt: approvalState.approval.decidedAt?.toISOString() ?? null,
+            decisionNote: approvalState.approval.decisionNote,
+          }}
+          drift={approvalState.drift}
+          requestInput={{ repairId: repair.id, version: repair.version }}
+          requestAction={requestRepairSignOffApprovalAction}
+        />
+      )}
 
       {canEdit && (
         <RepairEditForm
