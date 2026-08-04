@@ -1,66 +1,32 @@
 import type { Tx } from '@/lib/db/tx'
 import type { Actor } from '@/modules/shared/authz/catalog'
-import type { CumulativeExpiryCounts } from '@/modules/shared/reporting/domain/expiry'
 
 /**
- * ── THE SEAM FOR TABLES THIS BRANCH DOES NOT OWN ────────────────────────────
+ * ── THE SEAM FOR TABLES THIS BRANCH DID NOT OWN ─────────────────────────────
  *
  * Global search and the dashboards read from every module, and several modules
  * were being built in parallel with this one. Rather than GUESS a peer's schema
  * and code against the guess — which produces something that compiles, passes its
- * own mocked tests, and is wrong — each unavailable source gets one narrow,
- * named, fully-typed adapter here.
+ * own mocked tests, and is wrong — each unavailable source got one narrow, named,
+ * fully-typed adapter here, returning `null` for "this source does not exist
+ * yet". The widget resolvers treat `null` as `status: 'pending'` and the UI
+ * renders the blocker instead of a fake zero — a widget reading "0 warranties
+ * expiring" when the table does not exist is a lie a user would act on.
  *
- * Every function below returns `null`, meaning "this source does not exist yet".
- * The widget resolvers treat `null` as `status: 'pending'` and the UI renders the
- * blocker instead of a fake zero — a widget reading "0 warranties expiring" when
- * the table does not exist is a lie a user would act on.
+ * MOST OF THOSE PEERS HAVE NOW LANDED, and a wired source does NOT stay here:
+ * queue health, root cause and warranty expiry each moved to a direct call on
+ * the owning module's own read service. That is the point of the seam — it is
+ * scaffolding to be removed, not a permanent indirection layer, and leaving a
+ * pass-through wrapper behind would be a second place for a peer's contract to
+ * be restated and drift.
  *
- * WIRING ONE UP is deliberately a ONE-FILE change:
- *   1. implement the body here against the peer's real table;
- *   2. flip that widget's `status` to 'live' in reporting/domain/widgets.ts.
- * Nothing else in the reporting module needs to change — the resolver, the cache
- * key, the permission gate and the page are already in place and already tested.
+ * What remains below is genuinely unavailable, for reasons that are not "a peer
+ * is late".
  *
  * The `Tx` parameter is threaded through so an implementation runs on the SAME
  * transaction and connection as the rest of the dashboard, and inherits the
  * `app.actor_id` GUC that fn_audit reads.
  */
-
-/**
- * Spec §8.5 "warranties expiring 30/60/90 d".
- *
- * OWNER: agent FINANCE (`warranty`). NOT WIRED — their migration is not on this
- * branch's base, so `modules/finance/services/warrantyService` does not exist in
- * this worktree. (`supabase/migrations/20250104000000_warranty.sql` is the LEGACY
- * DLMS project's table, a different Supabase database entirely; it is not this
- * platform's schema and must never be read here.)
- *
- * TO IMPLEMENT — one call, no per-window round trips:
- *
- *     const counts = await getWarrantyExpiryCounts(actor)   // finance/services/warrantyService
- *     return disjointFromCumulative(counts)
- *
- * FOUR THINGS THAT ARE EASY TO GET WRONG HERE, all confirmed with FINANCE:
- *
- *   1. THEIR WINDOWS ARE CUMULATIVE (30 ⊆ 60 ⊆ 90); this dashboard renders
- *      DISJOINT ones. `disjointFromCumulative` (reporting/domain/expiry.ts) is the
- *      conversion and it is unit-tested, including the clamp. Rendering the raw
- *      nested numbers under "30 / 60 / 90" triples the apparent backlog while
- *      every individual number stays correct — which is why it is never caught.
- *   2. Their windows all EXCLUDE already-expired rows; `expired` is its own count.
- *   3. Dates are 'YYYY-MM-DD' TEXT, never `Date`. Keep them strings end to end.
- *   4. THERE IS NO `status` COLUMN — status is derived from dates, and an
- *      integration test on their side asserts its absence. Do not group on one.
- *
- * Also: a renewal mints a NEW row and soft-deletes the old, so `warrantyId` is
- * NOT stable across a renewal and must not be used as a durable key.
- */
-export async function fetchWarrantyExpiryCounts(
-  _tx: Tx, _actor: Actor,
-): Promise<CumulativeExpiryCounts | null> {
-  return null
-}
 
 export type RootCauseCount = { code: string; label: string; count: number }
 
@@ -146,41 +112,31 @@ export async function fetchBackupStatus(_tx: Tx, _actor: Actor): Promise<BackupS
   return null
 }
 
-export type StockSummary = {
-  /**
-   * BATCH-tracked quantities only, per location. Deliberately NOT a
-   * "stock on hand" total — see the correctness rule below.
-   */
-  byLocation: { locationCode: string; locationName: string; batchQty: number }[]
-  transfersByStatus: { status: string; count: number }[]
-}
-
 /**
- * Not a spec §8.5 widget — offered because a Logistics dashboard with no stock on
- * it is thin, and agent LOGISTICS has built `stock_level`/`stock_transfer`.
+ * ── THE STOCK SEAM WAS REMOVED RATHER THAN WIRED, DELIBERATELY ─────────────
  *
- * OWNER: agent LOGISTICS. NOT WIRED HERE — their migration
- * (`20260803130000_platform_logistics_stock.sql`) is not on this branch's base,
- * so `modules/logistics/services/stock*` does not exist in this worktree and
- * importing it would not compile. The controller wires this at integration.
+ * `fetchStockSummary` used to sit here, returning null, waiting on agent
+ * LOGISTICS. Their module has landed — and it is precisely BECAUSE it landed that
+ * this adapter was deleted instead of implemented:
  *
- * TO IMPLEMENT: call their read services rather than re-querying —
- * `getStockByLocation(actor)` and `getTransferStatusCounts(actor)`.
+ *   1. IT IS NOT A SPEC §8.5 WIDGET. There is no entry in DASHBOARD_WIDGETS, no
+ *      permission gate, no cache key and no renderer for it — the adapter was the
+ *      only part that ever existed. Wiring it is adding a feature, which is not
+ *      what a defect-fix pass is for, and a dead adapter that reads as "one flip
+ *      away from working" is worse than no adapter at all.
+ *   2. ITS TYPE'S PREMISE IS NOW KNOWN TO BE WRONG. It declared
+ *      `byLocation[].batchQty`, a summed quantity per location. LOGISTICS
+ *      deliberately does NOT expose one: `getStockByLocation` returns a count of
+ *      distinct component TYPES, because summing quantities across component
+ *      types adds incommensurable units — five screws plus three boards is not
+ *      "eight" of anything. So this could not have been wired as written; it
+ *      would have had to be redesigned first.
  *
- * ── A CORRECTNESS RULE THAT SURVIVES THE WIRING ────────────────────────────
- * `stock_level` tracks BATCH component types ONLY; a SERIALIZED unit's location
- * lives on `component_unit.location_id`. They are two different sources of truth,
- * and a database function (`fn_stock_level_batch_only`) enforces the split.
- *
- * NEVER UNION THEM INTO ONE "stock on hand" FIGURE — it double-counts, and it is
- * agent LOGISTICS's own top carried finding. That is why the type above says
- * `batchQty` rather than `units`: a field named "units" is an invitation for the
- * next person to add the serialized count into it, and the name is the only thing
- * standing between this widget and a number that is quietly wrong. If a combined
- * view is ever wanted, it needs two separately-labelled figures, not a sum.
+ * The correctness rule it carried is NOT lost: `stock_level` holds BATCH
+ * quantities only while a SERIALIZED unit's location lives on
+ * `component_unit.location_id`, and the two must never be unioned into one "stock
+ * on hand" figure. That rule lives with the data — in LOGISTICS's own carried
+ * findings, in `fn_stock_level_batch_only`, and in the `stock_level` entry of the
+ * full-system export registry, which is where the next person to add these
+ * numbers together will actually be reading.
  */
-export async function fetchStockSummary(
-  _tx: Tx, _actor: Actor,
-): Promise<StockSummary | null> {
-  return null
-}

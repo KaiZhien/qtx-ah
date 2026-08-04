@@ -2,7 +2,8 @@ import { unstable_cache } from 'next/cache'
 import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import { can } from '@/modules/shared/authz/policy'
-import type { Actor } from '@/modules/shared/authz/catalog'
+import type { Actor, ModuleKey } from '@/modules/shared/authz/catalog'
+import { canSeeTask } from '@/modules/shared/tasks/domain/visibility'
 import { dashboardCacheKey, DASHBOARD_REVALIDATE_SECONDS } from '../domain/cacheKey'
 import { daysInState, agingBucket, type AgingBucket } from '../domain/aging'
 import { disjointFromCumulative, type DisjointExpiryCounts } from '../domain/expiry'
@@ -12,8 +13,9 @@ import {
 import { repairStatusLabel } from '@/modules/maintenance/domain/repairStatus'
 import { getQueueHealth } from '@/modules/shared/outbox/services/queueHealth'
 import { countPendingApprovals } from '@/modules/shared/approvals/services/approvalService'
+import { getWarrantyExpiryCounts } from '@/modules/finance/services/warrantyService'
 import {
-  fetchWarrantyExpiryCounts, fetchRepairsByRootCause, fetchBackupStatus,
+  fetchRepairsByRootCause, fetchBackupStatus,
   type RootCauseCount, type BackupStatus,
 } from '../adapters/pendingSources'
 
@@ -47,35 +49,109 @@ function withCache<T>(actor: Actor, widgetKey: string, fn: () => Promise<T>): Pr
   })()
 }
 
-const num = (v: string | number | null) => (v === null ? 0 : Number(v))
+const num = (v: string | number | null | undefined) => (v === null || v === undefined ? 0 : Number(v))
+
+/**
+ * Rows rendered inside a card. A widget is a jump-off point, not a report — the
+ * "View" link goes to the module's own list page for the rest.
+ *
+ * ── A COUNT IS NEVER `rows.length` IN THIS FILE ────────────────────────────
+ * Every widget below that shows a number reads it as a real `COUNT(*)` and
+ * fetches only WIDGET_ROWS rows for display. The two used to be the same query,
+ * which made every headline figure silently `min(true count, LIMIT)`:
+ * `failedLogins` capped at 200 on the SECURITY widget, so a 5,000-attempt
+ * credential-stuffing burst rendered "200 in the last 24h" and looked survivable;
+ * and `invoicesUnpaid` was internally inconsistent, capping the count at 200
+ * while summing the money with a second, uncapped query — "200 unpaid ·
+ * SGD 4,180,000" on one card.
+ *
+ * Two statements is the right cost here. They run inside ONE transaction, so the
+ * count and the rows describe the same snapshot; splitting them across
+ * connections would let the count and the list disagree.
+ *
+ * The single exception is `getMyTasksWidget`, whose count cannot be expressed in
+ * SQL at all — see MY_TASKS_SCAN_LIMIT.
+ */
+const WIDGET_ROWS = 5
 
 // ── Home ────────────────────────────────────────────────────────────────────
 
 export type MyTasksWidget = {
   overdue: number
   open: number
+  /**
+   * True when the actor has MORE open tasks than one scan can see, so `open` and
+   * `overdue` are floors rather than totals. See MY_TASKS_SCAN_LIMIT.
+   */
+  capped: boolean
   soonest: { id: string; title: string; dueDate: string | null; status: string }[]
 }
+
+/**
+ * How many of the actor's open tasks are scanned before the visibility rule runs.
+ *
+ * THIS WIDGET IS THE ONE COUNT THAT CANNOT BE A `COUNT(*)`, and the reason is
+ * `canSeeTask`: the rule reads every link's module and is deliberately a pure TS
+ * function so the list page, the detail page, search and this widget can never
+ * disagree about it. Restating it as a WHERE clause is how the two copies drift.
+ * So the rows are fetched, filtered in JS, and counted after.
+ *
+ * That makes the cap observable rather than silent: the query asks for one row
+ * MORE than the cap, and `capped` says so when it comes back full — the page then
+ * renders "500+" instead of a confident, wrong 500. A silently truncated count is
+ * the defect this shape exists to avoid; nobody in this fleet has 500 open tasks,
+ * which is exactly why a truncation here would go unnoticed if it were quiet.
+ */
+export const MY_TASKS_SCAN_LIMIT = 500
 
 export async function getMyTasksWidget(actor: Actor): Promise<MyTasksWidget> {
   authorize(actor, 'view_records', 'tasks')
   return withCache(actor, 'myTasks', () => withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
       id: string; title: string; due_date: string | null; status: string; overdue: boolean
+      created_by: string; assignee_id: string | null; confidential: boolean
+      linked_modules: ModuleKey[] | null
     }>(
+      // `linked_modules` is the SAME projection taskService.listTasksFor and
+      // getTask use, because canSeeTask needs every link's module and this widget
+      // owes the identical answer. Dropping it would take the filter below with it.
       `SELECT t.id, t.title, t.due_date::text AS due_date, t.status,
-              (t.due_date IS NOT NULL AND t.due_date < now()) AS overdue
+              (t.due_date IS NOT NULL AND t.due_date < now()) AS overdue,
+              t.created_by, t.assignee_id, t.confidential,
+              COALESCE((SELECT array_agg(DISTINCT l.module)
+                          FROM task_link l WHERE l.task_id = t.id), '{}') AS linked_modules
          FROM task t
         WHERE t.deleted_at IS NULL
           AND t.assignee_id = $1
           AND t.status IN ('open','in_progress','blocked','awaiting_approval')
         ORDER BY t.due_date NULLS LAST, t.created_at DESC
-        LIMIT 100`, [actor.id])
+        LIMIT ${MY_TASKS_SCAN_LIMIT + 1}`, [actor.id])
+
+    // THE TWO-GATE VISIBILITY RULE (spec §8.3), applied here exactly as it is in
+    // taskService.listTasksFor:317, taskService.getTask:185 and
+    // searchService.searchTasks:332.
+    //
+    // BEING THE ASSIGNEE IS NOT A WAIVER. visibility.ts says so explicitly: a task
+    // linked to a Finance record is as sensitive as that record, and assigning it
+    // to an operator does not grant them sight of Finance. Without this filter a
+    // Finance user could put an invoice number and a buyer name in a task title,
+    // assign it to a manufacturing operator, and the operator would read it here —
+    // while /tasks, /tasks/{id} and ⌘K all correctly refused to show it.
+    //
+    // THE COUNTS ARE FILTERED TOO, not just the titles. A `+1` on "open" for a
+    // task the reader may not open is itself a disclosure that the record exists.
+    const visible = rows.filter((r) => canSeeTask(actor, {
+      createdBy: r.created_by,
+      assigneeId: r.assignee_id,
+      confidential: r.confidential,
+      linkedModules: r.linked_modules ?? [],
+    }))
 
     return {
-      overdue: rows.filter((r) => r.overdue).length,
-      open: rows.length,
-      soonest: rows.slice(0, 5).map((r) => ({
+      overdue: visible.filter((r) => r.overdue).length,
+      open: visible.length,
+      capped: rows.length > MY_TASKS_SCAN_LIMIT,
+      soonest: visible.slice(0, WIDGET_ROWS).map((r) => ({
         id: r.id, title: r.title, dueDate: r.due_date, status: r.status,
       })),
     }
@@ -155,6 +231,20 @@ export type CountByCode = { code: string; label: string; count: number }
  * /`Shipped`, not `Stock`/`Repair`), and hardcoding them here is the exact trap
  * CLAUDE.md records as having bitten this project in production. An
  * admin-added status appears in this funnel with no code change.
+ *
+ * ── THE `active` RULE: SHOW IT IF IT IS OFFERED, OR IF ANYTHING IS ON IT ────
+ * A retired vocabulary row is a soft-disable, not a delete, precisely because
+ * records already using it must stay resolvable. Two wrong readings were both
+ * available here and this widget had one of each:
+ *
+ *   - no filter at all (the old `devicesByStatus`) lists every retired status as
+ *     a permanent `0` row, so the funnel accumulates dead lanes;
+ *   - `WHERE active` (the old `devicesByVariant`) DROPS the devices sitting on a
+ *     retired row entirely, and the widget's own total silently stops matching
+ *     the fleet — the worse of the two, because nothing on screen looks wrong.
+ *
+ * `HAVING active OR count > 0` is the reading that is true either way: the lane
+ * is shown while it can be chosen, and it is shown while anything is still in it.
  */
 export async function getDevicesByStatus(actor: Actor): Promise<CountByCode[]> {
   authorize(actor, 'view_records', 'manufacturing')
@@ -163,7 +253,8 @@ export async function getDevicesByStatus(actor: Actor): Promise<CountByCode[]> {
       `SELECT s.code, s.label_en AS label, count(d.id)::text AS n
          FROM status_option s
          LEFT JOIN device d ON d.status = s.code AND d.deleted_at IS NULL
-        GROUP BY s.code, s.label_en, s.sort_order
+        GROUP BY s.code, s.label_en, s.sort_order, s.active
+       HAVING s.active OR count(d.id) > 0
         ORDER BY s.sort_order`)
     return rows.map((r) => ({ code: r.code, label: r.label, count: num(r.n) }))
   }))
@@ -172,12 +263,14 @@ export async function getDevicesByStatus(actor: Actor): Promise<CountByCode[]> {
 export async function getDevicesByVariant(actor: Actor): Promise<CountByCode[]> {
   authorize(actor, 'view_records', 'manufacturing')
   return withCache(actor, 'devicesByVariant', () => withTransaction(actor.id, async (tx) => {
+    // See getDevicesByStatus: `WHERE v.active` here used to hide every device on
+    // a retired variant, which is an undercount nothing on the card revealed.
     const { rows } = await tx.query<{ code: string; label: string; n: string }>(
       `SELECT v.code, v.name AS label, count(d.id)::text AS n
          FROM device_variant v
          LEFT JOIN device d ON d.variant_id = v.id AND d.deleted_at IS NULL
-        WHERE v.active
-        GROUP BY v.code, v.name
+        GROUP BY v.code, v.name, v.active
+       HAVING v.active OR count(d.id) > 0
         ORDER BY v.name`)
     return rows.map((r) => ({ code: r.code, label: r.label, count: num(r.n) }))
   }))
@@ -302,23 +395,30 @@ export async function getDeliveriesDueThisWeek(actor: Actor): Promise<Deliveries
   authorize(actor, 'view_records', 'logistics')
   return withCache(actor, 'deliveriesDueThisWeek', () =>
     withTransaction(actor.id, async (tx) => {
-      const { rows } = await tx.query<{
-        id: string; do_no: string; ship_date: string | null; status: string; overdue: boolean
-      }>(
-        `SELECT o.id, o.do_no, o.ship_date::text AS ship_date, o.status,
-                (o.ship_date < current_date) AS overdue
-           FROM delivery_order o
-          WHERE o.deleted_at IS NULL
+      const where = `o.deleted_at IS NULL
             AND o.status = ANY($1::text[])
             AND o.ship_date IS NOT NULL
-            AND o.ship_date < current_date + 7
+            AND o.ship_date < current_date + 7`
+
+      const { rows: totals } = await tx.query<{ due: string; overdue: string }>(
+        `SELECT count(*) FILTER (WHERE o.ship_date >= current_date)::text AS due,
+                count(*) FILTER (WHERE o.ship_date <  current_date)::text AS overdue
+           FROM delivery_order o
+          WHERE ${where}`, [[...OPEN_DO_STATUSES]])
+
+      const { rows } = await tx.query<{
+        id: string; do_no: string; ship_date: string | null; status: string
+      }>(
+        `SELECT o.id, o.do_no, o.ship_date::text AS ship_date, o.status
+           FROM delivery_order o
+          WHERE ${where}
           ORDER BY o.ship_date
-          LIMIT 100`, [[...OPEN_DO_STATUSES]])
+          LIMIT ${WIDGET_ROWS}`, [[...OPEN_DO_STATUSES]])
 
       return {
-        dueThisWeek: rows.filter((r) => !r.overdue).length,
-        overdue: rows.filter((r) => r.overdue).length,
-        rows: rows.slice(0, 5).map((r) => ({
+        dueThisWeek: num(totals[0]?.due),
+        overdue: num(totals[0]?.overdue),
+        rows: rows.map((r) => ({
           id: r.id, doNo: r.do_no, shipDate: r.ship_date, status: r.status,
         })),
       }
@@ -326,27 +426,42 @@ export async function getDeliveriesDueThisWeek(actor: Actor): Promise<Deliveries
 }
 
 /**
- * NOT WIRED — see adapters/pendingSources.ts (agent FINANCE owns `warranty`).
+ * Warranties expiring — WIRED to agent FINANCE's `getWarrantyExpiryCounts`, the
+ * same single query behind their own Finance landing tiles.
  *
- * GATED ON `view_records` + `finance`, NOT `view_finance`, matching FINANCE's own
- * `warrantyService`. That looks like a copy-paste slip beside the two invoice
- * widgets above and is not one: a warranty date is a SERVICE ENTITLEMENT, not
- * money, and the payload deliberately carries no buyer identity. Tightening this
- * to `view_finance` would hide service information from the maintenance-side
- * users it exists for.
+ * GATED ON `view_records` + `finance`, NOT `view_finance`, matching their service
+ * exactly. That looks like a copy-paste slip beside the two invoice widgets above
+ * and is not one: a warranty date is a SERVICE ENTITLEMENT, not money, and the
+ * payload deliberately carries no buyer identity. Tightening this to
+ * `view_finance` would hide service information from the maintenance-side users
+ * it exists for. Their service re-runs the same `authorize`, so this widget
+ * cannot be the thing that decides.
  *
- * Returns the DISJOINT cut of FINANCE's cumulative windows — see
- * `disjointFromCumulative` for why the raw nested counts must not be rendered.
+ * ── THE CONVERSION IS THE WHOLE ADAPTER, AND IT IS NOT OPTIONAL ────────────
+ * Their windows are CUMULATIVE (30 ⊆ 60 ⊆ 90): a warranty expiring in 20 days is
+ * counted in all three. Rendering those three numbers under "30 / 60 / 90"
+ * TRIPLES the apparent backlog while every individual figure stays correct, which
+ * is exactly why nobody catches it. `disjointFromCumulative` re-cuts them so each
+ * warranty is counted once, and the widget's labels are RANGES for the same
+ * reason — "61–90" cannot be misread the way "90" can.
+ *
+ * `notExpired` is their name for what this module calls `active`: every live
+ * warranty not yet past its end date. They deliberately avoided the word `active`
+ * because their own WarrantyStatus uses it for a narrower set (not expiring
+ * within 60 days), so mapping it here rather than renaming either side is what
+ * keeps the two vocabularies from being quietly conflated.
  */
 export async function getWarrantiesExpiring(
   actor: Actor,
 ): Promise<DisjointExpiryCounts | null> {
   authorize(actor, 'view_records', 'finance')
-  return withCache(actor, 'warrantiesExpiring', () =>
-    withTransaction(actor.id, async (tx) => {
-      const counts = await fetchWarrantyExpiryCounts(tx, actor)
-      return counts === null ? null : disjointFromCumulative(counts)
-    }))
+  return withCache(actor, 'warrantiesExpiring', async () => {
+    const c = await getWarrantyExpiryCounts(actor)
+    return disjointFromCumulative({
+      within30: c.within30, within60: c.within60, within90: c.within90,
+      expired: c.expired, active: c.notExpired,
+    })
+  })
 }
 
 export type InvoicesPendingApprovalWidget = {
@@ -365,23 +480,28 @@ export async function getInvoicesPendingApproval(
   authorize(actor, 'view_finance', 'finance')
   return withCache(actor, 'invoicesPendingApproval', () =>
     withTransaction(actor.id, async (tx) => {
+      const from = `FROM approval a
+           JOIN sales_invoice i ON i.id = a.entity_id
+          WHERE a.deleted_at IS NULL
+            AND a.status = 'pending'
+            AND a.entity_type = 'sales_invoice'
+            AND i.deleted_at IS NULL`
+
+      const { rows: totals } = await tx.query<{ n: string }>(
+        `SELECT count(*)::text AS n ${from}`)
+
       const { rows } = await tx.query<{
         id: string; invoice_no: string; total_sgd: string | null; created_at: string
       }>(
         `SELECT a.id, i.invoice_no, i.total_sgd::text AS total_sgd,
                 a.created_at::text AS created_at
-           FROM approval a
-           JOIN sales_invoice i ON i.id = a.entity_id
-          WHERE a.deleted_at IS NULL
-            AND a.status = 'pending'
-            AND a.entity_type = 'sales_invoice'
-            AND i.deleted_at IS NULL
+           ${from}
           ORDER BY a.created_at
-          LIMIT 50`)
+          LIMIT ${WIDGET_ROWS}`)
 
       return {
-        pending: rows.length,
-        rows: rows.slice(0, 5).map((r) => ({
+        pending: num(totals[0]?.n),
+        rows: rows.map((r) => ({
           id: r.id, invoiceNo: r.invoice_no, totalSgd: r.total_sgd, requestedAt: r.created_at,
         })),
       }
@@ -398,33 +518,42 @@ export type UnpaidInvoicesWidget = {
 /**
  * Unpaid invoices. The money is summed IN SQL as `numeric`, never by adding
  * JS floats — the same reason the AP1 threshold comparison happens in Postgres.
+ *
+ * THE COUNT AND THE SUM COME FROM ONE AGGREGATE, which is the fix for a card that
+ * could read "200 unpaid · SGD 4,180,000": the count used to be the length of a
+ * `LIMIT 200` page while the total was a second, uncapped query. Two numbers on
+ * one card describing two different populations is worse than either being wrong
+ * alone, because each looks defensible next to the other.
  */
 export async function getUnpaidInvoices(actor: Actor): Promise<UnpaidInvoicesWidget> {
   authorize(actor, 'view_finance', 'finance')
   return withCache(actor, 'invoicesUnpaid', () => withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{
-      id: string; invoice_no: string; due_date: string | null
-      total_sgd: string | null; overdue: boolean
-    }>(
-      `SELECT i.id, i.invoice_no, i.due_date::text AS due_date, i.total_sgd::text AS total_sgd,
-              (i.due_date IS NOT NULL AND i.due_date < current_date) AS overdue
-         FROM sales_invoice i
-        WHERE i.deleted_at IS NULL
-          AND i.status = ANY($1::text[])
-        ORDER BY i.due_date NULLS LAST
-        LIMIT 200`, [[...UNPAID_INVOICE_STATUSES]])
+    const where = `i.deleted_at IS NULL AND i.status = ANY($1::text[])`
 
-    const { rows: sum } = await tx.query<{ total: string | null }>(
-      `SELECT coalesce(sum(i.total_sgd), 0)::text AS total
+    const { rows: totals } = await tx.query<{
+      n: string; overdue: string; total: string | null
+    }>(
+      `SELECT count(*)::text AS n,
+              count(*) FILTER (WHERE i.due_date IS NOT NULL
+                                 AND i.due_date < current_date)::text AS overdue,
+              coalesce(sum(i.total_sgd), 0)::text AS total
          FROM sales_invoice i
-        WHERE i.deleted_at IS NULL AND i.status = ANY($1::text[])`,
-      [[...UNPAID_INVOICE_STATUSES]])
+        WHERE ${where}`, [[...UNPAID_INVOICE_STATUSES]])
+
+    const { rows } = await tx.query<{
+      id: string; invoice_no: string; due_date: string | null; total_sgd: string | null
+    }>(
+      `SELECT i.id, i.invoice_no, i.due_date::text AS due_date, i.total_sgd::text AS total_sgd
+         FROM sales_invoice i
+        WHERE ${where}
+        ORDER BY i.due_date NULLS LAST
+        LIMIT ${WIDGET_ROWS}`, [[...UNPAID_INVOICE_STATUSES]])
 
     return {
-      count: rows.length,
-      totalSgd: sum[0]?.total ?? '0',
-      overdue: rows.filter((r) => r.overdue).length,
-      rows: rows.slice(0, 5).map((r) => ({
+      count: num(totals[0]?.n),
+      totalSgd: totals[0]?.total ?? '0',
+      overdue: num(totals[0]?.overdue),
+      rows: rows.map((r) => ({
         id: r.id, invoiceNo: r.invoice_no, dueDate: r.due_date, totalSgd: r.total_sgd,
       })),
     }
@@ -442,19 +571,25 @@ export type UserActivityWidget = {
 export async function getUserActivity(actor: Actor): Promise<UserActivityWidget> {
   authorize(actor, 'manage_users', 'admin')
   return withCache(actor, 'userActivity', () => withTransaction(actor.id, async (tx) => {
+    const { rows: totals } = await tx.query<{ active: string; never_in: string }>(
+      `SELECT count(*) FILTER (WHERE active)::text AS active,
+              count(*) FILTER (WHERE last_login_at IS NULL)::text AS never_in
+         FROM app_user
+        WHERE deleted_at IS NULL`)
+
     const { rows } = await tx.query<{
-      id: string; full_name: string; last_login_at: string | null; active: boolean
+      id: string; full_name: string; last_login_at: string | null
     }>(
-      `SELECT id, full_name, last_login_at::text AS last_login_at, active
+      `SELECT id, full_name, last_login_at::text AS last_login_at
          FROM app_user
         WHERE deleted_at IS NULL
         ORDER BY last_login_at DESC NULLS LAST
-        LIMIT 200`)
+        LIMIT ${WIDGET_ROWS}`)
 
     return {
-      activeUsers: rows.filter((r) => r.active).length,
-      neverLoggedIn: rows.filter((r) => r.last_login_at === null).length,
-      rows: rows.slice(0, 5).map((r) => ({
+      activeUsers: num(totals[0]?.active),
+      neverLoggedIn: num(totals[0]?.never_in),
+      rows: rows.map((r) => ({
         id: r.id, name: r.full_name, lastLoginAt: r.last_login_at,
       })),
     }
@@ -467,24 +602,39 @@ export type FailedLoginsWidget = {
   rows: { email: string | null; occurredAt: string }[]
 }
 
+/**
+ * Failed logins — THE widget where a truncated count is not a cosmetic defect.
+ *
+ * These two numbers used to be `rows.filter(...).length` over a `LIMIT 200` page,
+ * so a 5,000-attempt credential-stuffing burst rendered "200 in the last 24h" —
+ * a figure an administrator reads as a bad afternoon rather than as an attack,
+ * and one that stays pinned at 200 no matter how much worse it gets. The count is
+ * now a real aggregate; the LIMIT survives only on the sample of addresses shown
+ * underneath it.
+ */
 export async function getFailedLogins(actor: Actor): Promise<FailedLoginsWidget> {
   authorize(actor, 'manage_users', 'admin')
   return withCache(actor, 'failedLogins', () => withTransaction(actor.id, async (tx) => {
-    const { rows } = await tx.query<{
-      email: string | null; occurred_at: string; within_24h: boolean
-    }>(
-      `SELECT email, occurred_at::text AS occurred_at,
-              (occurred_at > now() - interval '24 hours') AS within_24h
+    const where = `event_type = 'login_failure'
+          AND occurred_at > now() - interval '7 days'`
+
+    const { rows: totals } = await tx.query<{ last24h: string; last7d: string }>(
+      `SELECT count(*) FILTER (WHERE occurred_at > now() - interval '24 hours')::text AS last24h,
+              count(*)::text AS last7d
          FROM auth_event
-        WHERE event_type = 'login_failure'
-          AND occurred_at > now() - interval '7 days'
+        WHERE ${where}`)
+
+    const { rows } = await tx.query<{ email: string | null; occurred_at: string }>(
+      `SELECT email, occurred_at::text AS occurred_at
+         FROM auth_event
+        WHERE ${where}
         ORDER BY occurred_at DESC
-        LIMIT 200`)
+        LIMIT ${WIDGET_ROWS}`)
 
     return {
-      last24h: rows.filter((r) => r.within_24h).length,
-      last7d: rows.length,
-      rows: rows.slice(0, 5).map((r) => ({ email: r.email, occurredAt: r.occurred_at })),
+      last24h: num(totals[0]?.last24h),
+      last7d: num(totals[0]?.last7d),
+      rows: rows.map((r) => ({ email: r.email, occurredAt: r.occurred_at })),
     }
   }))
 }

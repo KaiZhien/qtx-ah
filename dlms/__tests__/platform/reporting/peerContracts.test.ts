@@ -67,6 +67,27 @@ describe('FINANCE contract', () => {
       expect(DASHBOARD_WIDGETS.find((x) => x.key === k)!.permission).toBe('view_finance')
     }
   })
+
+  it('serves warranty expiry live, from their single query', () => {
+    const w = DASHBOARD_WIDGETS.find((x) => x.key === 'warrantiesExpiring')!
+    expect(w.status).toBe('live')
+    expect(w.pendingOn).toBeUndefined()
+  })
+
+  it('keeps NO second warranty query in the reporting module', () => {
+    // Same rule as the outbox below: the tile and Finance's own landing page read
+    // one function, so they cannot disagree. Re-deriving the windows here would
+    // also mean re-deriving the cumulative→disjoint conversion, which is the
+    // arithmetic most likely to be got wrong twice.
+    const src = readFileSync(
+      join(__dirname, '../../../modules/shared/reporting/services/dashboardService.ts'),
+      'utf8')
+    expect(src).toMatch(/getWarrantyExpiryCounts/)
+    expect(src).not.toMatch(/FROM warranty/i)
+    // The conversion still runs — wiring the source must not quietly render
+    // FINANCE's nested counts as though they were three separate piles.
+    expect(src).toMatch(/disjointFromCumulative/)
+  })
 })
 
 describe('NOTIFICATIONS contract', () => {

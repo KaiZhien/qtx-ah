@@ -24,6 +24,7 @@ import {
   getActiveRepairsByState, getUnpaidInvoices, getDeliveriesDueThisWeek,
   getUserActivity, getFailedLogins, getRecentActivityWidget,
 } from '@/modules/shared/reporting/services/dashboardService'
+import { listTasksFor } from '@/modules/shared/tasks/services/taskService'
 
 vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 
@@ -78,6 +79,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await db.query(`DELETE FROM task_link WHERE task_id = ANY($1::uuid[])`, [createdTaskIds])
   await db.query(`DELETE FROM repair_status_history WHERE repair_id = ANY($1::uuid[])`,
     [createdRepairIds])
   await db.query(`DELETE FROM repair WHERE id = ANY($1::uuid[])`, [createdRepairIds])
@@ -88,6 +90,107 @@ afterAll(async () => {
   await db.query(`DELETE FROM device WHERE id = ANY($1::uuid[])`, [createdDeviceIds])
   await db.end()
   await getPool().end()
+})
+
+describe('the Home task widget honours the two-gate visibility rule', () => {
+  // The leak this block exists to keep closed, in its concrete form: Dana
+  // (finance) files "Chase overdue payment INV-… — Acme Corp", links it to the
+  // sales_invoice so task_link.module = 'finance', and assigns it to Priya, an
+  // operator whose modules are manufacturing + tasks. /tasks, /tasks/{id} and ⌘K
+  // all correctly show Priya nothing. The dashboard used to show her the full
+  // title, the invoice number, the buyer name, a +1 on `open`, and a link.
+  //
+  // It sits beside the cache-isolation block above deliberately: those two are
+  // the only ways this widget can disclose a record, and they fail differently —
+  // one leaks ACROSS actors, this one leaks ACROSS modules for one actor.
+  let priya: string
+  let dana: string
+  let leakyTaskId: string
+  let plainTaskId: string
+  let invoiceId: string
+
+  const priyaActor = () => base(priya, {
+    roleKey: 'operator',
+    permissions: new Set<Permission>(['view_records']),
+    moduleAccess: new Set<ModuleKey>(['manufacturing', 'tasks']),
+  })
+
+  beforeAll(async () => {
+    priya = await makeUser(`${TOK}-priya@example.com`, `Priya ${TOK}`)
+    dana = await makeUser(`${TOK}-dana@example.com`, `Dana ${TOK}`)
+
+    invoiceId = (await db.query<{ id: string }>(
+      `INSERT INTO sales_invoice (invoice_no, buyer_id, status, total_sgd, created_by, updated_by)
+       VALUES ($1, $2, 'issued', '18500.00', $3, $3) RETURNING id`,
+      [`LEAK-${TOK}`, buyerId, dana])).rows[0].id
+    createdInvoiceIds.push(invoiceId)
+
+    leakyTaskId = (await db.query<{ id: string }>(
+      `INSERT INTO task (title, assignee_id, status, created_by, updated_by)
+       VALUES ($1, $2, 'open', $3, $3) RETURNING id`,
+      [`Chase overdue payment LEAK-${TOK} — ${TOK} Buyer`, priya, dana])).rows[0].id
+    createdTaskIds.push(leakyTaskId)
+    await db.query(
+      `INSERT INTO task_link (task_id, entity_type, entity_id, module)
+       VALUES ($1, 'sales_invoice', $2, 'finance')`, [leakyTaskId, invoiceId])
+
+    // A control: same assignee, no link at all, so nothing about it is gated.
+    plainTaskId = (await db.query<{ id: string }>(
+      `INSERT INTO task (title, assignee_id, status, created_by, updated_by)
+       VALUES ($1, $2, 'open', $3, $3) RETURNING id`,
+      [`Rework the jig ${TOK}`, priya, dana])).rows[0].id
+    createdTaskIds.push(plainTaskId)
+  })
+
+  it('does not render the finance-linked task Priya is assigned', async () => {
+    const d = await getMyTasksWidget(priyaActor())
+    expect(d.soonest.map((t) => t.id)).not.toContain(leakyTaskId)
+    expect(d.soonest.map((t) => t.title).join(' ')).not.toContain(`LEAK-${TOK}`)
+  })
+
+  it('does not COUNT it either — the tile is part of the disclosure', async () => {
+    const d = await getMyTasksWidget(priyaActor())
+    expect(d.open).toBe(1)
+    expect(d.soonest.map((t) => t.id)).toContain(plainTaskId)
+  })
+
+  it('agrees with the task list, which is the surface it must never contradict', async () => {
+    // Same actor, same rule, two code paths. If these ever disagree, one of them
+    // has stopped calling canSeeTask.
+    const [widget, list] = await Promise.all([
+      getMyTasksWidget(priyaActor()),
+      listTasksFor(priyaActor(), { scope: 'mine' }),
+    ])
+    expect(list.map((t) => t.id)).not.toContain(leakyTaskId)
+    expect(widget.open).toBe(list.filter((t) => t.assigneeId === priya).length)
+  })
+
+  it('SHOWS it once Priya is given Finance access', async () => {
+    // The fix for a legitimate case is granting the module, never weakening the
+    // rule — so the same row must appear the moment the grant exists.
+    const withFinance = base(priya, {
+      permissions: new Set<Permission>(['view_records']),
+      moduleAccess: new Set<ModuleKey>(['manufacturing', 'tasks', 'finance']),
+    })
+    const d = await getMyTasksWidget(withFinance)
+    expect(d.soonest.map((t) => t.id)).toContain(leakyTaskId)
+    expect(d.open).toBe(2)
+  })
+
+  it('shows it to an admin, who is above the module gate', async () => {
+    const admin = base(priya, {
+      roleKey: 'admin',
+      permissions: new Set<Permission>(['view_records', 'manage_users']),
+      moduleAccess: new Set<ModuleKey>(['admin', 'tasks']),
+    })
+    expect((await getMyTasksWidget(admin)).open).toBe(2)
+  })
+
+  it('reports capped=false well below the scan limit', async () => {
+    // The flag is what keeps the count honest when it IS truncated; it must not
+    // fire on an ordinary backlog, or the "+" becomes noise nobody reads.
+    expect((await getMyTasksWidget(priyaActor())).capped).toBe(false)
+  })
 })
 
 describe('the 60s cache must never serve one actor rows to another', () => {

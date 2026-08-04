@@ -10,7 +10,7 @@ import {
   getMyTasksWidget, getMyApprovalsWidget, getRecentActivityWidget,
   getDevicesByStatus, getDevicesByVariant, getImportsAwaitingConfirm,
   getActiveRepairsByState, getRepairsByRootCause, getDeliveriesDueThisWeek,
-  getInvoicesPendingApproval, getUnpaidInvoices,
+  getInvoicesPendingApproval, getUnpaidInvoices, getWarrantiesExpiring,
   getUserActivity, getFailedLogins, getJobQueueHealth,
 } from '@/modules/shared/reporting/services/dashboardService'
 
@@ -112,11 +112,17 @@ async function Widget({ actor, def }: { actor: Actor; def: DashboardWidgetDef })
   switch (def.key) {
     case 'myTasks': {
       const d = await getMyTasksWidget(actor)
+      // `capped` is the ONE count in this dashboard that cannot be a SQL
+      // COUNT(*) — the two-gate visibility rule is a pure TS function, so the
+      // rows are scanned and filtered in JS. When the scan comes back full these
+      // are floors, and the card says so with a "+" rather than asserting a
+      // number it cannot stand behind.
+      const suffix = d.capped ? '+' : ''
       return (
         <Card title={def.label} href="/tasks">
           <div className="flex gap-8">
-            <Big n={d.overdue} label="overdue" />
-            <Big n={d.open} label="open" />
+            <Big n={`${d.overdue}${suffix}`} label="overdue" />
+            <Big n={`${d.open}${suffix}`} label="open" />
           </div>
           <ul className="mt-3 space-y-1">
             {d.soonest.map((t) => (
@@ -264,6 +270,27 @@ async function Widget({ actor, def }: { actor: Actor; def: DashboardWidgetDef })
             <Big n={d.dueThisWeek} label="due this week" />
             <Big n={d.overdue} label="overdue" />
           </div>
+        </Card>
+      )
+    }
+
+    case 'warrantiesExpiring': {
+      const d = await getWarrantiesExpiring(actor)
+      if (d === null) return <Card title={def.label}><Pending def={def} /></Card>
+      // DISJOINT buckets, and the labels say so. FINANCE's windows are cumulative
+      // (a warranty expiring in 20 days is in all three of theirs); rendering
+      // those raw under "30 / 60 / 90" triples the apparent backlog while every
+      // individual number stays correct, which is why it never gets caught.
+      return (
+        <Card title={def.label} href="/finance/warranties">
+          <div className="flex gap-6">
+            <Big n={d.days0to30} label="0–30 d" />
+            <Big n={d.days31to60} label="31–60 d" />
+            <Big n={d.days61to90} label="61–90 d" />
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {d.expired} already expired · {d.beyond90} beyond 90 days
+          </p>
         </Card>
       )
     }

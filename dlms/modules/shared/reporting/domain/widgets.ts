@@ -75,13 +75,13 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetDef[] = [
   // Gated on view_records + finance, NOT view_finance, matching agent FINANCE's own
   // warrantyService: a warranty date is a service entitlement, not money, and the
   // payload carries no buyer identity. This is deliberate, not a copy-paste slip.
+  // Reads getWarrantyExpiryCounts() from modules/finance — the same query behind
+  // Finance's own landing tiles. Their windows are CUMULATIVE (30 ⊆ 60 ⊆ 90) and
+  // this widget renders the DISJOINT cut via disjointFromCumulative, which is why
+  // the label carries RANGES: "61-90" cannot be misread the way "90" can.
   { key: 'warrantiesExpiring', label: 'Warranties expiring (0-30 / 31-60 / 61-90 d)',
     section: 'logisticsFinance', permission: 'view_records', module: 'finance',
-    status: 'pending',
-    pendingOn: 'agent FINANCE\'s `getWarrantyExpiryCounts(actor)`. Their windows are '
-      + 'CUMULATIVE (30 ⊆ 60 ⊆ 90); `disjointFromCumulative` converts them and is '
-      + 'unit-tested. See reporting/adapters/pendingSources.ts#fetchWarrantyExpiryCounts.',
-    sort: 31 },
+    status: 'live', sort: 31 },
   { key: 'invoicesPendingApproval', label: 'Invoices pending approval',
     section: 'logisticsFinance', permission: 'view_finance', module: 'finance',
     status: 'live', sort: 32 },
