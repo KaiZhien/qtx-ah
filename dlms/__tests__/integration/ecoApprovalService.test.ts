@@ -11,8 +11,7 @@
 // The drift test is the point of the whole slice: approve, edit the ECO, attempt
 // the gated move, and assert the refusal NAMES the field and both values.
 //
-// NOT run in this worktree — the integration DB port is shared with the other
-// agents working in parallel; the controller runs the suite serially at merge.
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
@@ -177,6 +176,12 @@ afterAll(async () => {
     await db.query(`DELETE FROM audit_log WHERE table_name='approval' AND row_id = ANY($1)`,
       [createdApprovalIds])
   }
+  // BOM LINES BEFORE THE ECOs THAT OPENED THEM, not merely before their variants:
+  // an apply stamps variant_bom_line.created_by_eco_id / superseded_by_eco_id, so
+  // every line this file opened is a foreign key INTO `eco`. Deleting the ECOs
+  // first fails on variant_bom_line_created_by_eco_id_fkey and takes the whole
+  // afterAll with it, leaving every row below un-cleaned.
+  await db.query(`DELETE FROM variant_bom_line WHERE variant_id = ANY($1)`, [[variantA, variantB]])
   if (createdEcoIds.length) {
     const { rows: itemIds } = await db.query<{ id: string }>(
       `SELECT id FROM ec_affected_item WHERE eco_id = ANY($1)`, [createdEcoIds])
@@ -187,8 +192,6 @@ afterAll(async () => {
     await db.query(`DELETE FROM audit_log WHERE table_name='eco' AND row_id = ANY($1)`,
       [createdEcoIds])
   }
-  // BOM lines before their variants — the apply tests open new ones.
-  await db.query(`DELETE FROM variant_bom_line WHERE variant_id = ANY($1)`, [[variantA, variantB]])
   await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [[typeA, typeB]])
   await db.query(`DELETE FROM device_variant WHERE id = ANY($1)`, [[variantA, variantB]])
   await db.end()

@@ -242,7 +242,19 @@ describe('drain fan-out for device handoffs (notify_roles)', () => {
     expect(got[0].title).toContain('shipped')
     // changedByName is resolved from created_by at drain time, not carried in the payload.
     expect(got[0].body).toContain('Cara Causer')
-    expect(got[0].url).toContain(deviceId)
+
+    // THE LINK TARGET IS THE HANDOFF TASK, NOT THE DEVICE — and that is deliberate
+    // (buildHandoffNotification's `taskId` doc). This audience was selected by
+    // RECEIVING-module access (logistics); /manufacturing/devices/[id] calls
+    // notFound() without view_records in MANUFACTURING, so a device link would
+    // notify exactly the people who then 404 on the click. `entity_id` above is
+    // still the device, because the notification is ABOUT a device. The original
+    // assertion here was `url` toContain(deviceId) — the naive expectation the
+    // product deliberately rejects, so it pinned the bug rather than the rule.
+    const { rows: links } = await db.query<{ task_id: string }>(
+      `SELECT task_id FROM task_link WHERE entity_type = 'device' AND entity_id = $1`, [deviceId])
+    expect(links).toHaveLength(1)
+    expect(got[0].url).toBe(`/tasks/${links[0].task_id}`)
   })
 
   it('does NOT notify a role-holder who cannot enter the receiving module', async () => {
@@ -410,9 +422,15 @@ describe('sweepTaskReminders', () => {
 
   const makeTask = async (title: string, dueDate: string, status = 'open') => {
     const { rows } = await db.query<{ id: string }>(
+      // completed_at is not optional decoration: task's `completed_has_timestamp`
+      // CHECK makes `status = 'completed'` and `completed_at IS NOT NULL` the same
+      // statement, so a fixture that sets one without the other is rejected by the
+      // schema. Stamped from due_date so a "completed and overdue" task is exactly
+      // that, rather than one completed at an unrelated instant.
       `INSERT INTO task (title, status, priority, due_date, assignee_id, department,
-                         created_by, updated_by)
-       VALUES ($1, $2, 'normal', $3::timestamptz, $4, 'Logistics', $5, $5) RETURNING id`,
+                         completed_at, created_by, updated_by)
+       VALUES ($1, $2, 'normal', $3::timestamptz, $4, 'Logistics',
+               CASE WHEN $2 = 'completed' THEN $3::timestamptz END, $5, $5) RETURNING id`,
       [title, status, dueDate, assigneeId, causerId])
     taskIds.push(rows[0].id)
     return rows[0].id

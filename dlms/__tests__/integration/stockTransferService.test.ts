@@ -57,8 +57,18 @@ const noModuleAccess = (): Actor => ({
   moduleAccess: new Set(['manufacturing']), active: true,
 })
 
+/**
+ * A per-call sequence makes `stock_location.code` unique BY CONSTRUCTION, not by
+ * every author remembering to invent a fresh suffix. Two tests both reached for
+ * `'disp-a'` and the second one died on `stock_location_code_key` — a duplicate
+ * within a single run, so the suite was not even re-runnable against its own
+ * container, let alone a populated database. The suffix stays because it is what
+ * makes a failed assertion readable; it is a label, not the identity.
+ */
+let locationSeq = 0
+
 async function makeLocation(suffix: string): Promise<{ id: string; code: string }> {
-  const code = `STK-${runTag}-${suffix}`
+  const code = `STK-${runTag}-${locationSeq++}-${suffix}`
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO stock_location (code, name, created_by, updated_by)
      VALUES ($1,$2,$3,$3) RETURNING id`, [code, `Loc ${suffix}`, userId])

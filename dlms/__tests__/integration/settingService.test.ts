@@ -218,7 +218,9 @@ describe('updateSetting', () => {
       `SELECT action, actor_id, new_values FROM audit_log
         WHERE table_name = 'app_setting'
           AND coalesce(new_values->>'key', old_values->>'key') = $1
-        ORDER BY changed_at DESC LIMIT 1`, [FINANCE_APPROVAL_THRESHOLD_SGD])
+        -- audit_log's time column is occurred_at (20260718000001_platform_audit.sql:54).
+        -- changed_at is repair_status_history's; there is no such column here.
+        ORDER BY occurred_at DESC LIMIT 1`, [FINANCE_APPROVAL_THRESHOLD_SGD])
     expect(rows[0].action.toLowerCase()).toBe('update')
     expect(rows[0].actor_id).toBe(adminId)
   })

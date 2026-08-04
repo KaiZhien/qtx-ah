@@ -7,8 +7,7 @@
 // a test that rewrote the seeded Pro BOM would corrupt every later run of this
 // non-rollback database. Every assertion is scoped to rows this run created.
 //
-// NOT run in this worktree — the integration DB port is shared with the other
-// agents working in parallel; the controller runs the suite serially at merge.
+// Run and green as of the 2026-08-04 merge (`npm run test:integration`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
@@ -65,6 +64,23 @@ async function implementedEco(
   v = (await changeEcoStatus(mgr(), { id: eco.id, version: v, toStatus: 'approved' })).version
   await changeEcoStatus(op(), { id: eco.id, version: v, toStatus: 'implemented' })
   return eco.id
+}
+
+/**
+ * Drops component types together with everything that points AT them.
+ *
+ * `ec_affected_item.component_type_id` is a foreign key, and `addAffectedItem`
+ * writes one for every disposition these tests exercise — so a nested afterAll
+ * that deletes only `variant_bom_line` and then `component_type` dies on
+ * `ec_affected_item_component_type_id_fkey`. The affected items are cleared by
+ * `eco_id` in the FILE-level afterAll, which runs LAST: too late for a nested
+ * block, and the throw took the rest of that block's cleanup with it. Scoping the
+ * same delete by component type is what makes each block self-contained.
+ */
+async function dropComponentTypes(ids: string[]) {
+  await db.query(`DELETE FROM ec_affected_item WHERE component_type_id = ANY($1)`, [ids])
+  await db.query(`DELETE FROM variant_bom_line WHERE component_type_id = ANY($1)`, [ids])
+  await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [ids])
 }
 
 /** Every BOM line this run created, oldest window first. */
@@ -356,7 +372,7 @@ describe('a serial-only ECO judged on the date axis — all three dispositions',
 
   afterAll(async () => {
     await db.query(`DELETE FROM variant_bom_line WHERE variant_id = $1`, [v2])
-    await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [[tAdd, tRemove, tChange]])
+    await dropComponentTypes([tAdd, tRemove, tChange])
     await db.query(`DELETE FROM device_variant WHERE id = $1`, [v2])
   })
 
@@ -472,7 +488,7 @@ describe('applying change orders OUT OF EFFECTIVITY ORDER', () => {
 
   afterAll(async () => {
     await db.query(`DELETE FROM variant_bom_line WHERE variant_id = $1`, [v3])
-    await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [[tSerial, tDate]])
+    await dropComponentTypes([tSerial, tDate])
     await db.query(`DELETE FROM device_variant WHERE id = $1`, [v3])
   })
 
@@ -558,8 +574,7 @@ describe('applying change orders OUT OF EFFECTIVITY ORDER', () => {
     const on = await getVariantBom(op(), { variantId: v3, date: '2028-01-01' })
     expect(on.lines.find((l) => l.componentTypeId === t)?.quantity).toBe(3)
 
-    await db.query(`DELETE FROM variant_bom_line WHERE component_type_id=$1`, [t])
-    await db.query(`DELETE FROM component_type WHERE id=$1`, [t])
+    await dropComponentTypes([t])
   })
 })
 
@@ -595,7 +610,7 @@ describe('two concurrent applies racing to open the SAME BOM line', () => {
 
   afterAll(async () => {
     await db.query(`DELETE FROM variant_bom_line WHERE variant_id = $1`, [v4])
-    await db.query(`DELETE FROM component_type WHERE id = $1`, [t4])
+    await dropComponentTypes([t4])
     await db.query(`DELETE FROM device_variant WHERE id = $1`, [v4])
   })
 
