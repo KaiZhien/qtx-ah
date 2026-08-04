@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  NOTIFICATION_CATEGORIES, isNotificationCategory, DEFAULT_PREF,
+  NOTIFICATION_CATEGORIES, CATEGORY_LABELS, isNotificationCategory, DEFAULT_PREF,
   resolveDelivery, type StoredPref,
 } from '@/modules/shared/notifications/domain/preferences'
 
@@ -13,6 +13,27 @@ describe('notification categories', () => {
     for (const c of NOTIFICATION_CATEGORIES) expect(isNotificationCategory(c)).toBe(true)
     expect(isNotificationCategory('not_a_category')).toBe(false)
     expect(isNotificationCategory('')).toBe(false)
+  })
+
+  it('ships warranty_expiring', () => {
+    // Added with the warranty sweep and complete on arrival: notification.category is
+    // unconstrained (no CHECK, by design) and a missing notification_pref row resolves to
+    // DEFAULT_PREF, so a new category needs neither a migration nor a backfill.
+    expect(isNotificationCategory('warranty_expiring')).toBe(true)
+  })
+
+  /**
+   * Both pages that render a notification index CATEGORY_LABELS by the stored category
+   * string (app/(platform)/notifications/page.tsx and .../preferences/page.tsx). A
+   * category present in the vocabulary but absent from the labels is a runtime
+   * `Cannot read properties of undefined` on the bell, not a missing string.
+   */
+  it('gives every category a label and a hint', () => {
+    for (const c of NOTIFICATION_CATEGORIES) {
+      expect(CATEGORY_LABELS[c]?.title, `no label for ${c}`).toBeTruthy()
+      expect(CATEGORY_LABELS[c]?.hint, `no hint for ${c}`).toBeTruthy()
+    }
+    expect(Object.keys(CATEGORY_LABELS).sort()).toEqual([...NOTIFICATION_CATEGORIES].sort())
   })
 })
 

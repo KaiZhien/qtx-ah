@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { withTransaction, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import { SYSTEM_ACTOR_ID } from '@/modules/shared/authz/actor'
-import type { Actor, ModuleKey } from '@/modules/shared/authz/catalog'
+import type { Actor, ModuleKey, Permission } from '@/modules/shared/authz/catalog'
 import {
   NOTIFICATION_CATEGORIES, isNotificationCategory, resolveDelivery, DEFAULT_PREF,
   type NotificationCategory, type StoredPref,
@@ -90,13 +90,50 @@ export async function resolveRoleRecipients(
 }
 
 /**
- * Everyone who could actually DECIDE an approval in this module.
+ * Everyone who holds one PERMISSION in one module — `can(actor, permission, module)` as
+ * SQL, for the audiences that are defined by what a person may do rather than by a role
+ * name.
  *
- * Mirrors `can(actor, 'approve_requests', module)` exactly — role grant OR granted
- * override, MINUS revoked override, with expiry honoured and the super_admin module
- * bypass — because a notification list that disagrees with the queue is worse than no
- * notification: it either tells people about decisions they cannot make, or stays silent
- * for the one person who can.
+ * Mirrors `can()` exactly — role grant OR granted override, MINUS revoked override, with
+ * expiry honoured and the super_admin module bypass — because a notification list that
+ * disagrees with the screen it links to is worse than no notification: it either tells
+ * people to do something they cannot, or stays silent for the one person who can.
+ *
+ * `permission` is interpolated as a BOUND PARAMETER, never into the SQL text: it comes
+ * from a Permission union today, and a resolver whose safety depended on every future
+ * caller passing a literal would be one refactor from an injection.
+ */
+export async function resolvePermissionRecipients(
+  tx: Tx, permission: Permission, module: ModuleKey, excludeUserId: string | null,
+): Promise<Recipient[]> {
+  const hasPermission = `
+    (r.key = 'super_admin' OR EXISTS (
+       SELECT 1 FROM role_permission rp JOIN permission p ON p.id = rp.permission_id
+        WHERE rp.role_id = u.role_id AND p.key = $3)
+     OR EXISTS (
+       SELECT 1 FROM user_permission_override o JOIN permission p ON p.id = o.permission_id
+        WHERE o.user_id = u.id AND o.granted AND o.deleted_at IS NULL
+          AND (o.expires_at IS NULL OR o.expires_at > now())
+          AND p.key = $3))
+    AND NOT EXISTS (
+       SELECT 1 FROM user_permission_override o JOIN permission p ON p.id = o.permission_id
+        WHERE o.user_id = u.id AND NOT o.granted AND o.deleted_at IS NULL
+          AND (o.expires_at IS NULL OR o.expires_at > now())
+          AND p.key = $3)`
+
+  const { rows } = await tx.query<{ id: string; email: string; full_name: string }>(
+    `SELECT u.id, u.email, u.full_name
+     ${RECIPIENT_BASE}
+       AND ${MODULE_CLAUSE.replace('$MODULE', '$1')}
+       AND ($2::uuid IS NULL OR u.id <> $2::uuid)
+       AND ${hasPermission}
+     ORDER BY u.full_name`,
+    [module, excludeUserId, permission])
+  return rows.map((r) => ({ id: r.id, email: r.email, fullName: r.full_name }))
+}
+
+/**
+ * Everyone who could actually DECIDE an approval in this module.
  *
  * The REQUESTER is excluded via `excludeUserId`, and that is a correctness rule rather
  * than a politeness: evaluateDecision refuses a decision on your own request, so a
@@ -106,30 +143,7 @@ export async function resolveRoleRecipients(
 export async function resolveApproverRecipients(
   tx: Tx, module: ModuleKey, excludeUserId: string | null,
 ): Promise<Recipient[]> {
-  const hasPermission = `
-    (r.key = 'super_admin' OR EXISTS (
-       SELECT 1 FROM role_permission rp JOIN permission p ON p.id = rp.permission_id
-        WHERE rp.role_id = u.role_id AND p.key = 'approve_requests')
-     OR EXISTS (
-       SELECT 1 FROM user_permission_override o JOIN permission p ON p.id = o.permission_id
-        WHERE o.user_id = u.id AND o.granted AND o.deleted_at IS NULL
-          AND (o.expires_at IS NULL OR o.expires_at > now())
-          AND p.key = 'approve_requests'))
-    AND NOT EXISTS (
-       SELECT 1 FROM user_permission_override o JOIN permission p ON p.id = o.permission_id
-        WHERE o.user_id = u.id AND NOT o.granted AND o.deleted_at IS NULL
-          AND (o.expires_at IS NULL OR o.expires_at > now())
-          AND p.key = 'approve_requests')`
-
-  const { rows } = await tx.query<{ id: string; email: string; full_name: string }>(
-    `SELECT u.id, u.email, u.full_name
-     ${RECIPIENT_BASE}
-       AND ${MODULE_CLAUSE.replace('$MODULE', '$1')}
-       AND ($2::uuid IS NULL OR u.id <> $2::uuid)
-       AND ${hasPermission}
-     ORDER BY u.full_name`,
-    [module, excludeUserId])
-  return rows.map((r) => ({ id: r.id, email: r.email, fullName: r.full_name }))
+  return resolvePermissionRecipients(tx, 'approve_requests', module, excludeUserId)
 }
 
 /** One person, by id — for the decided-notification, which goes to the requester alone. */

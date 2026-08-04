@@ -21,6 +21,16 @@ export const NOTIFICATION_CATEGORIES = [
   'approval_decided',
   /** A task assigned to you falls due tomorrow, or has gone past its due date. */
   'task_reminder',
+  /**
+   * A device's warranty is running out (spec §8.5's 30/60/90-day radar).
+   *
+   * The one category produced by a POLL rather than by a drained event, because a
+   * warranty expiring writes nothing anywhere — see
+   * modules/finance/domain/warrantyExpiry.ts. Shipped complete on arrival exactly as this
+   * list's header promises: no migration (category is unconstrained) and no backfill (a
+   * missing notification_pref row resolves to DEFAULT_PREF).
+   */
+  'warranty_expiring',
 ] as const
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number]
 
@@ -45,6 +55,10 @@ export const CATEGORY_LABELS: Record<NotificationCategory, { title: string; hint
   task_reminder: {
     title: 'Task reminders',
     hint: 'A task assigned to you is due tomorrow, or is already overdue.',
+  },
+  warranty_expiring: {
+    title: 'Warranties running out',
+    hint: 'A device’s warranty is within 90, 60 or 30 days of its end date.',
   },
 }
 

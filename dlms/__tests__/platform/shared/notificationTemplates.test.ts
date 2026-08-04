@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildHandoffNotification, buildApprovalRequestedNotification,
-  buildApprovalDecidedNotification,
+  buildApprovalDecidedNotification, buildWarrantyExpiringNotification,
 } from '@/modules/shared/notifications/domain/templates'
 
 /**
@@ -119,5 +119,70 @@ describe('buildApprovalDecidedNotification', () => {
     })
     expect(n.title.toLowerCase()).toContain('rejected')
     expect(n.body).toContain('Line 3 tax code is wrong')
+  })
+})
+
+describe('buildWarrantyExpiringNotification', () => {
+  const base = {
+    warrantyId: 'wwwwwwww-wwww-wwww-wwww-wwwwwwwwwwww',
+    deviceId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+    deviceSn: 'SN-00042',
+    endDate: '2026-08-29',
+    milestone: 30 as const,
+    daysRemaining: 25,
+  }
+
+  it('names the device, the end date and what to do about it', () => {
+    const n = buildWarrantyExpiringNotification(base)
+    expect(n.category).toBe('warranty_expiring')
+    expect(n.title).toContain('SN-00042')
+    expect(n.body).toContain('2026-08-29')
+    expect(n.body).toMatch(/renew/i)
+    expect(n.module).toBe('finance')
+  })
+
+  /**
+   * entityType/entityId are the WARRANTY, not the device — a renewal mints a new warranty
+   * row, so a notification filed under the device could not be told apart from its
+   * predecessor's.
+   */
+  it('is about the warranty row, not the device row', () => {
+    const n = buildWarrantyExpiringNotification(base)
+    expect(n.entityType).toBe('warranty')
+    expect(n.entityId).toBe('wwwwwwww-wwww-wwww-wwww-wwwwwwwwwwww')
+  })
+
+  /**
+   * The link is the radar page filtered to this milestone — the surface where the renewal
+   * actually happens — and never the device profile, which 404s without view_records in
+   * MANUFACTURING for an audience selected on FINANCE. Same trap buildHandoffNotification
+   * documents.
+   */
+  it('links to the finance radar at this milestone, never to the device', () => {
+    expect(buildWarrantyExpiringNotification(base).url).toBe('/finance/warranties?within=30')
+    expect(buildWarrantyExpiringNotification({ ...base, milestone: 90, daysRemaining: 77 }).url)
+      .toBe('/finance/warranties?within=90')
+    expect(buildWarrantyExpiringNotification(base).url).not.toContain('manufacturing')
+  })
+
+  it('falls back to a short id when the device has no serial — never renders "null"', () => {
+    const n = buildWarrantyExpiringNotification({ ...base, deviceSn: null })
+    expect(n.title).not.toContain('null')
+    expect(n.title).toContain('dddddddd')
+  })
+
+  it('says "today" and "tomorrow" rather than "in 0 days"', () => {
+    expect(buildWarrantyExpiringNotification({ ...base, daysRemaining: 0 }).body)
+      .toContain('today')
+    expect(buildWarrantyExpiringNotification({ ...base, daysRemaining: 1 }).body)
+      .toContain('tomorrow')
+    expect(buildWarrantyExpiringNotification({ ...base, daysRemaining: 25 }).body)
+      .toContain('in 25 days')
+  })
+
+  it('truncates a pathological device label rather than storing a wall of text', () => {
+    const n = buildWarrantyExpiringNotification({ ...base, deviceSn: 'X'.repeat(500) })
+    expect(n.title.length).toBeLessThanOrEqual(200)
+    expect(n.title.endsWith('…')).toBe(true)
   })
 })

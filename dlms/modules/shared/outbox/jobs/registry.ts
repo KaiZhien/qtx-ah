@@ -1,5 +1,6 @@
 import { drainOutbox } from '@/modules/shared/outbox/services/outboxService'
 import { sweepTaskReminders } from '@/modules/shared/notifications/services/reminderService'
+import { sweepWarrantyExpiry } from '@/modules/shared/notifications/services/warrantyReminderService'
 import { expireOverrides } from '@/modules/shared/outbox/jobs/expireOverrides'
 
 /**
@@ -52,6 +53,21 @@ export const JOBS: readonly JobDefinition[] = [
     schedule: '0 8 * * *',
     description: 'Due-tomorrow and overdue task reminders (spec §8.3).',
     run: () => sweepTaskReminders(),
+  },
+  {
+    name: 'warranty-expiry',
+    // Once a day, 08:30 UTC — half an hour after the task reminders, so the two daily
+    // sweeps do not contend for the same pool at the same instant and a slow one cannot be
+    // mistaken for the other in the logs.
+    //
+    // Daily is the RIGHT cadence even though each milestone fires only once ever: the job
+    // is a POLL over a calendar (nothing emits an event when a warranty crosses 30 days —
+    // see warrantyReminderService's header), so the sweep must look often enough to notice
+    // a crossing on the day it happens. Running it more often is free and produces nothing
+    // extra, because the dedupe key carries no day.
+    schedule: '30 8 * * *',
+    description: 'Warranties crossing the 90/60/30-day marks (spec §8.5).',
+    run: () => sweepWarrantyExpiry(),
   },
   {
     name: 'expire-overrides',

@@ -202,3 +202,61 @@ export function buildApprovalDecidedNotification(
     url: '/approvals',
   }
 }
+
+// ── Warranty expiry (spec §8.5) ─────────────────────────────────────────────
+
+export type WarrantyExpiringContext = {
+  warrantyId: string
+  deviceId: string
+  deviceSn: string | null
+  /** 'YYYY-MM-DD', carried as text end to end — never a Date. */
+  endDate: string
+  /** 30 | 60 | 90 — the bucket this crossing belongs to, and the radar tab it links to. */
+  milestone: number
+  /** Whole calendar days until end_date, inclusive: 0 means "ends today, still covered". */
+  daysRemaining: number
+}
+
+/** "today" / "tomorrow" / "in N days" — "in 0 days" is not a thing anyone says. */
+function whenPhrase(daysRemaining: number): string {
+  if (daysRemaining <= 0) return 'today'
+  if (daysRemaining === 1) return 'tomorrow'
+  return `in ${daysRemaining} days`
+}
+
+/**
+ * The one notification with NO originating event — it is produced by a poll, because a
+ * warranty expiring writes nothing anywhere (modules/finance/domain/warrantyExpiry.ts).
+ * Everything else here is built from a drained outbox row.
+ *
+ * THE LINK IS THE RADAR PAGE, NOT THE DEVICE, and for the same reason
+ * buildHandoffNotification refuses the device: the audience is selected on FINANCE module
+ * access, while /manufacturing/devices/[id] calls notFound() without `view_records` in
+ * MANUFACTURING. `/finance/warranties` is gated on `view_records` in finance, which every
+ * recipient holds by construction, and it is where the renewal is actually done. The
+ * `?within=` parameter lands the reader on the tab this message is about.
+ *
+ * entityType is the WARRANTY, not the device: a renewal supersedes the row and inserts a
+ * successor, so two notifications about "the same device" legitimately describe two
+ * different commercial commitments.
+ */
+export function buildWarrantyExpiringNotification(
+  ctx: WarrantyExpiringContext,
+): NotificationContent {
+  const sn = ctx.deviceSn?.trim()
+  const device = sn || `device ${ctx.deviceId.slice(0, 8)}`
+
+  return {
+    category: 'warranty_expiring',
+    title: truncate(`Warranty ending: ${device}`, TITLE_MAX),
+    body: truncate(
+      `The warranty for ${device} ends on ${ctx.endDate} — ${whenPhrase(ctx.daysRemaining)}. `
+      + 'Renew or extend it before cover lapses.',
+      BODY_MAX,
+    ),
+    entityType: 'warranty',
+    entityId: ctx.warrantyId,
+    module: 'finance',
+    url: `/finance/warranties?within=${ctx.milestone}`,
+  }
+}
