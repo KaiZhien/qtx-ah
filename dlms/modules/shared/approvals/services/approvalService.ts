@@ -612,11 +612,21 @@ function encodeCursor(createdAt: Date, id: string): string {
   return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url')
 }
 
+/** RFC 4122 hex, case-insensitive — the shape `approval.id` is guaranteed to be. */
+const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * Fails closed on anything malformed. The cursor reaches this from a URL query
  * string, so "not a cursor" is an ordinary input, not an exception: an
  * unparseable one would otherwise become `new Date(undefined)` → `Invalid Date` →
  * a raw Postgres error on a page that should simply have shown the first page.
+ *
+ * BOTH HALVES ARE SHAPE-CHECKED, and the id half is the one that used to be
+ * missing. The timestamp was validated but the id only had to be non-empty, so
+ * `base64url("2026-01-01T00:00:00.000Z|x")` decoded happily, reached the query as
+ * a `uuid` comparison, and came back as Postgres 22P02 — a 500 on `/approvals`,
+ * on exactly the hand-edited URL this function's own contract promises to answer
+ * with page one. Anything a `uuid` column cannot hold is not a cursor.
  */
 function decodeCursor(cursor: string): [Date, string] | null {
   let decoded: string
@@ -629,7 +639,7 @@ function decodeCursor(cursor: string): [Date, string] | null {
   if (separator < 0) return null
   const timestamp = new Date(decoded.slice(0, separator))
   const id = decoded.slice(separator + 1)
-  if (Number.isNaN(timestamp.getTime()) || !id) return null
+  if (Number.isNaN(timestamp.getTime()) || !CURSOR_ID.test(id)) return null
   return [timestamp, id]
 }
 

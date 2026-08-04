@@ -93,6 +93,11 @@ let approverId: string
 let buyerId: string
 const createdInvoiceIds: string[] = []
 const createdEcoIds: string[] = []
+/**
+ * Outbox rows written BY HAND rather than by a request, so they hang off no
+ * approval and the approval-keyed cleanup below cannot find them.
+ */
+const createdOutboxIds: string[] = []
 
 const makeUser = async (email: string, name: string, roleKey: string, department: string) =>
   (await db.query<{ id: string }>(
@@ -202,6 +207,11 @@ afterAll(async () => {
     await db.query(`DELETE FROM approval WHERE id = ANY($1)`, [createdApprovalIds])
     await db.query(`DELETE FROM audit_log WHERE table_name='approval' AND row_id = ANY($1)`,
       [createdApprovalIds])
+  }
+  if (createdOutboxIds.length) {
+    await db.query(`DELETE FROM outbox WHERE id = ANY($1)`, [createdOutboxIds])
+    await db.query(`DELETE FROM audit_log WHERE table_name='outbox' AND row_id = ANY($1)`,
+      [createdOutboxIds])
   }
   if (createdInvoiceIds.length) {
     await db.query(`DELETE FROM sales_invoice WHERE id = ANY($1)`, [createdInvoiceIds])
@@ -1184,12 +1194,71 @@ describe('listApprovals — the queue', () => {
   it('ignores an unparseable cursor rather than failing the page', async () => {
     // The cursor reaches the service from a URL query string, so "not a cursor"
     // is ordinary input; it must yield the first page, never a raw driver error.
+    //
+    // The last two are the case that used to 500. The timestamp half was
+    // validated and the id half only had to be non-empty, so a well-formed date
+    // with a junk id sailed through and reached the query as a `uuid` comparison:
+    // Postgres 22P02, an exception out of a function whose own header promises
+    // page one. Both a plainly-not-a-uuid id and a nearly-right one are pinned.
     const invoice = await makeInvoice()
     const { approvalId } = await requestInvoiceApproval(requester(), invoice)
-    for (const cursor of ['nonsense', '', 'Zm9v', Buffer.from('not-a-date|x').toString('base64url')]) {
+    const b64 = (s: string) => Buffer.from(s).toString('base64url')
+    for (const cursor of [
+      'nonsense', '', 'Zm9v',
+      b64('not-a-date|x'),
+      b64('2026-01-01T00:00:00.000Z|x'),
+      b64('2026-01-01T00:00:00.000Z|'),
+      b64('2026-01-01T00:00:00.000Z|zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz'),
+      b64('2026-01-01T00:00:00.000Z|00000000-0000-0000-0000-00000000000'),
+    ]) {
       const result = await listApprovals(approver(), { cursor })
       expect(result.items.map((a) => a.id)).toContain(approvalId)
     }
+  })
+
+  /**
+   * THE KEYSET TIE, which was correct by construction and pinned by nothing.
+   *
+   * Every other test in this file creates its approvals in separate transactions,
+   * so no two ever shared a `created_at` — and `requestApprovalInTx` stamps
+   * transaction-time `now()`, which is identical for every row committed by one
+   * transaction. So two approvals requested together IS the tie case, and it is
+   * reachable through a public API (any consumer that requests inside its own
+   * write). Without the `id` tiebreaker in both the ORDER BY and the cursor
+   * comparison, paging across the boundary would repeat one row or drop the other.
+   */
+  it('pages across two approvals that share a created_at to the microsecond', async () => {
+    const first = await makeInvoice()
+    const second = await makeInvoice()
+    const ids = await withTransaction(requesterId, async (tx) => {
+      const a = await requestApprovalInTx(tx, requester(), {
+        entityType: 'sales_invoice', entityId: first.id, kind: 'invoice',
+        permission: 'manage_finance', snapshot: invoiceSnapshot(first.invoiceNo),
+      })
+      const b = await requestApprovalInTx(tx, requester(), {
+        entityType: 'sales_invoice', entityId: second.id, kind: 'invoice',
+        permission: 'manage_finance', snapshot: invoiceSnapshot(second.invoiceNo),
+      })
+      return [a.approvalId, b.approvalId]
+    })
+    createdApprovalIds.push(...ids)
+
+    // The premise: one transaction, one timestamp.
+    const { rows: stamps } = await db.query<{ created_at: Date }>(
+      `SELECT created_at FROM approval WHERE id = ANY($1)`, [ids])
+    expect(stamps[0].created_at.getTime()).toBe(stamps[1].created_at.getTime())
+
+    // Page one row at a time across the boundary: both appear, exactly once each.
+    const seen: string[] = []
+    let cursor: string | null | undefined
+    for (let page = 0; page < 50; page++) {
+      const result = await listApprovals(approver(), { limit: 1, cursor: cursor ?? undefined })
+      seen.push(...result.items.map((a) => a.id))
+      cursor = result.nextCursor
+      if (!cursor) break
+    }
+    expect(new Set(seen).size).toBe(seen.length)
+    for (const id of ids) expect(seen.filter((s) => s === id)).toHaveLength(1)
   })
 })
 
@@ -1227,33 +1296,69 @@ describe('the approval handoff task', () => {
    * A kind with no registered template PARKS its event rather than inventing a generic
    * task nobody can act on — the behaviour the handoff registry already has, and the
    * right one: a task that says nothing useful is worse than a backlog entry a runbook
-   * can see. `eco` is deliberately unregistered (Engineering still uses its own direct
-   * gate; nothing consumes an ECO approval yet).
+   * can see.
+   *
+   * THE KIND HAS TO BE SYNTHESISED, and that is the point rather than a workaround.
+   * This test used to use `eco`, on the grounds that it was "deliberately unregistered
+   * (Engineering still uses its own direct gate)". AP2 registered all three kinds, so
+   * the test was asserting a refusal that no longer happens — it had stopped covering
+   * parking and started failing. Every kind in `approval.kind`'s CHECK set is now
+   * registered, so there is no kind `requestApproval` will accept that also parks, and
+   * the event is written by hand instead. That is faithful to what parking defends
+   * against anyway: not a caller passing a bad kind (the CHECK stops that), but a kind
+   * added to the schema whose template nobody remembered to write.
    */
   it('parks an event whose kind has no registered template instead of inventing a task',
     async () => {
       const ecoId = await makeEco()
-      const engineer = requester({ moduleAccess: new Set(['engineering']) })
-      const { approvalId } = track(await requestApproval(engineer, {
-        entityType: 'eco', entityId: ecoId, kind: 'eco', permission: 'edit_records',
-        snapshot: { title: 'Approvals engine probe', status: 'submitted' },
-      }))
-      expect((await approvalRow(approvalId)).module).toBe('engineering')
+      const { rows: [row0] } = await db.query<{ id: string }>(
+        `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
+         VALUES ('approval', gen_random_uuid(), 'approval_requested', $1::jsonb, $2)
+         RETURNING id`,
+        [JSON.stringify({
+          kind: 'not_a_registered_kind', module: 'engineering',
+          entityType: 'eco', entityId: ecoId, label: 'ECO-PROBE',
+        }), requesterId])
+      createdOutboxIds.push(row0.id)
 
       const result = await drainOutbox()
-      const [row] = await outboxFor(approvalId)
-      const failure = result.failures.find((f) => f.outboxId === row.id)
+      const failure = result.failures.find((f) => f.outboxId === row0.id)
       expect(failure).toBeDefined()
       expect(failure!.error).toMatch(/no handoff template registered/i)
       expect(await tasksLinkedTo(ecoId)).toEqual([])
 
+      const { rows: [row] } = await db.query<{
+        attempts: number; processed_at: Date | null; last_error: string | null
+      }>(`SELECT attempts, processed_at, last_error FROM outbox WHERE id=$1`, [row0.id])
       expect(row).toMatchObject({ attempts: 1, processed_at: null })
-      expect(row.last_error).toMatch(/eco/)
+      expect(row.last_error).toMatch(/not_a_registered_kind/)
 
       // …and once it hits the cap it stops consuming drains altogether.
-      await db.query(`UPDATE outbox SET attempts = $2 WHERE id = $1`, [row.id, MAX_ATTEMPTS])
+      await db.query(`UPDATE outbox SET attempts = $2 WHERE id = $1`, [row0.id, MAX_ATTEMPTS])
       const second = await drainOutbox()
-      expect(second.failures.map((f) => f.outboxId)).not.toContain(row.id)
+      expect(second.failures.map((f) => f.outboxId)).not.toContain(row0.id)
       expect((second.parked ?? 0)).toBeGreaterThan(0)
     })
+
+  /**
+   * The other direction, which the registry's own header calls out: `eco` IS
+   * registered now, so its event must reach a real task rather than park. Pinning
+   * both directions is what stops the pair above from silently becoming vacuous
+   * again the next time the registry changes.
+   */
+  it('drains a REGISTERED kind into a real task rather than parking it', async () => {
+    const ecoId = await makeEco()
+    const engineer = requester({ moduleAccess: new Set(['engineering']) })
+    const { approvalId } = track(await requestApproval(engineer, {
+      entityType: 'eco', entityId: ecoId, kind: 'eco', permission: 'edit_records',
+      snapshot: { ecoNo: 'ECO-PROBE-REGISTERED', title: 'Approvals engine probe' },
+    }))
+    expect((await approvalRow(approvalId)).module).toBe('engineering')
+
+    await drainOutbox()
+    expect((await outboxFor(approvalId))[0].processed_at).not.toBeNull()
+    const tasks = await tasksLinkedTo(ecoId)
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0].title).toContain('ECO-PROBE-REGISTERED')
+  })
 })
