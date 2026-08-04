@@ -1,0 +1,26 @@
+-- ===========================================================================
+-- Close the one EXECUTE grant 20260731000000_platform_outbox.sql missed.
+--
+-- fn_reconcile_system_actor() is ENFORCEMENT 1's trigger function. Every
+-- sibling in that migration (fn_resolve_actor_by_user_id, fn_system_actor_modules,
+-- fn_seed_system_actor, fn_pin_system_actor_authority, fn_forbid_system_actor_grant)
+-- had its EXECUTE revoked from PUBLIC/anon/authenticated; this one was missed,
+-- so it was callable by anon via /rest/v1/rpc/fn_reconcile_system_actor —
+-- flagged by the security advisors on 2026-08-04, at cloud apply time.
+--
+-- Impact was nuisance, not escalation: called directly (pg_trigger_depth() = 0)
+-- it PERFORMs fn_seed_system_actor(), the idempotent reconciliation, which
+-- HEALS the automation principal rather than widening it. Still, nothing
+-- outside the trigger machinery should reach it, and trigger firing does not
+-- require EXECUTE at fire time (the privilege check happens at CREATE TRIGGER
+-- time — see fn_approval_guard's comment in 20260802000000_platform_approvals.sql).
+--
+-- Revoke from PUBLIC as well as the explicit grantees: EXECUTE defaults to
+-- PUBLIC, so revoking from anon alone is a no-op (the trap this directory has
+-- documented twice already). No re-grant: the only caller is the trigger.
+--
+-- Belongs to the `qtx-ops-platform` project. Carries the platform_ token so
+-- __tests__/integration/setup.ts picks it up. Applied to cloud 2026-08-04 as
+-- version 20260804082219 (filename aligned to the applied version).
+-- ===========================================================================
+REVOKE EXECUTE ON FUNCTION fn_reconcile_system_actor() FROM PUBLIC, anon, authenticated;
