@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { z } from 'zod'
 
 // ---------------------------------------------------------------------------
 // BOM-effectivity action layer: same sanitization contract as failureActions.
@@ -48,6 +49,9 @@ vi.mock('@/modules/engineering/services/bomEffectivityService', () => ({
       super('That component type is already listed on this change order for that variant')
     }
   },
+  BomReferenceNotFoundError: class BomReferenceNotFoundError extends Error {
+    constructor() { super('That variant or component type no longer exists') }
+  },
 }))
 
 const {
@@ -60,6 +64,7 @@ const { EcoScopeLockedError } = await import('@/modules/shared/approvals/domain/
 const { MfaRequiredError } = await import('@/modules/shared/auth/session')
 const {
   BomApplyError, AffectedItemLockedError, DuplicateAffectedItemError,
+  BomReferenceNotFoundError,
 } = await import('@/modules/engineering/services/bomEffectivityService')
 
 const MFA_MESSAGE = 'Two-factor authentication required — reload the page to finish signing in.'
@@ -136,6 +141,27 @@ describe('error sanitization', () => {
     })
     await expect(removeAffectedItemAction({ ecoId: 'e1', id: 'i1', version: 1 })).resolves.toEqual({
       ok: false, error: locked.message,
+    })
+  })
+
+  it('names a variant/component type that vanished, instead of the generic message', async () => {
+    mockAdd.mockRejectedValue(new BomReferenceNotFoundError())
+    await expect(addAffectedItemAction(ITEM)).resolves.toEqual({
+      ok: false, error: 'That variant or component type no longer exists. Reload and try again.',
+    })
+  })
+
+  it('renders a ZodError as the field message the user can act on', async () => {
+    // The service parses with Zod, so a form that disagrees with the schema
+    // arrives here as a ZodError — four other action files map it, and this one
+    // used to log it and say "Something went wrong" for a too-long serial.
+    const zerr = new z.ZodError([{
+      code: 'too_big', maximum: 200, type: 'string', inclusive: true,
+      path: ['serial'], message: 'String must contain at most 200 character(s)',
+    }] as never)
+    mockApply.mockRejectedValue(zerr)
+    await expect(applyEcoEffectivityAction({ ecoId: 'e1' })).resolves.toEqual({
+      ok: false, error: 'String must contain at most 200 character(s)',
     })
   })
 

@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { z } from 'zod'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
@@ -9,7 +10,7 @@ import { EcoScopeLockedError } from '@/modules/shared/approvals/domain/ecoApprov
 import {
   addAffectedItem, removeAffectedItem, applyEcoEffectivity,
   BomEcoNotFoundError, BomApplyError, AffectedItemNotFoundError,
-  AffectedItemLockedError, DuplicateAffectedItemError,
+  AffectedItemLockedError, DuplicateAffectedItemError, BomReferenceNotFoundError,
   type AddAffectedItemInput, type RemoveAffectedItemInput,
   type ApplyEcoEffectivityInput, type ApplyEffectivityResult,
 } from '@/modules/engineering/services/bomEffectivityService'
@@ -21,6 +22,12 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  // A ZodError is the form disagreeing with the schema (a missing quantity on an
+  // add, a serial past 200 chars), which the user can act on — the four other
+  // action files that map it are the convention, not the exception.
+  if (err instanceof z.ZodError) {
+    return err.errors[0]?.message ?? 'That change could not be read. Check the form and try again.'
+  }
   // BomApplyError / AffectedItemLockedError / DuplicateAffectedItemError all
   // carry operator-readable text built in the service; nothing internal leaks.
   if (err instanceof BomApplyError) return err.message
@@ -31,6 +38,7 @@ function toMessage(err: unknown): string {
   // thing the caller gets, so neither may fall through to the generic line.
   if (err instanceof ApprovalGateError) return err.message
   if (err instanceof EcoScopeLockedError) return err.message
+  if (err instanceof BomReferenceNotFoundError) return `${err.message}. Reload and try again.`
   if (err instanceof BomEcoNotFoundError) {
     return 'That change order no longer exists. Reload and try again.'
   }

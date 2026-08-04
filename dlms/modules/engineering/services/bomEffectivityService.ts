@@ -3,7 +3,8 @@ import { withTransaction, OptimisticLockError, type Tx } from '@/lib/db/tx'
 import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import {
-  resolveBomAt, findBomEffectivityConflicts, isUsableEffectivityPoint,
+  resolveBomAt, findBomEffectivityConflicts, findUnderdeterminedLines,
+  closesBeforeItOpened, isUsableEffectivityPoint,
   type BomLineEffectivity, type BomAt,
 } from '@/modules/engineering/domain/bomEffectivity'
 import {
@@ -57,6 +58,20 @@ export type BomApplyErrorCode =
   | 'already_on_bom'
   /** `change`/`remove` for a component type the variant BOM does not carry. */
   | 'not_on_bom'
+  /**
+   * The effectivity point sits BELOW the open line's own lower bound, so closing
+   * it there would write an inverted, unreachable window. See the domain's
+   * closesBeforeItOpened — ECOs are approved in approval order, not effectivity
+   * order, so this is ordinary rather than exotic.
+   */
+  | 'effectivity_before_line_start'
+  /**
+   * Two applies opened a line for the same (variant, component type) at once.
+   * Unreachable through the advisory lock the apply now takes; kept because a
+   * bare 23505 reaching the operator as "Something went wrong" teaches nothing,
+   * and the correct advice — retry, the transaction rolled back — is specific.
+   */
+  | 'line_conflict'
 
 export class BomApplyError extends Error {
   readonly code: BomApplyErrorCode
@@ -85,6 +100,19 @@ export class DuplicateAffectedItemError extends Error {
   constructor() {
     super('That component type is already listed on this change order for that variant')
     this.name = 'DuplicateAffectedItemError'
+  }
+}
+
+/**
+ * The variant or component type an affected item names does not exist. Raised
+ * from the FK's own 23503 rather than a pre-check: both are picker-sourced, so
+ * this is the "deleted while the form was open" case, and a pre-check would only
+ * move the race rather than close it.
+ */
+export class BomReferenceNotFoundError extends Error {
+  constructor() {
+    super('That variant or component type no longer exists')
+    this.name = 'BomReferenceNotFoundError'
   }
 }
 
@@ -160,6 +188,14 @@ export type VariantBomView = {
   history: BomLineRow[]
   /** Component types with overlapping effective windows (a data defect). */
   conflicts: { componentTypeId: string; lineIds: string[] }[]
+  /**
+   * Lines in `lines` whose verdict came from the date axis while their real
+   * bound sits on the serial axis — the answer is a guess and the UI must say
+   * so. Non-empty for a serial-keyed add/change/remove asked about by date
+   * alone; empty once a comparable build serial is supplied. See the domain
+   * header's "the answer that is a guess".
+   */
+  underdetermined: { componentTypeId: string; lineIds: string[] }[]
 }
 
 const bomQuerySchema = z.object({
@@ -243,6 +279,7 @@ export async function getVariantBom(actor: Actor, query: VariantBomQuery): Promi
       lines: resolveBomAt(all, at),
       history: [...all].reverse(),
       conflicts: findBomEffectivityConflicts(all, at),
+      underdetermined: findUnderdeterminedLines(all, at),
     }
   })
 }
@@ -316,6 +353,7 @@ export async function addAffectedItem(
       return { id: rows[0].id }
     } catch (err) {
       if (isPgCode(err, '23505')) throw new DuplicateAffectedItemError()
+      if (isPgCode(err, '23503')) throw new BomReferenceNotFoundError()
       throw err
     }
   })
@@ -457,10 +495,16 @@ export async function applyEcoEffectivityTx(
     disposition: Disposition; quantity: number | null; notes: string | null
     applied_at: Date | null
   }>(
+    // ORDERED BY THE LOCK KEY, not by created_at, and that is load-bearing: the
+    // loop below takes one advisory lock per (variant, component type), so two
+    // applies naming the same pairs in different orders would deadlock unless
+    // every apply walks them in the same canonical order. ec_affected_item_unique
+    // guarantees one row per pair per ECO, and the per-pair operations are
+    // independent, so ordering by the key changes nothing but the lock sequence.
     `SELECT id, variant_id, component_type_id, disposition, quantity, notes, applied_at
        FROM ec_affected_item
       WHERE eco_id = $1 AND deleted_at IS NULL
-      ORDER BY created_at, id
+      ORDER BY variant_id, component_type_id
         FOR UPDATE`, [eco.id])
 
   // The snapshot re-check, after both locks and before any write. It runs even
@@ -469,8 +513,8 @@ export async function applyEcoEffectivityTx(
   // presence depend on how far a previous crashed run happened to get.
   //
   // The projection it compares against is ecoService's, NOT the row set just read
-  // here — that one is ordered for its own locking reasons and carries applied_at,
-  // neither of which belongs in a snapshot. Two readers of one table, two jobs.
+  // here — that one is ordered by the lock key and carries applied_at, neither of
+  // which belongs in a snapshot. Two readers of one table, two different jobs.
   await assertEcoApprovalInTx(tx, eco.id, 'applied to the BOM')
 
   const pending = items.filter((i) => i.applied_at === null)
@@ -482,10 +526,29 @@ export async function applyEcoEffectivityTx(
   let linesClosed = 0
 
   for (const item of pending) {
+    // THE LOCK THAT EXISTS WHEN THERE IS NOTHING TO LOCK. The open-line SELECT
+    // below is `FOR UPDATE`, which takes no lock at all when it returns zero
+    // rows — so two engineers applying two different implemented ECOs, each with
+    // an `add` for the same (variant, component type) not yet on the BOM, both
+    // lock only their own `eco` row, both see no open line, and both INSERT. The
+    // second gets a bare 23505 from bom_line_open_unique. It rolls back cleanly,
+    // but the operator learns nothing. An advisory lock is keyed on VALUES
+    // rather than rows, so it exists before the row does; it is transaction-
+    // scoped, so it is released by COMMIT/ROLLBACK with no unlock path to miss.
+    // Key collisions between unrelated pairs cost extra serialization and can
+    // never cost correctness. Deadlock is prevented by the canonical iteration
+    // order established in the item query above.
+    await tx.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      [item.variant_id, item.component_type_id])
+
     // The still-open line for this (variant, component type), if any. The
     // predicate matches bom_line_open_unique exactly, so at most one row exists.
-    const { rows: openLines } = await tx.query<{ id: string }>(
-      `SELECT id FROM variant_bom_line
+    const { rows: openLines } = await tx.query<{
+      id: string; effective_from_date: string | null; effective_from_serial: string | null
+    }>(
+      `SELECT id, effective_from_date::text AS effective_from_date, effective_from_serial
+         FROM variant_bom_line
         WHERE variant_id = $1 AND component_type_id = $2 AND deleted_at IS NULL
           AND effective_to_date IS NULL AND effective_to_serial IS NULL
           FOR UPDATE`, [item.variant_id, item.component_type_id])
@@ -504,6 +567,25 @@ export async function applyEcoEffectivityTx(
 
     // Close the outgoing line AT the effectivity point (exclusive upper bound).
     if (openLine) {
+      // …but never BELOW that line's own lower bound. Applying ECOs out of
+      // effectivity order is ordinary (they are approved in approval order), and
+      // an inverted window is silently accepted on the serial axis — there is no
+      // CHECK there and there cannot be one. See closesBeforeItOpened.
+      const inverted = closesBeforeItOpened(
+        {
+          effectiveFromDate: openLine.effective_from_date,
+          effectiveFromSerial: openLine.effective_from_serial,
+        },
+        { date: eco.effectivityDate, serial: eco.effectivitySerial })
+      if (inverted) {
+        const bound = inverted === 'date'
+          ? `${eco.effectivityDate} is before ${openLine.effective_from_date}`
+          : `${eco.effectivitySerial} is before ${openLine.effective_from_serial}`
+        throw new BomApplyError(
+          'effectivity_before_line_start',
+          `This change order takes effect before the BOM line it would replace even started (${bound}). Apply the earlier change order first, or correct this one's effectivity.`)
+      }
+
       await tx.query(
         `UPDATE variant_bom_line
             SET effective_to_date = $1, effective_to_serial = $2, superseded_by_eco_id = $3,
@@ -516,14 +598,27 @@ export async function applyEcoEffectivityTx(
     // Open the incoming line AT the same point (inclusive lower bound). `remove`
     // has no successor — that is the whole point of it.
     if (item.disposition !== 'remove') {
-      await tx.query(
-        `INSERT INTO variant_bom_line
-           (variant_id, component_type_id, quantity, notes,
-            effective_from_date, effective_from_serial, created_by_eco_id,
-            created_by, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
-        [item.variant_id, item.component_type_id, item.quantity, item.notes,
-         eco.effectivityDate, eco.effectivitySerial, eco.id, actorId])
+      try {
+        await tx.query(
+          `INSERT INTO variant_bom_line
+             (variant_id, component_type_id, quantity, notes,
+              effective_from_date, effective_from_serial, created_by_eco_id,
+              created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
+          [item.variant_id, item.component_type_id, item.quantity, item.notes,
+           eco.effectivityDate, eco.effectivitySerial, eco.id, actorId])
+      } catch (err) {
+        // Belt to the advisory lock's braces: whatever route produced it, a
+        // 23505 here means someone else owns the open line, and the caller's
+        // whole transaction has already rolled back. Say that, rather than
+        // letting the raw code become "Something went wrong".
+        if (isPgCode(err, '23505')) {
+          throw new BomApplyError(
+            'line_conflict',
+            'Another change order opened a BOM line for that component type at the same moment. Nothing was applied — reload and try again.')
+        }
+        throw err
+      }
       linesOpened++
     }
 

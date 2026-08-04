@@ -43,6 +43,25 @@
 -- the date axis decides; it never guesses. That is why the date axis is the
 -- floor and resolveBomAt REQUIRES a date but only optionally takes a serial.
 --
+-- >>> AND THE COROLLARY THAT IS EASY TO MISREAD: a SERIAL-ONLY ECO leaves NULL
+-- >>> on the date axis, and a NULL date bound means "unbounded", so the date
+-- >>> axis answers 'in' for every date. That is the correct reading of the row
+-- >>> and the WRONG answer to the question: a `remove` keyed to a serial leaves
+-- >>> the dropped component listed on every date-only BOM forever, and an `add`
+-- >>> lists the new one on dates before the change. Only `change` leaves two
+-- >>> lines, so only `change` is visible to an overlap check.
+-- >>>
+-- >>> The fix is NOT for the apply step to synthesise a date bound. Units built
+-- >>> after any such synthetic date genuinely do still carry the old part, so
+-- >>> the row would state a calendar fact that is false, permanently, on the
+-- >>> axis this header calls a proxy — the invention the abstain rule exists to
+-- >>> refuse. Instead the date axis still answers (it is the floor) and
+-- >>> findUnderdeterminedLines reports which lines that answer is a GUESS about,
+-- >>> so every surface says so and offers the serial box. Anyone reading these
+-- >>> columns directly, rather than through the resolver, inherits the guess
+-- >>> WITHOUT the flag: that is the third reason (after double-counting history
+-- >>> and the local-midnight date shift) not to re-express this in SQL.
+--
 -- WINDOWS ARE HALF-OPEN [from, to). An ECO effective at point P closes the
 -- outgoing line AT P and opens the incoming line AT P: no day and no serial is
 -- covered twice, and none is left uncovered. An inclusive upper bound would
@@ -129,6 +148,17 @@ COMMENT ON COLUMN variant_bom_line.superseded_by_eco_id IS
 -- Only the date axis can be range-checked in SQL; serial bounds are free text
 -- with no total order at the column level (see the header), so their ordering is
 -- the domain module's job and is unit-tested there.
+--
+-- THE ASYMMETRY IS LOAD-BEARING AND IS NOT BELT-AND-BRACES. Change orders are
+-- approved in APPROVAL order, never in effectivity order, so applying one whose
+-- point sits below the line it would close is ordinary. On this axis the CHECK
+-- catches it (as a raw 23514 the operator cannot act on); on the serial axis
+-- NOTHING catches it, and [QTX-P-00500, QTX-P-00300) is simply written, leaving
+-- the line unreachable at every serial and the history table rendering the
+-- inverted pair with no flag. Both axes are therefore refused up front by
+-- closesBeforeItOpened in the domain, called by the apply step before the
+-- close-UPDATE — so this CHECK is the second line of defence on one axis and the
+-- service is the ONLY line of defence on the other.
 ALTER TABLE variant_bom_line
   ADD CONSTRAINT bom_line_date_window CHECK (
     effective_from_date IS NULL OR effective_to_date IS NULL
@@ -147,6 +177,16 @@ ALTER TABLE variant_bom_line
 -- applied: closing would set both bounds to NULL, the old line would stay open
 -- alongside the new one, and this index would reject it. The service catches
 -- that case up front with a clear error rather than surfacing a raw 23505.
+--
+-- THAT GUARD COVERS THE STATED CAUSE, NOT EVERY CAUSE. The apply's open-line
+-- lookup is `SELECT id … FOR UPDATE`, which takes NO LOCK when it returns zero
+-- rows — so two applies of two different ECOs, each `add`ing the same (variant,
+-- component type) not yet on the BOM, both see nothing and both INSERT, and the
+-- second hits this index. It rolls back cleanly, so the index is doing its job;
+-- the operator just learned nothing. The apply therefore takes a transaction-
+-- scoped pg_advisory_xact_lock on (variant, component type) BEFORE the lookup —
+-- a lock keyed on values exists before the row does — walking its items in
+-- (variant_id, component_type_id) order so two applies can never deadlock.
 --
 -- Safe to create without a backfill: every existing row has both to-bounds NULL,
 -- so all of them fall inside the predicate — and the constraint being dropped

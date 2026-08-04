@@ -111,7 +111,17 @@ describe('component schema', () => {
       ['component_installation', 'component_type', 'component_unit', 'variant_bom_line'])
   })
 
-  it('allows one BOM line per variant+component type, rejects a duplicate', async () => {
+  /**
+   * THE INVARIANT CHANGED IN 20260803100001, AND SO DID WHAT THIS TEST PROVES.
+   * `bom_line_unique` (UNIQUE (variant_id, component_type_id)) was dropped for
+   * the partial index `bom_line_open_unique`, which covers only the still-OPEN
+   * line (both to-bounds NULL). The guarantee is no longer "at most one line per
+   * variant+component type" — that would forbid history, which is the whole
+   * point of effectivity — it is "at most one CURRENT line". A superseded line
+   * plus its successor is now legal and must stay legal, so the second case
+   * below is as load-bearing as the first.
+   */
+  it('allows one OPEN BOM line per variant+component type, rejects a second', async () => {
     const variantId = (await db.query(`SELECT id FROM device_variant WHERE code='pro'`)).rows[0].id
     await db.query(
       `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
@@ -119,7 +129,55 @@ describe('component schema', () => {
     await expect(db.query(
       `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
        VALUES ($1,$2,2,$3)`, [variantId, pcbaTypeId, userId]))
-      .rejects.toThrow(/bom_line_unique/)
+      .rejects.toThrow(/bom_line_open_unique/)
+  })
+
+  it('ALLOWS a successor once the incumbent line is closed — history is the point', async () => {
+    const variantId = (await db.query(`SELECT id FROM device_variant WHERE code='pro'`)).rows[0].id
+    const screenTypeId = (await db.query(
+      `SELECT id FROM component_type WHERE code='hmi_screen'`)).rows[0].id
+    // The incumbent, closed on the date axis at the changeover point…
+    await db.query(
+      `INSERT INTO variant_bom_line
+         (variant_id, component_type_id, quantity, effective_to_date, created_by)
+       VALUES ($1,$2,1,'2026-06-01',$3)`, [variantId, screenTypeId, userId])
+    // …and its successor, opening at the same point. The old UNIQUE constraint
+    // rejected exactly this, which is why it had to go.
+    await db.query(
+      `INSERT INTO variant_bom_line
+         (variant_id, component_type_id, quantity, effective_from_date, created_by)
+       VALUES ($1,$2,2,'2026-06-01',$3)`, [variantId, screenTypeId, userId])
+
+    const { rows } = await db.query(
+      `SELECT count(*)::int AS n FROM variant_bom_line
+        WHERE variant_id=$1 AND component_type_id=$2`, [variantId, screenTypeId])
+    expect(rows[0].n).toBe(2)
+
+    // …but only ONE of them may be open, so a third unbounded line still fails.
+    await expect(db.query(
+      `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by)
+       VALUES ($1,$2,3,$3)`, [variantId, screenTypeId, userId]))
+      .rejects.toThrow(/bom_line_open_unique/)
+
+    // Unlike its neighbours this one tidies up: it leaves a valid PAIR behind,
+    // and the seeded 'pro' BOM is shared state every later test in this file and
+    // in bomEffectivityService.test.ts reads.
+    await db.query(`DELETE FROM variant_bom_line WHERE variant_id=$1 AND component_type_id=$2`,
+      [variantId, screenTypeId])
+  })
+
+  it('refuses an inverted date window on a BOM line', async () => {
+    // bom_line_date_window. The serial axis has no equivalent and cannot have
+    // one (free text, no total order) — that half is enforced in the service by
+    // closesBeforeItOpened, pinned in bomEffectivityService.test.ts.
+    const variantId = (await db.query(`SELECT id FROM device_variant WHERE code='pro'`)).rows[0].id
+    const pcbaBTypeId = (await db.query(
+      `SELECT id FROM component_type WHERE code='pcba_b'`)).rows[0].id
+    await expect(db.query(
+      `INSERT INTO variant_bom_line
+         (variant_id, component_type_id, quantity, effective_from_date, effective_to_date, created_by)
+       VALUES ($1,$2,1,'2026-09-01','2026-06-01',$3)`, [variantId, pcbaBTypeId, userId]))
+      .rejects.toThrow(/bom_line_date_window/)
   })
 
   it('rejects a BOM line with quantity 0', async () => {
