@@ -190,8 +190,13 @@ describe('buildReadmeMd', () => {
 
 describe('assertExportCeremony — Super Admin + fresh MFA (spec §12)', () => {
   const now = new Date('2026-08-03T10:00:00Z')
-  const freshTotp = [{ method: 'totp', timestamp: new Date(now.getTime() - 30_000).toISOString() }]
-  const staleTotp = [{ method: 'totp', timestamp: new Date(now.getTime() - 9_000_000).toISOString() }]
+  // UNIX SECONDS, which is what Supabase's AMR claim actually carries. These were
+  // ISO strings, and against a `Date.parse` implementation that made EVERY claim
+  // unparseable — so "refuses a stale factor" passed for the wrong reason and
+  // "admits a fresh one" was the only test that could have caught it.
+  const at = (secondsAgo: number) => Math.floor(now.getTime() / 1000) - secondsAgo
+  const freshTotp = [{ method: 'totp', timestamp: at(30) }]
+  const staleTotp = [{ method: 'totp', timestamp: at(9000) }]
 
   const actor = (over: Partial<Actor> = {}): Actor => ({
     id: 'u1', roleKey: 'super_admin',
@@ -222,7 +227,7 @@ describe('assertExportCeremony — Super Admin + fresh MFA (spec §12)', () => {
   })
 
   it('refuses a permitted actor with no second factor at all', () => {
-    const passwordOnly = [{ method: 'password', timestamp: now.toISOString() }]
+    const passwordOnly = [{ method: 'password', timestamp: at(0) }]
     expect(() => assertExportCeremony(actor(), passwordOnly, now)).toThrow(ExportMfaRequiredError)
   })
 

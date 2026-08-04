@@ -200,6 +200,46 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
 
   // ── Engineering ───────────────────────────────────────────────────────────
   {
+    table: 'root_cause_option', format: 'csv',
+    columns: ['id', 'code', 'name', 'active', 'sort', ...AUDIT_COLS],
+    orderBy: 'sort, code', liveOnly: false,
+    description: 'Admin-extensible root-cause vocabulary. Exported for the same '
+      + 'reason status_option is: failure_investigation.root_cause_id is a UUID, and '
+      + 'without this table the classification that drives the RCA dashboard is '
+      + 'unreadable. Retired causes are `active = false`, never deleted, because '
+      + 'closed investigations still reference them.',
+  },
+  {
+    table: 'failure_investigation', format: 'csv',
+    columns: ['id', 'fi_no', 'title', 'severity', 'status', 'root_cause_id',
+      'description', 'containment', 'root_cause', 'corrective_action',
+      'device_id', 'repair_id', 'eco_id', 'reported_by', 'assigned_to',
+      'opened_at', 'closed_at', ...AUDIT_COLS],
+    orderBy: 'fi_no', liveOnly: false,
+    description: 'Failure investigations / RCA records. `root_cause_id` is the '
+      + 'STRUCTURED cause (join root_cause_option); `root_cause` beside it is optional '
+      + 'prose and is NOT what the lifecycle or the dashboards read. All three subject '
+      + 'links (device_id, repair_id, eco_id) are independent and nullable.',
+  },
+  {
+    table: 'failure_status_history', format: 'json',
+    columns: ['id', 'failure_id', 'from_status', 'to_status', 'note',
+      'changed_by', 'changed_at'],
+    orderBy: 'failure_id, changed_at', liveOnly: false,
+    description: 'Append-only FI status log. JSON: a history set. This is the ONLY '
+      + 'place a cancellation reason lives — the investigation row has no note column.',
+  },
+  {
+    table: 'ec_affected_item', format: 'csv',
+    columns: ['id', 'eco_id', 'variant_id', 'component_type_id', 'disposition',
+      'quantity', 'notes', 'applied_at', 'applied_by', ...AUDIT_COLS],
+    orderBy: 'eco_id, variant_id, component_type_id', liveOnly: false,
+    description: 'What an ECO changes: one row per (eco, variant, component type). '
+      + 'This is the input side of BOM effectivity — `applied_at` is the idempotency '
+      + 'stamp saying the change has been written into variant_bom_line, whose '
+      + 'created_by_eco_id / superseded_by_eco_id are the output side.',
+  },
+  {
     table: 'ecr', format: 'csv',
     columns: ['id', 'ecr_no', 'title', 'description', 'reason', 'priority', 'status',
       'device_id', 'variant_id', ...AUDIT_COLS],
@@ -257,6 +297,17 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
     orderBy: 'modification_id, changed_at', liveOnly: false,
     description: 'Append-only modification status log.',
   },
+  {
+    table: 'usage_record', format: 'csv',
+    columns: ['id', 'device_id', 'recorded_on', 'cumulative_sessions', 'source',
+      'entered_by', 'note', 'created_at', 'created_by'],
+    orderBy: 'device_id, recorded_on, created_at, id', liveOnly: false,
+    description: 'Append-only device usage readings. NO "is a reset" COLUMN EXISTS AND '
+      + 'NONE SHOULD: whether a reading is lower than its predecessor is a property of '
+      + 'its PLACE in the chronological series, so a backdated append moves the flag '
+      + 'onto — or off — a row nobody wrote to. Derive it from this ordering, and treat '
+      + 'a lifetime session total across a reset boundary as a LOWER BOUND.',
+  },
 
   // ── Finance ───────────────────────────────────────────────────────────────
   {
@@ -277,12 +328,57 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
       'amount_sgd', 'device_id', 'created_at', 'created_by'],
     orderBy: 'invoice_id, line_no', liveOnly: false, description: 'Invoice lines.',
   },
+  {
+    table: 'warranty', format: 'csv',
+    columns: ['id', 'device_id', 'start_date', 'end_date', 'terms', ...AUDIT_COLS],
+    orderBy: 'device_id, start_date', liveOnly: false,
+    description: 'Device warranties. THERE IS NO `status` COLUMN — active / expiring / '
+      + 'expired is DERIVED from end_date against the day you ask, so do not look for '
+      + 'one. A renewal mints a NEW row and soft-deletes the old, which is why the '
+      + 'soft-deleted rows are here: without them a device\'s coverage history has gaps.',
+  },
+  {
+    table: 'document_access_log', format: 'csv',
+    columns: ['id', 'entity_type', 'entity_id', 'document_kind', 'entity_status',
+      'actor_id', 'accessed_at'],
+    orderBy: 'accessed_at', liveOnly: false,
+    description: 'Who downloaded which generated document, and what state the record '
+      + 'was in at the time. Append-only; `entity_status` is captured at access time '
+      + 'rather than joined later, because the answer changes afterwards.',
+  },
 
   // ── Logistics ─────────────────────────────────────────────────────────────
   {
     table: 'stock_location', format: 'csv',
     columns: ['id', 'code', 'name', 'country', 'address', 'notes', 'active', ...AUDIT_COLS],
     orderBy: 'code', liveOnly: false, description: 'Stock locations.',
+  },
+  {
+    table: 'stock_level', format: 'csv',
+    columns: ['id', 'location_id', 'component_type_id', 'qty', 'created_at', 'created_by',
+      'updated_at', 'updated_by', 'version'],
+    orderBy: 'location_id, component_type_id', liveOnly: false,
+    description: 'BATCH-tracked component quantities per location — and ONLY batch ones '
+      + '(a database function enforces it). A SERIALIZED unit\'s location lives on '
+      + 'component_unit.location_id instead. NEVER add these two together into one '
+      + '"stock on hand" figure: they are two sources of truth for two disjoint '
+      + 'populations, and summing them double-counts nothing while under-counting both.',
+  },
+  {
+    table: 'stock_transfer', format: 'csv',
+    columns: ['id', 'transfer_no', 'status', 'from_location_id', 'to_location_id',
+      'initiated_by', 'dispatched_at', 'received_at', 'received_by', 'carrier',
+      'reference', 'notes', ...AUDIT_COLS],
+    orderBy: 'transfer_no', liveOnly: false, description: 'Stock transfers between locations.',
+  },
+  {
+    table: 'stock_transfer_line', format: 'csv',
+    columns: ['id', 'stock_transfer_id', 'line_no', 'component_type_id', 'qty',
+      'component_unit_id', 'notes', 'created_at', 'created_by'],
+    orderBy: 'stock_transfer_id, line_no', liveOnly: false,
+    description: 'Transfer lines. Each is EITHER a batch line (component_type_id + qty) '
+      + 'or a serialized line (component_unit_id), never both — a CHECK enforces it, so '
+      + 'the null columns say which kind of line you are looking at.',
   },
   {
     table: 'delivery_order', format: 'csv',
@@ -320,6 +416,39 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
     columns: ['id', 'source_filename', 'source_sha256', 'source_kind', 'default_variant_id',
       'status', 'row_count', 'created_at', 'created_by', 'updated_at', 'updated_by', 'version'],
     orderBy: 'created_at', liveOnly: false, description: 'Bulk import batches.',
+  },
+  {
+    table: 'import_row', format: 'json',
+    columns: ['id', 'batch_id', 'source_row_no', 'unit_no', 'raw', 'parsed', 'errors',
+      'status', 'device_id', 'committed_at', 'created_at', 'created_by', 'updated_at'],
+    orderBy: 'batch_id, source_row_no, unit_no', liveOnly: false,
+    description: 'Staged import rows. JSON because `raw`, `parsed` and `errors` are all '
+      + 'jsonb — this module\'s header names raw/parsed as a jsonb set explicitly. '
+      + '`raw` is the sheet VERBATIM and `parsed` is the normalized draft (serials '
+      + 'uppercased); they differ on purpose and both matter when reconstructing what a '
+      + 'sheet actually said. Deliberately NOT audit-attached upstream, so this file is '
+      + 'the only record of a batch that was reviewed and abandoned.',
+  },
+  {
+    table: 'notification', format: 'csv',
+    columns: ['id', 'user_id', 'category', 'title', 'body', 'entity_type', 'entity_id',
+      'module', 'url', 'dedupe_key', 'read_at', 'emailed_at', 'created_at', 'created_by'],
+    orderBy: 'created_at, id', liveOnly: false,
+    description: 'In-app notifications, ONE ROW PER RECIPIENT per event — a single '
+      + 'event legitimately appears five times if five people were told. `user_id` is '
+      + 'who received it and `created_by` is who or what caused it. `emailed_at` means '
+      + 'an email ACTUALLY went out, never that one was wanted. No deleted_at and no '
+      + 'version by design: a delivered message is a historical fact.',
+  },
+  {
+    table: 'notification_pref', format: 'csv',
+    columns: ['user_id', 'category', 'in_app', 'email', 'digest',
+      'created_at', 'created_by', 'updated_at', 'updated_by', 'version'],
+    orderBy: 'user_id, category', liveOnly: false,
+    description: 'Per-user delivery preferences. COMPOSITE KEY (user_id, category) — '
+      + 'this table has no `id`. A MISSING ROW IS NOT "no preferences": it is the '
+      + 'defaults (in-app on, email off, digest off), so absence here carries meaning '
+      + 'and the file being sparse is correct rather than incomplete.',
   },
   {
     table: 'outbox', format: 'json',

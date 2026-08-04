@@ -76,9 +76,16 @@ const FK_TARGETS: Record<string, string> = {
   removed_by: 'app_user',
   changed_by: 'app_user',
   entered_by: 'app_user',
+  applied_by: 'app_user',
+  initiated_by: 'app_user',
+  received_by: 'app_user',
   actor_id: 'app_user',
   user_id: 'app_user',
   parent_task_id: 'task',
+  // Both would otherwise be singularised to a table that does not exist, and the
+  // row would render as "(not exported)" beside a file that IS in the archive.
+  failure_id: 'failure_investigation',
+  root_cause_id: 'root_cause_option',
   from_location_id: 'stock_location',
   to_location_id: 'stock_location',
   location_id: 'stock_location',
@@ -162,6 +169,15 @@ export function buildRelationshipsMd(
     '  `created_by_eco_id` / `superseded_by_eco_id` naming the change orders that',
     '  opened and closed it. Counting this file without that filter counts',
     '  revisions, not parts.',
+    '- **`stock_level` and `component_unit.location_id` are two different sources of',
+    '  truth.** `stock_level` holds BATCH-tracked quantities only; a serialized unit\'s',
+    '  location is on the unit itself. Do not union them into one "stock on hand"',
+    '  figure — they describe disjoint populations and the sum is meaningless.',
+    '- **`warranty` has no `status` column.** Active / expiring / expired is derived',
+    '  from `end_date` relative to the date you ask. A renewal mints a NEW row and',
+    '  soft-deletes the old, so `warranty.id` is not stable across a renewal.',
+    '- **`notification_pref` is keyed by (`user_id`, `category`) and has no `id`.** A',
+    '  MISSING row means the defaults apply, not that the user has no preferences.',
     '- **`audit_log.row_id` is nullable** — `fn_audit` is shape-agnostic and some',
     '  tables have composite keys.',
     '',
@@ -222,5 +238,23 @@ export function buildReadmeMd(manifest: ExportManifest): string {
     '',
     ...DEFERRED_EXPORT_PARTS.map((d) => `- ${d}`),
     '',
+    // Stated LOUDLY and only when it happened. A recipient who cannot tell an
+    // absent table from an empty one will read a gap as "there was nothing
+    // there", which is the one wrong conclusion this whole file exists to
+    // prevent — and manifest.json would otherwise certify the shortfall as
+    // deliberate.
+    ...(manifest.absentEntities.length > 0
+      ? [
+        '## ⚠ Tables missing from this export',
+        '',
+        'These entities are part of the export and their tables did **not exist** in',
+        'the database when it was built — almost always an unapplied migration. Their',
+        'files are absent rather than empty, because an empty file would read as "there',
+        'were no records", which is not what happened.',
+        '',
+        ...manifest.absentEntities.map((t) => `- \`${t}\``),
+        '',
+      ]
+      : []),
   ].join(EOL)
 }

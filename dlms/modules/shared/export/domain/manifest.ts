@@ -73,9 +73,22 @@ export type ExportManifest = {
   totals: { files: number; bytes: number; rows: number }
   /** Parts of the spec §12 export tree deliberately absent from THIS build. */
   deferred: string[]
+  /**
+   * Registry entities whose TABLE did not exist in the database at build time —
+   * an unapplied migration, essentially. Their files are absent from the archive
+   * rather than present-and-empty, because "no rows" and "no table" are different
+   * facts and only one of them means the data is safe. Normally `[]`.
+   */
+  absentEntities: string[]
 }
 
-export type BuildManifestInput = Omit<ExportManifest, 'totals'>
+/**
+ * `absentEntities` is optional on the way IN and always present on the way OUT:
+ * the builder supplies it, while the unit tests and any other caller that has no
+ * notion of a missing table should not have to write `absentEntities: []`.
+ */
+export type BuildManifestInput =
+  Omit<ExportManifest, 'totals' | 'absentEntities'> & { absentEntities?: string[] }
 
 /**
  * Assembles the manifest and computes its totals.
@@ -100,6 +113,7 @@ export function buildManifest(input: BuildManifestInput): ExportManifest {
   return {
     ...input,
     files,
+    absentEntities: input.absentEntities ?? [],
     totals: {
       files: files.length,
       bytes: files.reduce((n, f) => n + f.bytes, 0),

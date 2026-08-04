@@ -3,7 +3,8 @@ import {
   sha256Hex, describeFile, buildManifest, manifestBytes, MANIFEST_PATH,
 } from '@/modules/shared/export/domain/manifest'
 import {
-  isMfaFresh, EXPORT_MFA_MAX_AGE_SECONDS, MFA_CLOCK_SKEW_SECONDS,
+  isMfaFresh, mfaFreshnessReason,
+  EXPORT_MFA_MAX_AGE_SECONDS, MFA_CLOCK_SKEW_SECONDS,
 } from '@/modules/shared/export/domain/mfaFreshness'
 
 describe('sha256Hex', () => {
@@ -144,7 +145,22 @@ describe('manifestBytes', () => {
 
 describe('isMfaFresh — spec §12 "Super Admin + fresh MFA (§7.4)"', () => {
   const now = new Date('2026-08-03T10:00:00Z')
-  const ago = (s: number) => new Date(now.getTime() - s * 1000).toISOString()
+
+  /**
+   * ── THE SHAPE HERE IS THE WHOLE POINT ──────────────────────────────────
+   * `AMREntry.timestamp` is a **number: UNIX SECONDS**, per @supabase/auth-js.
+   * These tests used to build ISO strings — `new Date(...).toISOString()` — and
+   * twelve of them passed while the gate was refusing EVERY real request:
+   * `Date.parse(1754300000)` is NaN, so `isMfaFresh` returned false for a Super
+   * Admin who had entered TOTP five seconds earlier, and the export could never
+   * be downloaded at all. Green tests pinning the wrong contract are worse than
+   * no tests, because they are the reason nobody looked.
+   *
+   * `ago`/`ahead` therefore produce SECONDS, and a string-shaped timestamp is
+   * now a type error rather than a passing test.
+   */
+  const ago = (s: number) => Math.floor(now.getTime() / 1000) - s
+  const ahead = (s: number) => Math.floor(now.getTime() / 1000) + s
 
   it('accepts a TOTP challenge completed just now', () => {
     expect(isMfaFresh([{ method: 'totp', timestamp: ago(10) }], now)).toBe(true)
@@ -154,6 +170,16 @@ describe('isMfaFresh — spec §12 "Super Admin + fresh MFA (§7.4)"', () => {
     expect(EXPORT_MFA_MAX_AGE_SECONDS).toBe(300)
     expect(isMfaFresh([{ method: 'totp', timestamp: ago(299) }], now)).toBe(true)
     expect(isMfaFresh([{ method: 'totp', timestamp: ago(301) }], now)).toBe(false)
+  })
+
+  it('reads the timestamp as SECONDS, not milliseconds', () => {
+    // The regression this file exists to prevent, stated directly. Read as
+    // milliseconds, an epoch-seconds stamp lands in January 1970 and every
+    // export is refused; read as seconds, a millisecond stamp lands in the year
+    // 57000 and the skew guard refuses it. Both directions are pinned.
+    expect(isMfaFresh([{ method: 'totp', timestamp: now.getTime() }], now)).toBe(false)
+    expect(isMfaFresh([{ method: 'totp', timestamp: Math.floor(now.getTime() / 1000) }], now))
+      .toBe(true)
   })
 
   it('REJECTS a password-only session, however recent', () => {
@@ -181,13 +207,29 @@ describe('isMfaFresh — spec §12 "Super Admin + fresh MFA (§7.4)"', () => {
     expect(isMfaFresh(undefined, now)).toBe(false)
   })
 
-  it('FAILS CLOSED on an unparseable timestamp', () => {
-    expect(isMfaFresh([{ method: 'totp', timestamp: 'not-a-date' }], now)).toBe(false)
-    expect(isMfaFresh([{ method: 'totp', timestamp: '' }], now)).toBe(false)
+  it('FAILS CLOSED on a timestamp that is not a finite number', () => {
+    const bad = [NaN, Infinity, -Infinity]
+    for (const t of bad) {
+      expect(isMfaFresh([{ method: 'totp', timestamp: t }], now), String(t)).toBe(false)
+    }
+    // Missing entirely — the claim can arrive shaped by a version we do not know.
+    expect(isMfaFresh([{ method: 'totp' } as never], now)).toBe(false)
+  })
+
+  it('REFUSES the RFC-8176 string form, which carries no timestamp at all', () => {
+    // `currentAuthenticationMethods` is typed `AMREntry[] | string[]`. The string
+    // form names the methods and says nothing about WHEN — and "when" is the only
+    // question this function asks, so it cannot be answered and must not be
+    // guessed. Refusing costs a re-authentication; assuming costs a full-system
+    // export to an unattended laptop.
+    expect(isMfaFresh(['password', 'totp'], now)).toBe(false)
+    expect(isMfaFresh(['totp'], now)).toBe(false)
+    // Mixed shapes: the object entry still decides, so a claim that carries one
+    // real timestamp is not dragged down by a bare string beside it.
+    expect(isMfaFresh(['password', { method: 'totp', timestamp: ago(10) }], now)).toBe(true)
   })
 
   it('tolerates small clock skew but rejects a wildly future timestamp', () => {
-    const ahead = (s: number) => new Date(now.getTime() + s * 1000).toISOString()
     expect(MFA_CLOCK_SKEW_SECONDS).toBe(60)
     expect(isMfaFresh([{ method: 'totp', timestamp: ahead(30) }], now)).toBe(true)
     expect(isMfaFresh([{ method: 'totp', timestamp: ahead(3600) }], now)).toBe(false)
@@ -196,5 +238,34 @@ describe('isMfaFresh — spec §12 "Super Admin + fresh MFA (§7.4)"', () => {
   it('honours an explicit max age when one is passed', () => {
     expect(isMfaFresh([{ method: 'totp', timestamp: ago(120) }], now, 60)).toBe(false)
     expect(isMfaFresh([{ method: 'totp', timestamp: ago(30) }], now, 60)).toBe(true)
+  })
+})
+
+describe('mfaFreshnessReason — why a refusal happened, for the log', () => {
+  const now = new Date('2026-08-03T10:00:00Z')
+  const ago = (s: number) => Math.floor(now.getTime() / 1000) - s
+
+  it('agrees with isMfaFresh in both directions, by construction', () => {
+    const cases: Parameters<typeof isMfaFresh>[0][] = [
+      null, [], ['totp'],
+      [{ method: 'password', timestamp: ago(1) }],
+      [{ method: 'totp', timestamp: ago(1) }],
+      [{ method: 'totp', timestamp: ago(9999) }],
+      [{ method: 'totp', timestamp: NaN }],
+    ]
+    for (const c of cases) {
+      expect(mfaFreshnessReason(c, now) === 'fresh').toBe(isMfaFresh(c, now))
+    }
+  })
+
+  it('distinguishes the four ways a claim can fail, so a 403 is diagnosable', () => {
+    // Without this, the "always refuses" defect looked identical to "your code
+    // expired" from every vantage point including the server log.
+    expect(mfaFreshnessReason(null, now)).toBe('no-methods')
+    expect(mfaFreshnessReason([{ method: 'password', timestamp: ago(1) }], now))
+      .toBe('no-second-factor')
+    expect(mfaFreshnessReason(['totp'], now)).toBe('no-timestamp')
+    expect(mfaFreshnessReason([{ method: 'totp', timestamp: ago(9999) }], now)).toBe('stale')
+    expect(mfaFreshnessReason([{ method: 'totp', timestamp: ago(1) }], now)).toBe('fresh')
   })
 })

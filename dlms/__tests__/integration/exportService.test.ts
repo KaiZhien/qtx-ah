@@ -32,7 +32,15 @@ const TOK = 'zzexp5510'
 const createdDeviceIds: string[] = []
 
 const now = new Date()
-const freshMfa = [{ method: 'totp', timestamp: new Date(now.getTime() - 10_000).toISOString() }]
+/**
+ * The AMR claim in its REAL shape: `timestamp` is a number of UNIX SECONDS, per
+ * @supabase/auth-js. It was an ISO string here and in twelve unit tests, all of
+ * them green, while the gate refused every genuine request — `Date.parse` of a
+ * number is NaN, so the export could never be downloaded at all. The fixture is
+ * the contract; getting it wrong is how a permanent 403 stays invisible.
+ */
+const epochSeconds = (d: Date) => Math.floor(d.getTime() / 1000)
+const freshMfa = [{ method: 'totp', timestamp: epochSeconds(now) - 10 }]
 
 const superAdmin = (over: Partial<Actor> = {}): Actor => ({
   id: userId, roleKey: 'super_admin',
@@ -85,10 +93,13 @@ beforeAll(async () => {
   const variantId = (await db.query<{ id: string }>(
     `SELECT id FROM device_variant LIMIT 1`)).rows[0].id
   createdDeviceIds.push((await db.query<{ id: string }>(
-    `INSERT INTO device (device_sn, variant_id, status, remarks, created_by, updated_by)
-     SELECT $1, $2, s.code, $3, $4, $4 FROM status_option s ORDER BY s.sort_order LIMIT 1
+    `INSERT INTO device (device_sn, variant_id, status, remarks, build_date, ship_date,
+                         created_by, updated_by)
+     SELECT $1, $2, s.code, $3, DATE '2026-08-04', DATE '2026-01-01', $4, $4
+       FROM status_option s ORDER BY s.sort_order LIMIT 1
      RETURNING id`,
     // Bilingual + a comma + a quote: the CSV quoting rules meet real data.
+    // The two dates are the I9 fixture — see the date-column block below.
     [`EXP-${TOK}-1`, variantId, '无 wifi 版本, "special"', userId])).rows[0].id)
 })
 
@@ -147,7 +158,7 @@ describe('the export ceremony', () => {
   })
 
   it('refuses a permitted actor whose second factor is stale', async () => {
-    const stale = [{ method: 'totp', timestamp: new Date(now.getTime() - 9e6).toISOString() }]
+    const stale = [{ method: 'totp', timestamp: epochSeconds(now) - 9000 }]
     await expect(buildFullExport(superAdmin(), requester(), stale))
       .rejects.toThrow(ExportMfaRequiredError)
   })
@@ -155,6 +166,21 @@ describe('the export ceremony', () => {
   it('fails closed when the auth methods cannot be read', async () => {
     await expect(buildFullExport(superAdmin(), requester(), null))
       .rejects.toThrow(ExportMfaRequiredError)
+  })
+
+  it('refuses the RFC-8176 string form, which carries no timestamp', async () => {
+    // `currentAuthenticationMethods` is `AMREntry[] | string[]`; the string form
+    // names the methods and never says when. Unanswerable, so refused.
+    await expect(buildFullExport(superAdmin(), requester(), ['password', 'totp']))
+      .rejects.toThrow(ExportMfaRequiredError)
+  })
+
+  it('ACCEPTS a genuinely fresh claim — the case that was broken end to end', async () => {
+    // The regression in one assertion: with `timestamp` mis-typed as a string,
+    // this threw for a Super Admin who had entered TOTP ten seconds earlier, and
+    // the whole feature was unreachable while every unit test stayed green.
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa)
+    expect(built.zip.length).toBeGreaterThan(0)
   })
 })
 
@@ -248,5 +274,100 @@ describe('the built archive', () => {
   it('gives the archive a dated, export-id-stamped filename', async () => {
     const built = await buildFullExport(superAdmin(), requester(), freshMfa)
     expect(built.filename).toMatch(/^qtx-export-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.zip$/)
+  })
+})
+
+describe('date columns survive the trip — CLAUDE.md\'s ::text rule', () => {
+  // node-postgres parses a Postgres `date` (OID 1082) into a JS Date at LOCAL
+  // midnight, and csvField renders a Date with toISOString(). Without the cast,
+  // `2026-08-04` ships as `2026-08-03T16:00:00.000Z` on a UTC+8 host — a day
+  // early AND a different kind of value. This test is run under whatever TZ the
+  // suite has; the assertion holds in every zone precisely because the value
+  // never becomes a Date.
+  it('writes build_date and ship_date as bare YYYY-MM-DD', async () => {
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa)
+    const csv = readZip(built.zip).get('csv/device.csv')!.toString('utf8')
+    const line = csv.split('\r\n').find((l) => l.includes(`EXP-${TOK}-1`))!
+
+    expect(line).toContain('2026-08-04')
+    expect(line).toContain('2026-01-01')
+    // The failure mode, named: a date must never arrive carrying a time.
+    expect(line).not.toMatch(/2026-08-0\dT\d{2}:\d{2}/)
+    expect(line).not.toContain('2026-08-03')
+  })
+
+  it('writes date columns in the JSON sets as strings too', async () => {
+    // The same defect hits JSON.stringify(Date), which also emits an instant.
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa)
+    const files = readZip(built.zip)
+    const usage = JSON.parse(files.get('json/import_row.json')!.toString('utf8'))
+    expect(Array.isArray(usage)).toBe(true)
+    const rows = JSON.parse(files.get('json/component_installation.json')!.toString('utf8'))
+    for (const r of rows.slice(0, 20)) {
+      // installed_at is a timestamptz and legitimately an instant; nothing on
+      // this table is a bare `date`. The assertion that matters is that the
+      // builder did not throw on a table with no date columns at all.
+      expect(r).toHaveProperty('id')
+    }
+  })
+})
+
+describe('a table that does not exist must not abort the whole export', () => {
+  // Five migrations sit committed-and-unapplied on `main` at any moment in this
+  // project, so this is a live case. Before the guard, one missing relation
+  // aborted the transaction and the Super Admin got a generic 500 naming nothing
+  // — losing every other entity that would have exported perfectly.
+  const withGhost = [
+    ...EXPORT_ENTITIES.filter((e) => e.table === 'device' || e.table === 'buyer'),
+    {
+      table: 'zz_not_yet_migrated', format: 'csv' as const,
+      columns: ['id', 'name'], orderBy: 'id', liveOnly: false,
+      description: 'A table whose migration has not been applied.',
+    },
+  ]
+
+  it('builds the entities that DO exist and skips the one that does not', async () => {
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa,
+      { entities: withGhost })
+    const files = readZip(built.zip)
+
+    expect(files.has('csv/device.csv')).toBe(true)
+    expect(files.has('csv/buyer.csv')).toBe(true)
+    expect(files.has('csv/zz_not_yet_migrated.csv')).toBe(false)
+  })
+
+  it('SKIPS the file rather than emitting an empty one', async () => {
+    // An empty CSV says "there are no records", which is a different claim from
+    // "this table was not there" — and the more dangerous of the two.
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa,
+      { entities: withGhost })
+    expect(built.manifest.files.map((f) => f.entity)).not.toContain('zz_not_yet_migrated')
+  })
+
+  it('names the absent table in the manifest and warns in the README', async () => {
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa,
+      { entities: withGhost })
+    expect(built.manifest.absentEntities).toEqual(['zz_not_yet_migrated'])
+
+    const readme = readZip(built.zip).get('README.md')!.toString('utf8')
+    expect(readme).toMatch(/Tables missing from this export/)
+    expect(readme).toContain('zz_not_yet_migrated')
+  })
+
+  it('says nothing about missing tables when none are missing', async () => {
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa)
+    expect(built.manifest.absentEntities).toEqual([])
+    expect(readZip(built.zip).get('README.md')!.toString('utf8'))
+      .not.toMatch(/Tables missing from this export/)
+  })
+
+  it('records the absent tables on the audit trail, not only in the archive', async () => {
+    const built = await buildFullExport(superAdmin(), requester(), freshMfa,
+      { entities: withGhost })
+    const { rows } = await db.query<{ new_values: { absentTables?: string[] } }>(
+      `SELECT new_values FROM audit_log
+        WHERE table_name = 'full_system_export' AND row_id = $1::uuid
+          AND new_values->>'event' = 'built'`, [built.exportId])
+    expect(rows[0].new_values.absentTables).toEqual(['zz_not_yet_migrated'])
   })
 })
