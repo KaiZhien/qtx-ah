@@ -55,9 +55,14 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
     })
     if (error) throw new Error(error.message)
   } catch (err) {
+    // `instanceof`, not a cast. This catch is the last line of the never-throws
+    // contract above, so it has to survive whatever was thrown: `(err as Error)
+    // .message` logged `undefined` for a thrown string or object — losing the one
+    // fact the operator needs — and raised a TypeError *inside the catch* for a
+    // thrown null or undefined, which escapes and takes the login down with it.
     console.error(JSON.stringify({
       level: 'error', msg: 'auth_event write failed',
-      eventType: input.eventType, err: (err as Error).message,
+      eventType: input.eventType, err: err instanceof Error ? err.message : String(err),
     }))
   }
 }

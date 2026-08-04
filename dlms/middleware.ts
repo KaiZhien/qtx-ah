@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { isPublicPath } from '@/modules/shared/auth/publicPaths'
 
 // `/api/outbox/drain` and `/api/cron` are public TO THIS GATE ONLY, and have to
 // be: their callers (Vercel Cron, an external scheduler, an operator with curl)
@@ -16,8 +17,15 @@ import { NextResponse, type NextRequest } from 'next/server'
 // health check that needs a credential cannot be used by an uptime monitor, and
 // what it discloses is bounded to liveness plus a queue depth.
 //
-// Every entry is pinned by __tests__/platform/shared/middlewarePublicPaths.test.ts:
-// deleting one is the difference between the endpoint working and 307-ing to /login.
+// Every entry is pinned by __tests__/platform/shared/cronRoutes.test.ts and
+// __tests__/platform/shared/outboxDrainRoute.test.ts, which parse this array out
+// of this file's source: deleting one is the difference between the endpoint
+// working and 307-ing to /login. Keep it a literal array declared HERE — moving
+// it into a module would leave both of those pins matching nothing and passing.
+//
+// Matched by SEGMENT (isPublicPath), not by string prefix. `/auth` and
+// `/api/cron` cover their children on purpose; `/api/health` does not cover
+// `/api/healthcheck-evil`, which the old `startsWith` test admitted.
 const PUBLIC_PATHS = [
   '/login', '/auth', '/unauthorized', '/api/health', '/api/outbox/drain', '/api/cron',
 ]
@@ -62,8 +70,7 @@ export async function middleware(request: NextRequest) {
   // Refresh the session so it doesn't expire mid-visit
   const { data } = await supabase.auth.getUser()
 
-  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p))
-  if (!isPublic && !data.user) {
+  if (!isPublicPath(pathname, PUBLIC_PATHS) && !data.user) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     url.searchParams.set('next', pathname)
