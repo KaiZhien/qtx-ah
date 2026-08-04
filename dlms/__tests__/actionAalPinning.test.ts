@@ -65,6 +65,34 @@ const serverActionFiles = platformFiles.filter(
 const routeHandlerFiles = platformFiles.filter((f) => /(^|[\\/])route\.tsx?$/.test(f))
 
 /**
+ * Route handlers that enforce something STRICTER than requireAal2Actor, listed
+ * one by one with the stronger gate named. Exempt from (b) only — (a), the ban on
+ * the bare non-AAL session helper, still applies to every file here.
+ *
+ * THIS LIST IS NOT AN ESCAPE HATCH. requireAal2Actor asks "did a second factor
+ * happen at some point in this session". An entry here must ask MORE than that,
+ * and the reason must be checkable by reading the named function. "This route is
+ * fine" is not a reason. If in doubt, use requireAal2Actor and delete the entry —
+ * the cost of the stricter gate is one TOTP prompt.
+ */
+const STRICTER_GATE_EXEMPTIONS: ReadonlyArray<{ suffix: string; because: string }> = [
+  {
+    suffix: 'app/(platform)/admin/export/download/route.ts',
+    // Spec §12/§7.4 want FRESH MFA for the full-system export, not merely AAL2.
+    // buildFullExport runs authorize(request_full_export) and then isMfaFresh()
+    // over the AMR claim, which fails closed on null/empty methods and on a
+    // second factor older than the freshness window — so an AAL2 session that
+    // authenticated hours ago is REFUSED here but would pass requireAal2Actor.
+    because: 'authorize(request_full_export) + isMfaFresh(AMR) — fresh MFA, stricter than AAL2',
+  },
+]
+
+function stricterGateReason(file: string): string | null {
+  const norm = file.replace(/\\/g, '/')
+  return STRICTER_GATE_EXEMPTIONS.find((e) => norm.endsWith(e.suffix))?.because ?? null
+}
+
+/**
  * The shared assertion: requireAal2Actor is the gate, the bare non-AAL session
  * helper is not.
  *
@@ -84,9 +112,13 @@ function assertAal2Gate(file: string): void {
   // (a) No bare requireActor. \b anchors the whole identifier;
   //     requireAal2Actor is not a substring of requireActor, so it never
   //     matches here — only the un-gated call/import would.
+  //     APPLIES TO EXEMPTED FILES TOO: a stricter gate elsewhere in the file is
+  //     no licence to also take an un-gated actor.
   expect(/\brequireActor\b/.test(src)).toBe(false)
-  // (b) requireAal2Actor IS the gate.
-  expect(/\brequireAal2Actor\b/.test(src)).toBe(true)
+  // (b) requireAal2Actor IS the gate — unless something stricter is, and is named.
+  if (stricterGateReason(file) === null) {
+    expect(/\brequireAal2Actor\b/.test(src)).toBe(true)
+  }
 }
 
 describe('platform server actions enforce AAL2', () => {
@@ -126,5 +158,37 @@ describe('platform route handlers enforce AAL2', () => {
     // two describe blocks would stop meaning distinct things. Cheap to notice.
     const overlap = routeHandlerFiles.filter((f) => serverActionFiles.includes(f))
     expect(overlap).toEqual([])
+  })
+
+  // The exemption list is the weak point of this pin, so it is itself pinned.
+  // Without these two checks it rots in the two ways an allowlist always rots:
+  // an entry outlives the file it excused, or it outlives the stronger gate that
+  // justified it — and in both cases the route silently keeps its exemption while
+  // nothing enforces anything.
+  describe('the stricter-gate exemptions stay honest', () => {
+    it.each(STRICTER_GATE_EXEMPTIONS)(
+      'still names a real route handler: $suffix',
+      ({ suffix }) => {
+        const matched = routeHandlerFiles.filter(
+          (f) => f.replace(/\\/g, '/').endsWith(suffix))
+        // Exactly one: zero means the file moved or was deleted and the entry is
+        // now dead; more than one means the suffix is too short to identify a file.
+        expect(matched).toHaveLength(1)
+      },
+    )
+
+    it.each(STRICTER_GATE_EXEMPTIONS)(
+      'still actually carries a stronger gate: $suffix',
+      ({ suffix }) => {
+        const file = routeHandlerFiles.find(
+          (f) => f.replace(/\\/g, '/').endsWith(suffix))!
+        const src = readFileSync(file, 'utf8')
+        // The exemption was granted because the route enforces MORE than AAL2.
+        // If someone strips that out, the file must go back to requireAal2Actor —
+        // it must never end up gated by nothing but its place on this list.
+        expect(/\bauthorize\b/.test(src)).toBe(true)
+        expect(/Mfa|mfa/.test(src)).toBe(true)
+      },
+    )
   })
 })
