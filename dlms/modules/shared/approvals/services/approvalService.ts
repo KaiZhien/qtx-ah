@@ -194,6 +194,8 @@ type ApprovalRow = {
   requested_by: string
   requested_by_name: string | null
   created_at: Date
+  /** `created_at` at microsecond precision, for the keyset cursor only. */
+  created_at_cursor: string
   decided_by: string | null
   decided_by_name: string | null
   decided_at: Date | null
@@ -221,6 +223,10 @@ function labelFromSnapshot(snapshot: Record<string, unknown>): string | null {
 const SELECT_APPROVAL = `
   SELECT a.id, a.entity_type, a.entity_id, a.module, a.kind, a.status, a.snapshot,
          a.requested_by, r.full_name AS requested_by_name, a.created_at,
+         -- The keyset cursor's timestamp half, at FULL microsecond precision. See
+         -- encodeCursor: a JS Date cannot hold it, so it never becomes one.
+         to_char(a.created_at AT TIME ZONE 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_cursor,
          a.decided_by, d.full_name AS decided_by_name, a.decided_at, a.decision_note, a.version
     FROM approval a
     LEFT JOIN app_user r ON r.id = a.requested_by
@@ -607,13 +613,46 @@ export type ApprovalQueuePage = {
  * and is not optional: two requests committed in the same transaction share a
  * `created_at` to the microsecond, and a cursor on the timestamp alone would
  * either repeat or drop one of them.
+ *
+ * ── THE TIMESTAMP IS A STRING, AND THAT IS THE WHOLE POINT ─────────────────
+ * `timestamptz` is MICROSECOND-precision in Postgres; a JS `Date` is MILLISECOND-
+ * precision. Reading `a.created_at` into a `Date` and re-emitting it with
+ * `toISOString()` — which is what this did — silently truncates the last three
+ * digits, and the truncation goes DOWN. So the next page asked for
+ * `created_at < 10:34:00.123` when the boundary row was really at
+ * `10:34:00.123456`, and every row in that 456-microsecond window was SKIPPED:
+ * the boundary row's own tie partner first of all, but in general any request
+ * committed in the same millisecond as the last row on the page. The queue simply
+ * stopped listing them — no error, no gap on screen, nothing to notice. The `id`
+ * tiebreaker above could not save it, because the tuple comparison never got that
+ * far: the timestamp component already excluded the row.
+ *
+ * So the boundary timestamp never becomes a `Date`. `created_at_cursor` is
+ * rendered by Postgres at full `.US` precision, carried through the cursor
+ * verbatim, and handed back to Postgres as text cast to `timestamptz` — the value
+ * makes the whole round trip without passing through a type that cannot hold it.
+ * `requestedAt` stays a `Date` because it is for display, where milliseconds are
+ * already more than anyone reads.
  */
-function encodeCursor(createdAt: Date, id: string): string {
-  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url')
+function encodeCursor(createdAtIso: string, id: string): string {
+  return Buffer.from(`${createdAtIso}|${id}`).toString('base64url')
 }
 
 /** RFC 4122 hex, case-insensitive — the shape `approval.id` is guaranteed to be. */
 const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * ISO-8601 UTC, with up to six fractional digits — exactly what `created_at_cursor`
+ * emits, and still accepting the three-digit form an in-flight cursor from the
+ * previous shape carries.
+ *
+ * Strict on purpose. The timestamp half now reaches Postgres as text cast to
+ * `timestamptz`, so "anything `new Date()` happens to accept" is the wrong gate:
+ * the two parsers disagree at the edges, and a string one takes and the other
+ * refuses would be a 22007 out of a function whose contract is to answer with
+ * page one. A regex both agree on is the only shape that fails closed.
+ */
+const CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/
 
 /**
  * Fails closed on anything malformed. The cursor reaches this from a URL query
@@ -628,7 +667,7 @@ const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
  * on exactly the hand-edited URL this function's own contract promises to answer
  * with page one. Anything a `uuid` column cannot hold is not a cursor.
  */
-function decodeCursor(cursor: string): [Date, string] | null {
+function decodeCursor(cursor: string): [string, string] | null {
   let decoded: string
   try {
     decoded = Buffer.from(cursor, 'base64url').toString()
@@ -637,9 +676,9 @@ function decodeCursor(cursor: string): [Date, string] | null {
   }
   const separator = decoded.indexOf('|')
   if (separator < 0) return null
-  const timestamp = new Date(decoded.slice(0, separator))
+  const timestamp = decoded.slice(0, separator)
   const id = decoded.slice(separator + 1)
-  if (Number.isNaN(timestamp.getTime()) || !CURSOR_ID.test(id)) return null
+  if (!CURSOR_TIMESTAMP.test(timestamp) || !CURSOR_ID.test(id)) return null
   return [timestamp, id]
 }
 
@@ -700,7 +739,8 @@ export async function listApprovals(
     // the first page, which is the honest answer to a hand-edited URL.
     const cursor = filter.cursor ? decodeCursor(filter.cursor) : null
     if (cursor) {
-      conditions.push(`(a.created_at, a.id) < (${p(cursor[0])}, ${p(cursor[1])})`)
+      conditions.push(
+        `(a.created_at, a.id) < (${p(cursor[0])}::timestamptz, ${p(cursor[1])}::uuid)`)
     }
 
     // limit + 1 answers "is there another page?" without a second COUNT query
@@ -716,7 +756,7 @@ export async function listApprovals(
     const last = page[page.length - 1]
     return {
       items: page.map(toRecord),
-      nextCursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null,
+      nextCursor: hasMore && last ? encodeCursor(last.created_at_cursor, last.id) : null,
     }
   })
 }

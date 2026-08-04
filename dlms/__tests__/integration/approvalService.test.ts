@@ -269,7 +269,15 @@ describe('app_setting', () => {
     expect(rows).toHaveLength(1)
     expect(typeof rows[0].value).toBe('number')
     expect(rows[0].value).toBeGreaterThan(0)
-    expect(rows[0].version).toBe(1)
+    // A POSITIVE version, not literally 1. The threshold is admin-tunable by
+    // design and settingService.test.ts tunes it — against the same shared,
+    // non-rollback database. Whether that file has run yet is decided by vitest's
+    // file ordering, so `toBe(1)` was a coin flip dressed up as an assertion; it
+    // passed for as long as the two files happened to sort the other way round.
+    // What the seed actually owes is the row, its JSON number, and a version
+    // column that optimistic concurrency can count on.
+    expect(Number.isInteger(rows[0].version)).toBe(true)
+    expect(rows[0].version).toBeGreaterThanOrEqual(1)
   })
 
   it('refuses a JSON null value — an unset knob must be an absent row, not a null one', async () => {
