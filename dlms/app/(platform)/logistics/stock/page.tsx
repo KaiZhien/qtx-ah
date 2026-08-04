@@ -7,6 +7,15 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 
 type PageProps = { searchParams: { location?: string; includeZero?: string } }
 
+// A URL is user input. listStockLevels validates locationId as a uuid, so
+// /logistics/stock?location=banana would otherwise throw a raw ZodError out of
+// this server component. The sibling transfers/page.tsx already filters its
+// status param the same way; this keeps the branch internally consistent.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function asLocationId(v: string | undefined): string | undefined {
+  return v && UUID_RE.test(v) ? v : undefined
+}
+
 /**
  * Stock levels by location (spec §6.3).
  *
@@ -21,12 +30,11 @@ export default async function StockLevelsPage({ searchParams }: PageProps) {
   if (!can(actor, 'view_records', 'logistics')) notFound()
 
   const includeZero = searchParams.includeZero === '1'
+  const selected = asLocationId(searchParams.location)
   const [byLocation, levels] = await Promise.all([
     getStockByLocation(actor),
-    listStockLevels(actor, { locationId: searchParams.location, includeZero }),
+    listStockLevels(actor, { locationId: selected, includeZero }),
   ])
-
-  const selected = searchParams.location
   /** Rebuilds the whole query string from the two filters — no string surgery. */
   const hrefWith = (next: { location?: string; includeZero?: boolean }) => {
     const p = new URLSearchParams()
@@ -72,10 +80,10 @@ export default async function StockLevelsPage({ searchParams }: PageProps) {
                 className={`p-4 transition-colors hover:bg-muted/50 ${
                   selected === l.locationId ? 'bg-muted/60' : ''}`}
               >
-                <p className="text-2xl font-semibold text-slate-900">{l.totalQty}</p>
+                <p className="text-2xl font-semibold text-slate-900">{l.componentTypeCount}</p>
                 <p className="text-sm text-muted-foreground">{l.locationName}</p>
                 <p className="text-xs text-muted-foreground">
-                  {l.componentTypeCount} component type{l.componentTypeCount === 1 ? '' : 's'}
+                  component type{l.componentTypeCount === 1 ? '' : 's'} held
                 </p>
               </Link>
             ))}

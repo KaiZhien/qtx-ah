@@ -5,6 +5,7 @@ const mockCreate = vi.fn()
 const mockChangeStatus = vi.fn()
 const mockReceive = vi.fn()
 const mockList = vi.fn()
+const mockOptions = vi.fn()
 
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
@@ -21,6 +22,7 @@ class FakeInsufficientStock extends Error {}
 class FakeTrackingMismatch extends Error {}
 class FakeUnknownReference extends Error {}
 class FakeUnitNotAtSource extends Error {}
+class FakeUnitNotAvailable extends Error {}
 class FakeStockPosting extends Error {}
 class FakeInvalidTransition extends Error {}
 class FakePermission extends Error {}
@@ -29,6 +31,7 @@ class FakeMfaRequired extends Error {}
 
 vi.mock('@/modules/logistics/services/stockTransferService', () => ({
   listStockTransfers: mockList,
+  listTransferOptions: mockOptions,
   createStockTransfer: mockCreate,
   changeTransferStatus: mockChangeStatus,
   receiveStockTransfer: mockReceive,
@@ -38,6 +41,7 @@ vi.mock('@/modules/logistics/services/stockTransferService', () => ({
   TrackingModeMismatchError: FakeTrackingMismatch,
   UnknownReferenceError: FakeUnknownReference,
   SerializedUnitNotAtSourceError: FakeUnitNotAtSource,
+  ComponentUnitNotAvailableError: FakeUnitNotAvailable,
   StockPostingError: FakeStockPosting,
 }))
 vi.mock('@/modules/logistics/domain/transferStatus', () => ({
@@ -49,7 +53,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 const {
   createStockTransferAction, changeTransferStatusAction, receiveStockTransferAction,
-  loadMoreStockTransfersAction,
+  loadMoreStockTransfersAction, loadTransferOptionsAction,
 } = await import('@/app/(platform)/logistics/transfers/actions')
 
 const ACTOR = {
@@ -72,6 +76,7 @@ beforeEach(() => {
   mockChangeStatus.mockReset()
   mockReceive.mockReset()
   mockList.mockReset()
+  mockOptions.mockReset()
 })
 
 describe('createStockTransferAction', () => {
@@ -133,6 +138,17 @@ describe('receiveStockTransferAction', () => {
     expect((res as { error: string }).error).toContain('SN-9')
   })
 
+  it('refuses an installed unit with a message naming the unit (I1)', async () => {
+    // The day-one hazard: a migrated board is disposition='installed' with no
+    // location_id. The clerk must be told WHY it cannot move, not fobbed off
+    // with the generic line.
+    mockReceive.mockRejectedValue(new FakeUnitNotAvailable(
+      'Unit SN-7 is installed in a device and cannot be transferred as stock'))
+    const res = await receiveStockTransferAction(RECEIVE_INPUT)
+    expect(res).toEqual({ ok: false, error:
+      'Unit SN-7 is installed in a device and cannot be transferred as stock' })
+  })
+
   it('maps an optimistic lock clash to a reload prompt', async () => {
     mockReceive.mockRejectedValue(new FakeOptimisticLock('boom'))
     expect(await receiveStockTransferAction(RECEIVE_INPUT))
@@ -145,6 +161,23 @@ describe('receiveStockTransferAction', () => {
     const res = await receiveStockTransferAction(RECEIVE_INPUT)
     expect(res.ok).toBe(false)
     expect((res as { error: string }).error).not.toContain('constraint')
+  })
+})
+
+describe('validation failures reach the user, not the generic line', () => {
+  it('surfaces the first ZodError issue', async () => {
+    const { ZodError } = await import('zod')
+    mockCreate.mockRejectedValue(new ZodError([
+      { code: 'custom', path: ['transferNo'], message: 'Transfer number is required' },
+    ] as never))
+    const res = await createStockTransferAction(CREATE_INPUT)
+    expect(res).toEqual({ ok: false, error: 'Transfer number is required' })
+  })
+
+  it('rejects a non-uuid location in loadTransferOptionsAction', async () => {
+    // Server actions are reachable with any argument regardless of the form.
+    const res = await loadTransferOptionsAction('not-a-uuid')
+    expect(res.ok).toBe(false)
   })
 })
 

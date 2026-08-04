@@ -19,7 +19,7 @@ import {
   listStockTransfers, getStockTransfer, createStockTransfer, changeTransferStatus,
   receiveStockTransfer, StockTransferNotFoundError, DuplicateTransferNumberError,
   InsufficientStockError, TrackingModeMismatchError, UnknownReferenceError,
-  SerializedUnitNotAtSourceError,
+  SerializedUnitNotAtSourceError, ComponentUnitNotAvailableError, listTransferOptions,
 } from '@/modules/logistics/services/stockTransferService'
 import {
   listStockLevels, getStockByLocation, getTransferStatusCounts,
@@ -78,11 +78,15 @@ async function makeComponentType(
   return { id: rows[0].id, code }
 }
 
-async function makeUnit(typeId: string, suffix: string, locationId: string | null = null) {
+async function makeUnit(
+  typeId: string, suffix: string, locationId: string | null = null, disposition = 'in_stock',
+) {
   const serial = `SN-${runTag}-${suffix}`
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO component_unit (component_type_id, serial_no, location_id, created_by, updated_by)
-     VALUES ($1,$2,$3,$4,$4) RETURNING id`, [typeId, serial, locationId, userId])
+    `INSERT INTO component_unit
+       (component_type_id, serial_no, location_id, disposition, created_by, updated_by)
+     VALUES ($1,$2,$3,$4,$5,$5) RETURNING id`,
+    [typeId, serial, locationId, disposition, userId])
   createdUnitIds.push(rows[0].id)
   return { id: rows[0].id, serial }
 }
@@ -873,16 +877,22 @@ describe('stockLevelService reads', () => {
       .rejects.toThrow(PermissionError)
   })
 
-  it('rolls up distinct component types and total qty per location', async () => {
+  it('rolls up the count of DISTINCT component types per location', async () => {
+    // Deliberately uses quantities whose float sum is inexact (0.1 + 0.2). The
+    // earlier version of this roll-up returned a summed qty and this test used
+    // 3 + 4.5 — exact in binary — so it passed while 0.100 + 0.200 rendered as
+    // 0.30000000000000004 in the UI. There is no cross-type sum any more (it
+    // added incommensurable units), so what is asserted is the count.
     const loc = await makeLocation('roll-up')
     const t1 = await makeComponentType('ru-1', 'batch')
     const t2 = await makeComponentType('ru-2', 'batch')
-    await setStock(loc.id, t1.id, '3')
-    await setStock(loc.id, t2.id, '4.5')
+    await setStock(loc.id, t1.id, '0.1')
+    await setStock(loc.id, t2.id, '0.2')
 
     const rows = await getStockByLocation(op())
     const mine = rows.find((r) => r.locationId === loc.id)
-    expect(mine).toMatchObject({ componentTypeCount: 2, totalQty: 7.5, locationCode: loc.code })
+    expect(mine).toMatchObject({ componentTypeCount: 2, locationCode: loc.code })
+    expect(mine).not.toHaveProperty('totalQty')
   })
 
   it('reports a count for every transfer status, including zeros', async () => {
@@ -948,5 +958,187 @@ describe('carried finding: podReceivedAt validation', () => {
       deliveryOrderId: rows[0].id, version: after.version,
       podReceivedAt: '2026-08-03T10:30:00.000Z',
     })
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('serialized units must be free stock (I1)', () => {
+  // The day-one hazard this closes: scripts/migrate_components.ts migrates every
+  // legacy board as disposition='installed' with NO location_id, and all three
+  // seeded component types are serialized. Without a disposition filter the
+  // create form's only usable control offered the entire migrated fleet — PCBAs
+  // inside customer devices — as transferable stock, each labelled merely
+  // "location not recorded".
+  it('the picker excludes units that are installed in a device', async () => {
+    const a = await makeLocation('disp-a')
+    const type = await makeComponentType('disp-pick', 'serialized')
+    const free = await makeUnit(type.id, 'disp-free', a.id, 'in_stock')
+    const installed = await makeUnit(type.id, 'disp-inst', a.id, 'installed')
+    // The exact shape of a migrated row: installed, and no location at all.
+    const migrated = await makeUnit(type.id, 'disp-migrated', null, 'installed')
+
+    const options = await listTransferOptions(op(), a.id)
+    const ids = options.units.map((u) => u.componentUnitId)
+    expect(ids).toContain(free.id)
+    expect(ids).not.toContain(installed.id)
+    expect(ids).not.toContain(migrated.id)
+  })
+
+  it('the picker excludes removed, quarantined and scrapped units', async () => {
+    const a = await makeLocation('disp2-a')
+    const type = await makeComponentType('disp2', 'serialized')
+    const excluded: string[] = []
+    for (const d of ['removed', 'quarantine', 'scrapped']) {
+      excluded.push((await makeUnit(type.id, `disp2-${d}`, a.id, d)).id)
+    }
+    const options = await listTransferOptions(op(), a.id)
+    const ids = options.units.map((u) => u.componentUnitId)
+    for (const id of excluded) expect(ids).not.toContain(id)
+  })
+
+  it('createStockTransfer refuses an installed unit even if hand-built', async () => {
+    const a = await makeLocation('disp3-a')
+    const b = await makeLocation('disp3-b')
+    const type = await makeComponentType('disp3', 'serialized')
+    const installed = await makeUnit(type.id, 'disp3', null, 'installed')
+
+    const err = await createStockTransfer(op(), {
+      transferNo: `ST-${runTag}-disp3`, fromLocationId: a.id, toLocationId: b.id,
+      serializedLines: [{ componentUnitId: installed.id }],
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(ComponentUnitNotAvailableError)
+    expect(err.message).toContain('installed in a device')
+  })
+
+  it('receive RE-ASSERTS availability under the row lock', async () => {
+    // The window create-time validation alone cannot close: a repair installs
+    // the unit while the draft transfer sits open. Receiving it afterwards would
+    // record a board in a warehouse while it is inside a device. The check rides
+    // on the lock the relocation query already takes, so it costs no extra lock
+    // class.
+    const a = await makeLocation('disp4-a')
+    const b = await makeLocation('disp4-b')
+    const type = await makeComponentType('disp4', 'serialized')
+    const unit = await makeUnit(type.id, 'disp4', a.id, 'in_stock')
+
+    const t = await makeTransfer({ suffix: 'disp4', from: a.id, to: b.id,
+      serializedLines: [{ componentUnitId: unit.id }] })
+    const v = await dispatch(t.id, t.version)
+
+    // ... and only NOW does it get installed.
+    await db.query(`UPDATE component_unit SET disposition='installed' WHERE id=$1`, [unit.id])
+
+    await expect(receiveStockTransfer(op(), { stockTransferId: t.id, version: v }))
+      .rejects.toThrow(ComponentUnitNotAvailableError)
+
+    // Rolled back whole: the unit did not move and the transfer is still open.
+    const { rows } = await db.query<{ location_id: string | null; disposition: string }>(
+      `SELECT location_id, disposition FROM component_unit WHERE id=$1`, [unit.id])
+    expect(rows[0].location_id).toBe(a.id)
+    const { rows: tr } = await db.query<{ status: string }>(
+      `SELECT status FROM stock_transfer WHERE id=$1`, [t.id])
+    expect(tr[0].status).toBe('dispatched')
+  })
+
+  it('still accepts an in-stock unit whose shelf was never recorded', async () => {
+    // The NULL-location allowance survives, but ONLY gated by disposition: it
+    // now means "free stock, shelf unknown", not "anything migrated".
+    const a = await makeLocation('disp5-a')
+    const b = await makeLocation('disp5-b')
+    const type = await makeComponentType('disp5', 'serialized')
+    const unit = await makeUnit(type.id, 'disp5', null, 'in_stock')
+
+    const t = await makeTransfer({ suffix: 'disp5', from: a.id, to: b.id,
+      serializedLines: [{ componentUnitId: unit.id }] })
+    await receiveStockTransfer(op(), {
+      stockTransferId: t.id, version: await dispatch(t.id, t.version) })
+
+    const { rows } = await db.query<{ location_id: string }>(
+      `SELECT location_id FROM component_unit WHERE id=$1`, [unit.id])
+    expect(rows[0].location_id).toBe(b.id)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('component_type.tracking_mode is immutable in the DATABASE (M7)', () => {
+  it('rejects flipping tracking_mode on an existing type', async () => {
+    // The services document tracking_mode as immutable and lean on it: a line's
+    // batch/serialized form is validated at create and trusted at receive.
+    // Before this trigger that held only because updateComponentType happens to
+    // omit the column — one careless column addition from silently breaking,
+    // and the breakage surfaced as an unmapped raw 23514 at posting time.
+    const batch = await makeComponentType('immut-b', 'batch')
+    await expect(db.query(
+      `UPDATE component_type SET tracking_mode='serialized' WHERE id=$1`, [batch.id]))
+      .rejects.toThrow(/tracking_mode is immutable/)
+
+    const ser = await makeComponentType('immut-s', 'serialized')
+    await expect(db.query(
+      `UPDATE component_type SET tracking_mode='batch' WHERE id=$1`, [ser.id]))
+      .rejects.toThrow(/tracking_mode is immutable/)
+  })
+
+  it('still allows every other column to be edited', async () => {
+    const t = await makeComponentType('immut-ok', 'batch')
+    await db.query(`UPDATE component_type SET name='Renamed', active=false WHERE id=$1`, [t.id])
+    const { rows } = await db.query<{ name: string; tracking_mode: string }>(
+      `SELECT name, tracking_mode FROM component_type WHERE id=$1`, [t.id])
+    expect(rows[0]).toMatchObject({ name: 'Renamed', tracking_mode: 'batch' })
+  })
+})
+
+/**
+ * ORDERING, not merely outcome — the same property deviceWriteService.test.ts
+ * pins for changeDeviceStatus, and for the same reason. authorize.ts is "the
+ * choke point. Every service entry point calls this before touching data", and
+ * a tidy-up that folds authorize() inside withTransaction keeps every other
+ * assertion in this file green while a denied call starts burning a pooled
+ * connection plus a BEGIN/ROLLBACK — and a denial during a database outage
+ * starts surfacing as a connection error (500) instead of a PermissionError.
+ *
+ * Proven the only way the outcome distinguishes the two: point a FRESH module
+ * graph's pool at an unreachable port. Guard first => PermissionError;
+ * transaction first => the connection refusal wins.
+ */
+describe('stock services — guards run before the connection (M9)', () => {
+  it('authorizes and validates before ever acquiring a connection', async () => {
+    const previous = process.env.DATABASE_URL
+    vi.resetModules()
+    process.env.DATABASE_URL = 'postgresql://nobody:nobody@127.0.0.1:1/unreachable'
+    try {
+      // A fresh graph, so lib/db/pool's singleton is rebuilt against the dead
+      // address — and so PermissionError is the class THIS graph throws.
+      const svc = await import('@/modules/logistics/services/stockTransferService')
+      const levels = await import('@/modules/logistics/services/stockLevelService')
+      const authz = await import('@/modules/shared/authz/authorize')
+      const denied = { ...viewer(), permissions: new Set<never>() }
+      const id = crypto.randomUUID()
+
+      // Every write entry point.
+      await expect(svc.createStockTransfer(denied, {
+        transferNo: 'X', fromLocationId: id, toLocationId: crypto.randomUUID(),
+        batchLines: [{ componentTypeId: crypto.randomUUID(), qty: 1 }],
+      })).rejects.toThrow(authz.PermissionError)
+      await expect(svc.changeTransferStatus(denied, {
+        stockTransferId: id, toStatus: 'cancelled', version: 1,
+      })).rejects.toThrow(authz.PermissionError)
+      await expect(svc.receiveStockTransfer(denied, { stockTransferId: id, version: 1 }))
+        .rejects.toThrow(authz.PermissionError)
+
+      // ...and every read entry point.
+      await expect(svc.listStockTransfers(denied, {})).rejects.toThrow(authz.PermissionError)
+      await expect(svc.getStockTransfer(denied, id)).rejects.toThrow(authz.PermissionError)
+      await expect(svc.listTransferOptions(denied, id)).rejects.toThrow(authz.PermissionError)
+      await expect(levels.listStockLevels(denied)).rejects.toThrow(authz.PermissionError)
+      await expect(levels.getStockByLocation(denied)).rejects.toThrow(authz.PermissionError)
+      await expect(levels.getTransferStatusCounts(denied)).rejects.toThrow(authz.PermissionError)
+
+      // Validation must also fail ahead of the connection.
+      await expect(svc.receiveStockTransfer(op(), { stockTransferId: 'not-a-uuid', version: 1 }))
+        .rejects.toThrow(/uuid/i)
+    } finally {
+      process.env.DATABASE_URL = previous
+      vi.resetModules()
+    }
   })
 })

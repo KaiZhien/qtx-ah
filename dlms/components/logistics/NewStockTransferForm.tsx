@@ -95,11 +95,13 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <Label htmlFor="transferNo" className="mb-1.5 block">Transfer number (required)</Label>
-          <Input id="transferNo" value={transferNo} onChange={(e) => setTransferNo(e.target.value)} />
+          <Input id="transferNo" maxLength={100} value={transferNo}
+                 onChange={(e) => setTransferNo(e.target.value)} />
         </div>
         <div>
           <Label htmlFor="carrier" className="mb-1.5 block">Carrier</Label>
-          <Input id="carrier" value={carrier} onChange={(e) => setCarrier(e.target.value)} />
+          <Input id="carrier" maxLength={200} value={carrier}
+                 onChange={(e) => setCarrier(e.target.value)} />
         </div>
         <div>
           <Label htmlFor="fromLocation" className="mb-1.5 block">From (required)</Label>
@@ -125,7 +127,8 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
         </div>
         <div className="sm:col-span-2">
           <Label htmlFor="reference" className="mb-1.5 block">Reference</Label>
-          <Input id="reference" value={reference} onChange={(e) => setReference(e.target.value)} />
+          <Input id="reference" maxLength={200} value={reference}
+                 onChange={(e) => setReference(e.target.value)} />
         </div>
       </div>
 
@@ -174,7 +177,7 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
                     </SelectContent>
                   </Select>
                   <Input
-                    type="number" min="0.001" step="0.001" className="w-28"
+                    type="number" min="0.001" step="0.001" max="99999999" className="w-28"
                     value={line.qty}
                     onChange={(e) => setBatchLines((p) =>
                       p.map((l, idx) => (idx === i ? { ...l, qty: e.target.value } : l)))}
@@ -193,9 +196,19 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
 
           <div className="space-y-2">
             <Label className="block">Serialized units</Label>
+            <p className="text-xs text-muted-foreground">
+              Only units currently in stock are listed. A unit installed in a device is not free
+              stock and cannot be transferred — remove it from the device first.
+            </p>
+            {options.unitsTruncated && (
+              <p className="text-xs text-amber-700">
+                Showing the first {options.units.length} units only — narrow the source location if
+                the one you need is missing.
+              </p>
+            )}
             {options.units.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No serialized units recorded at this location.
+                No in-stock serialized units at this location.
               </p>
             ) : (
               <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border p-3">
@@ -212,7 +225,9 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
                     <span className="font-medium text-slate-900">{u.serialNo}</span>
                     <span className="text-muted-foreground">{u.componentTypeCode}</span>
                     {u.locationId === null && (
-                      <span className="text-xs text-muted-foreground">· location not recorded</span>
+                      <span className="text-xs text-muted-foreground">
+                        · in stock, shelf not recorded
+                      </span>
                     )}
                   </label>
                 ))}
@@ -224,7 +239,8 @@ export function NewStockTransferForm({ locations }: { locations: StockLocationRo
 
       <div>
         <Label htmlFor="notes" className="mb-1.5 block">Notes</Label>
-        <Textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+        <Textarea id="notes" maxLength={5000} value={notes}
+                  onChange={(e) => setNotes(e.target.value)} />
       </div>
 
       <p className="text-xs text-muted-foreground">

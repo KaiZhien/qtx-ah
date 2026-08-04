@@ -33,9 +33,19 @@
  * ── RULE 2: quantities aggregate as scaled integers, never as floats ────────
  * qty is numeric(14,3) in Postgres. Summing lines as JS numbers reintroduces
  * binary floating point (0.1 + 0.2 = 0.30000000000000004) into a balance that
- * a CHECK constraint and an auditor both treat as exact. Everything here is
+ * a CHECK constraint and an auditor both treat as exact. Aggregation here is in
  * integer thousandths, and the value handed to SQL is a fixed(3) STRING so
  * node-postgres passes it through as numeric text rather than a float.
+ *
+ * Scope of that claim, precisely: the CONVERSION boundary still receives a JS
+ * double from the caller, because the input is a JSON number off a form. What
+ * toScaledQty guarantees is that the conversion is decided by the double's
+ * shortest round-tripping DECIMAL representation rather than by float
+ * arithmetic — so it is exact at every magnitude, and a value the double cannot
+ * represent to three places is REJECTED rather than silently rounded. Once past
+ * that boundary no float touches a quantity again. Taking genuinely arbitrary
+ * decimals end-to-end would mean accepting strings from the client, which is a
+ * bigger change than this module.
  */
 
 export class StockPostingError extends Error {
@@ -47,27 +57,55 @@ export class StockPostingError extends Error {
 
 /** numeric(14,3) — three decimal places, matching the column definition. */
 const SCALE = 3
-const SCALE_FACTOR = 10 ** SCALE
 
 /**
  * Convert a caller-supplied quantity into exact integer thousandths.
  * Rejects anything the column could not hold losslessly.
+ *
+ * Scales from the DECIMAL STRING, not from `qty * 1000`. An earlier version
+ * multiplied in binary floating point and compared the result against an
+ * ABSOLUTE 1e-6 tolerance; because representation error grows with magnitude,
+ * that false-rejected legitimate values once they got large enough —
+ * `16777216.001 * 1000` lands far enough from an integer to trip a fixed
+ * epsilon, so a value with exactly three decimal places was reported as having
+ * more than three. String(qty) is the shortest round-tripping decimal
+ * representation of the double, so digit counting on it is exact at every
+ * magnitude and needs no tolerance at all.
  */
 export function toScaledQty(qty: number): number {
   if (!Number.isFinite(qty)) throw new StockPostingError(`Quantity must be a finite number, got ${qty}`)
-  const scaled = qty * SCALE_FACTOR
-  const rounded = Math.round(scaled)
-  // 1e-6 absorbs the representation error of a legitimate 3-dp decimal
-  // (12.345 * 1000 === 12344.999999999998) without admitting a real 4-dp value.
-  if (Math.abs(scaled - rounded) > 1e-6) {
+
+  const text = String(qty)
+  // Exponential notation only appears outside |n| < 1e21 / >= 1e-7, both of
+  // which are already out of range for a numeric(14,3) stock quantity.
+  if (text.includes('e') || text.includes('E')) {
+    throw new StockPostingError(`Quantity ${qty} is outside the supported range`)
+  }
+  const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text)
+  if (!m) throw new StockPostingError(`Quantity ${qty} is not a valid decimal`)
+
+  const [, sign, intPart, fracPart = ''] = m
+  if (fracPart.length > SCALE) {
     throw new StockPostingError(`Quantity ${qty} has more than three decimal places`)
   }
-  return rounded
+
+  const scaled = Number(`${intPart}${fracPart.padEnd(SCALE, '0')}`)
+  if (!Number.isSafeInteger(scaled)) {
+    throw new StockPostingError(`Quantity ${qty} is outside the supported range`)
+  }
+  return sign === '-' ? -scaled : scaled
 }
 
-/** Back to the fixed(3) string form SQL should receive. */
+/**
+ * Back to the fixed(3) string form SQL should receive. Pure digit surgery —
+ * dividing by 1000 would put the value back through a float on the way out.
+ */
 export function fromScaledQty(scaled: number): string {
-  return (scaled / SCALE_FACTOR).toFixed(SCALE)
+  const negative = scaled < 0
+  const digits = String(Math.abs(scaled)).padStart(SCALE + 1, '0')
+  const intPart = digits.slice(0, -SCALE)
+  const fracPart = digits.slice(-SCALE)
+  return `${negative ? '-' : ''}${intPart}.${fracPart}`
 }
 
 export type StockLockKey = { locationId: string; componentTypeId: string }

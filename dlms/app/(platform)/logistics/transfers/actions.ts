@@ -1,13 +1,14 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { z, ZodError } from 'zod'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   listStockTransfers, createStockTransfer, changeTransferStatus, receiveStockTransfer,
   listTransferOptions,
   StockTransferNotFoundError, DuplicateTransferNumberError, InsufficientStockError,
   TrackingModeMismatchError, UnknownReferenceError, SerializedUnitNotAtSourceError,
-  StockPostingError,
+  ComponentUnitNotAvailableError, StockPostingError,
   type CreateStockTransferInput, type ChangeTransferStatusInput,
   type ReceiveStockTransferInput, type StockTransferFilter, type StockTransferListItem,
   type TransferOptions,
@@ -34,6 +35,7 @@ function toMessage(err: unknown): string {
   if (err instanceof InsufficientStockError) return err.message
   if (err instanceof TrackingModeMismatchError) return err.message
   if (err instanceof SerializedUnitNotAtSourceError) return err.message
+  if (err instanceof ComponentUnitNotAvailableError) return err.message
   if (err instanceof UnknownReferenceError) return err.message
   if (err instanceof StockPostingError) return err.message
   if (err instanceof InvalidTransferStatusChangeError) return err.message
@@ -44,6 +46,9 @@ function toMessage(err: unknown): string {
     return 'Someone else changed this transfer. Reload and try again.'
   }
   if (err instanceof PermissionError) return "You don't have permission to do that."
+  // Matches admin/roles/actions.ts: a validation failure is the user's to fix,
+  // so surface the first issue rather than the generic line.
+  if (err instanceof ZodError) return err.issues[0]?.message ?? 'Please check the form and try again.'
   console.error(JSON.stringify({ level: 'error', msg: 'stock transfer action failed', err: String(err) }))
   return 'Something went wrong. Try again, and tell Reet if it keeps happening.'
 }
@@ -105,7 +110,10 @@ export async function loadTransferOptionsAction(
 ): Promise<ActionResult<TransferOptions>> {
   try {
     const actor = await requireAal2Actor()
-    return { ok: true, data: await listTransferOptions(actor, fromLocationId) }
+    // Validated here, not just trusted from the client: this is a server action,
+    // reachable with any argument regardless of what the form sends.
+    const id = z.string().uuid().parse(fromLocationId)
+    return { ok: true, data: await listTransferOptions(actor, id) }
   } catch (err) {
     return { ok: false, error: toMessage(err) }
   }

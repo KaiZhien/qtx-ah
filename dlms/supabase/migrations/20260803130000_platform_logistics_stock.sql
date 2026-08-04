@@ -136,10 +136,46 @@ CREATE INDEX stock_transfer_line_unit_idx ON stock_transfer_line(component_unit_
   WHERE component_unit_id IS NOT NULL;
 
 -- ── Carried finding from the L1 slice: delivery_order_line had no (do, line_no)
---    uniqueness, so a retried create could interleave duplicate line numbers.
---    Cheap to close here while we are in the module. ────────────────────────
+--    uniqueness. NOTE the original rationale recorded for this index ("a retried
+--    create could interleave duplicate line numbers") was WRONG and is corrected
+--    here: createDeliveryOrder writes the header and all its lines in ONE
+--    transaction, so a retry produces a new delivery_order id and cannot collide
+--    with the first attempt's lines.
+--    The index earns its place for a different reason: line_no is the stable
+--    handle the detail view orders by and a future line-edit path would address
+--    rows by, and nothing else prevents two rows on one DO sharing a number —
+--    a direct INSERT, a data fix, or any later append-a-line feature would all
+--    silently produce duplicates. Cheap to close while we are in the module.
+--    ────────────────────────────────────────────────────────────────────────
 CREATE UNIQUE INDEX delivery_order_line_no_unique
   ON delivery_order_line(delivery_order_id, line_no);
+
+-- ── M7: component_type.tracking_mode is IMMUTABLE — enforce it, don't assume it.
+--    The stock services document tracking_mode as "immutable once set" and lean
+--    on it: a transfer line's batch/serialized form is validated at create time
+--    and the posting path trusts that verdict at receive time. Today that holds
+--    only because componentCatalogueService.updateComponentType happens to omit
+--    the column from its UPDATE — a convention, one careless column addition
+--    away from silently breaking. If the mode did flip between create and
+--    receive, the failure surfaced as an unmapped raw 23514 from
+--    fn_stock_level_batch_only at posting time.
+--    Same spirit as this migration's header: structural, not a convention
+--    someone can forget. Flipping the mode on a type that already has units or
+--    balances is not a rename, it is a different kind of part — create a new
+--    component_type instead.
+CREATE OR REPLACE FUNCTION fn_component_type_tracking_mode_immutable()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  IF NEW.tracking_mode IS DISTINCT FROM OLD.tracking_mode THEN
+    RAISE EXCEPTION
+      'component_type.tracking_mode is immutable (% is %, cannot become %); create a new component type instead',
+      OLD.code, OLD.tracking_mode, NEW.tracking_mode
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER trg_component_type_tracking_mode_immutable BEFORE UPDATE ON component_type
+  FOR EACH ROW EXECUTE FUNCTION fn_component_type_tracking_mode_immutable();
 
 -- Audit on the mutable tables. stock_transfer_line is excluded for the same
 -- reason delivery_order_line is: insert-once, no update path.
@@ -155,3 +191,4 @@ ALTER TABLE stock_transfer       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_transfer_line  ENABLE ROW LEVEL SECURITY;
 
 REVOKE EXECUTE ON FUNCTION fn_stock_level_batch_only() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION fn_component_type_tracking_mode_immutable() FROM PUBLIC, anon, authenticated;

@@ -90,13 +90,22 @@ export type StockByLocationRow = {
   locationCode: string
   locationName: string
   componentTypeCount: number
-  totalQty: number
 }
 
 /**
- * One row per location holding batch stock: how many distinct component types
- * and the summed quantity. Backs the stock landing page and the Logistics
- * dashboard widget.
+ * One row per location holding batch stock, with the number of DISTINCT
+ * component types held there. Backs the stock landing page and the Logistics
+ * dashboard tile.
+ *
+ * Deliberately does NOT return a summed quantity. An earlier version did, and
+ * it was wrong twice over:
+ *   1. it accumulated `+= Number(qty)` in JS floats, so two types holding 0.100
+ *      and 0.200 rendered as 0.30000000000000004 straight onto the dashboard;
+ *   2. more fundamentally the figure was MEANINGLESS — it added incommensurable
+ *      units, so 5 screws plus 3 boards read as a stock total of "8".
+ * Fixing only the arithmetic would have kept a precise nonsense number. A count
+ * of component types is a real quantity; a cross-type sum is not. If a
+ * per-type total is ever wanted, group by component_type and label the unit.
  *
  * House rule (CLAUDE.md): flat select + JS reduce, no DB views/RPC.
  */
@@ -105,9 +114,9 @@ export async function getStockByLocation(actor: Actor): Promise<StockByLocationR
 
   return withTransaction(actor.id, async (tx) => {
     const { rows } = await tx.query<{
-      location_id: string; location_code: string; location_name: string; qty: string
+      location_id: string; location_code: string; location_name: string
     }>(
-      `SELECT s.location_id, l.code AS location_code, l.name AS location_name, s.qty::text AS qty
+      `SELECT s.location_id, l.code AS location_code, l.name AS location_name
          FROM stock_level s
          JOIN stock_location l ON l.id = s.location_id
          JOIN component_type ct ON ct.id = s.component_type_id
@@ -119,14 +128,12 @@ export async function getStockByLocation(actor: Actor): Promise<StockByLocationR
       const existing = byLocation.get(r.location_id)
       if (existing) {
         existing.componentTypeCount += 1
-        existing.totalQty += Number(r.qty)
       } else {
         byLocation.set(r.location_id, {
           locationId: r.location_id,
           locationCode: r.location_code,
           locationName: r.location_name,
           componentTypeCount: 1,
-          totalQty: Number(r.qty),
         })
       }
     }

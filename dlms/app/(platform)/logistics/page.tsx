@@ -93,7 +93,7 @@ export default async function LogisticsPage() {
       <div className="rounded-md border">
         <div className="flex items-center justify-between border-b p-4">
           <div>
-            <p className="text-sm font-medium text-slate-900">Batch stock on hand</p>
+            <p className="text-sm font-medium text-slate-900">Batch stock by location</p>
             <p className="text-xs text-muted-foreground">
               Serialized units are tracked on the unit, not counted here.
             </p>
@@ -112,8 +112,11 @@ export default async function LogisticsPage() {
                 href={`/logistics/stock?location=${l.locationId}`}
                 className="p-4 transition-colors hover:bg-muted/50"
               >
-                <p className="text-2xl font-semibold text-slate-900">{l.totalQty}</p>
+                <p className="text-2xl font-semibold text-slate-900">{l.componentTypeCount}</p>
                 <p className="text-sm text-muted-foreground">{l.locationName}</p>
+                <p className="text-xs text-muted-foreground">
+                  component type{l.componentTypeCount === 1 ? '' : 's'}
+                </p>
               </Link>
             ))}
           </div>

@@ -42,6 +42,28 @@ describe('toScaledQty / fromScaledQty', () => {
     expect(() => toScaledQty(1.23456)).toThrow(/three decimal places/i)
   })
 
+  it('accepts large 3-dp values across the whole schema-permitted range', () => {
+    // Regression: scaling by `qty * 1000` and testing an ABSOLUTE 1e-6
+    // tolerance made representation error grow with magnitude, so this exact
+    // value — three decimal places, well inside the schema's max of 99999999 —
+    // was rejected as "more than three decimal places". Scaling from the
+    // decimal STRING has no magnitude sensitivity at all.
+    expect(toScaledQty(16777216.001)).toBe(16777216001)
+    expect(toScaledQty(99999999)).toBe(99999999000)
+    expect(toScaledQty(99999999.999)).toBe(99999999999)
+    expect(fromScaledQty(toScaledQty(16777216.001))).toBe('16777216.001')
+  })
+
+  it('round-trips every 3-dp value it accepts, at any magnitude', () => {
+    for (const q of [0.001, 0.5, 1.005, 999.999, 1048576.001, 16777216.001, 33554432.007]) {
+      expect(fromScaledQty(toScaledQty(q))).toBe(q.toFixed(3))
+    }
+  })
+
+  it('rejects a value too large to scale exactly as an integer', () => {
+    expect(() => toScaledQty(1e15)).toThrow(/range/i)
+  })
+
   it('rejects non-finite quantities', () => {
     expect(() => toScaledQty(Number.NaN)).toThrow(StockPostingError)
     expect(() => toScaledQty(Number.POSITIVE_INFINITY)).toThrow(StockPostingError)

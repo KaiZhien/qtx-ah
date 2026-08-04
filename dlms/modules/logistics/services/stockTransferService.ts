@@ -84,6 +84,23 @@ export class SerializedUnitNotAtSourceError extends Error {
   }
 }
 
+/**
+ * A serialized unit is not free stock — most importantly it is currently
+ * INSTALLED IN A DEVICE. Raised at create time and again at receive time under
+ * the row lock, because the disposition can change in between (a repair can
+ * install a unit while a draft transfer for it is sitting open).
+ */
+export class ComponentUnitNotAvailableError extends Error {
+  readonly disposition: string
+  constructor(serialNo: string, disposition: string) {
+    super(disposition === 'installed'
+      ? `Unit ${serialNo} is installed in a device and cannot be transferred as stock`
+      : `Unit ${serialNo} is not available to transfer (disposition: ${disposition})`)
+    this.name = 'ComponentUnitNotAvailableError'
+    this.disposition = disposition
+  }
+}
+
 // stock_transfer_no_unique is a partial unique index (deleted_at IS NULL) →
 // Postgres 23505. Mirrors deliveryOrderService.rethrowDbError.
 function rethrowDbError(err: unknown, transferNo: string | null | undefined): never {
@@ -292,7 +309,28 @@ export type TransferableUnit = {
 export type TransferOptions = {
   batchTypes: TransferableBatchType[]
   units: TransferableUnit[]
+  /** True when more units matched than the picker returned. */
+  unitsTruncated: boolean
 }
+
+/**
+ * The ONLY component_unit.disposition a stock transfer may move.
+ *
+ * 'installed' means the part is inside a device — very often a device at a
+ * customer site. 'removed'/'quarantine'/'scrapped' are all likewise not free
+ * stock. Transferring any of them would record the part in a warehouse while it
+ * is physically somewhere else, with no warning to anyone.
+ *
+ * This matters far more than the disposition list suggests: all three SEEDED
+ * component types are serialized, and scripts/migrate_components.ts migrates
+ * every legacy board as disposition='installed' with location_id NULL. So on a
+ * freshly migrated database, installed boards are the bulk of what a serialized
+ * picker would otherwise show.
+ */
+const UNIT_AVAILABLE_DISPOSITION = 'in_stock'
+
+/** Cap on the serialized-unit picker; the caller is told when it truncates. */
+const UNIT_PICKER_LIMIT = 500
 
 /**
  * What can be moved out of `fromLocationId`, for the create-transfer form.
@@ -323,6 +361,11 @@ export async function listTransferOptions(
         WHERE ct.deleted_at IS NULL AND ct.active AND ct.tracking_mode = 'batch'
         ORDER BY ct.sort, ct.name`, [fromLocationId])
 
+    // disposition = 'in_stock' is NOT optional here. scripts/migrate_components.ts
+    // inserts every migrated board with disposition='installed' and NO
+    // location_id, so without this predicate the `location_id IS NULL` arm below
+    // offers the entire migrated fleet — PCBAs physically inside customer
+    // devices — as transferable stock. See UNIT_AVAILABLE_DISPOSITION.
     const { rows: unitRows } = await tx.query<{
       id: string; serial_no: string; code: string; location_id: string | null
     }>(
@@ -330,18 +373,25 @@ export async function listTransferOptions(
          FROM component_unit cu
          JOIN component_type ct ON ct.id = cu.component_type_id
         WHERE cu.deleted_at IS NULL AND ct.tracking_mode = 'serialized'
+          AND ct.active
+          AND cu.disposition = $2
           AND (cu.location_id = $1 OR cu.location_id IS NULL)
         ORDER BY ct.code, cu.serial_no
-        LIMIT 500`, [fromLocationId])
+        LIMIT ${UNIT_PICKER_LIMIT + 1}`, [fromLocationId, UNIT_AVAILABLE_DISPOSITION])
+
+    // The picker is capped; tell the caller rather than silently truncating.
+    const unitsTruncated = unitRows.length > UNIT_PICKER_LIMIT
+    const units = unitsTruncated ? unitRows.slice(0, UNIT_PICKER_LIMIT) : unitRows
 
     return {
       batchTypes: typeRows.map((r) => ({
         componentTypeId: r.id, code: r.code, name: r.name, availableQty: Number(r.qty ?? 0),
       })),
-      units: unitRows.map((r) => ({
+      units: units.map((r) => ({
         componentUnitId: r.id, serialNo: r.serial_no,
         componentTypeCode: r.code, locationId: r.location_id,
       })),
+      unitsTruncated,
     }
   })
 }
@@ -401,8 +451,10 @@ async function assertLineTrackingModes(
 
   if (serializedLines.length > 0) {
     const ids = [...new Set(serializedLines.map((l) => l.componentUnitId))]
-    const { rows } = await tx.query<{ id: string; serial_no: string; tracking_mode: string; code: string }>(
-      `SELECT cu.id, cu.serial_no, ct.tracking_mode, ct.code
+    const { rows } = await tx.query<{
+      id: string; serial_no: string; tracking_mode: string; code: string; disposition: string
+    }>(
+      `SELECT cu.id, cu.serial_no, ct.tracking_mode, ct.code, cu.disposition
          FROM component_unit cu
          JOIN component_type ct ON ct.id = cu.component_type_id
         WHERE cu.id = ANY($1) AND cu.deleted_at IS NULL`, [ids])
@@ -413,6 +465,11 @@ async function assertLineTrackingModes(
       if (row.tracking_mode !== 'serialized') {
         throw new TrackingModeMismatchError(
           `${row.code} is a batch component — transfer it by quantity, not by unit`)
+      }
+      // Refuse installed/removed/quarantine/scrapped units. The picker already
+      // filters these out, but a hand-built input must not get past it.
+      if (row.disposition !== UNIT_AVAILABLE_DISPOSITION) {
+        throw new ComponentUnitNotAvailableError(row.serial_no, row.disposition)
       }
     }
   }
@@ -546,8 +603,6 @@ export type ReceiveStockTransferInput = z.input<typeof receiveSchema>
 export type ReceiveResult = {
   status: StockTransferStatus
   version: number
-  /** Post-movement balances at both ends, for the confirmation UI. */
-  postedBalances: { locationId: string; componentTypeId: string; qty: number }[]
 }
 
 /**
@@ -672,7 +727,6 @@ export async function receiveStockTransfer(
     //       column (`AND qty >= $1`), so the comparison is exact and the failure
     //       is a named domain error rather than the raw CHECK violation. We hold
     //       the row lock, so zero rows updated can only mean insufficient stock.
-    const postedBalances: ReceiveResult['postedBalances'] = []
     for (const m of plan.decrements) {
       const row = locked.get(lockKeyOf(m))!
       const amount = fromScaledQty(m.scaledQty)
@@ -688,23 +742,16 @@ export async function receiveStockTransfer(
           labelOf.get(m.locationId) ?? m.locationId,
           amount, row.qty)
       }
-      postedBalances.push({
-        locationId: m.locationId, componentTypeId: m.componentTypeId, qty: Number(rows[0].qty),
-      })
     }
 
     // ── 6. Apply the increments. No floor to test — adding cannot go negative.
     for (const m of plan.increments) {
       const row = locked.get(lockKeyOf(m))!
-      const { rows } = await tx.query<{ qty: string }>(
+      await tx.query(
         `UPDATE stock_level
             SET qty = qty + $1::numeric, updated_at = now(), updated_by = $2, version = version + 1
-          WHERE id = $3
-          RETURNING qty::text AS qty`,
+          WHERE id = $3`,
         [fromScaledQty(m.scaledQty), actor.id, row.id])
-      postedBalances.push({
-        locationId: m.locationId, componentTypeId: m.componentTypeId, qty: Number(rows[0].qty),
-      })
     }
 
     // ── 7. Relocate the serialized units. SECOND lock class: taken only after
@@ -717,10 +764,13 @@ export async function receiveStockTransfer(
     //       labelling — a joined table would be locked too (a third lock class,
     //       out of order) and would block unrelated catalogue edits.
     if (plan.serializedUnitIds.length > 0) {
+      // disposition is selected here and re-checked below. It is a column on
+      // component_unit itself, so re-asserting it costs NO additional lock
+      // class — it rides on the lock this query already takes.
       const { rows: units } = await tx.query<{
-        id: string; serial_no: string; location_id: string | null
+        id: string; serial_no: string; location_id: string | null; disposition: string
       }>(
-        `SELECT cu.id, cu.serial_no, cu.location_id
+        `SELECT cu.id, cu.serial_no, cu.location_id, cu.disposition
            FROM component_unit cu
           WHERE cu.id = ANY($1) AND cu.deleted_at IS NULL
           ORDER BY cu.id
@@ -732,11 +782,20 @@ export async function receiveStockTransfer(
       }
 
       for (const unit of units) {
-        // A NULL location is accepted: component_unit.location_id only landed
-        // with the L1 slice, so every pre-existing unit has one, and a transfer
-        // is a legitimate way to record where a unit first turns up. A unit sat
-        // at a DIFFERENT known location is an error — something moved it since
-        // this transfer was raised and receiving it would silently teleport it.
+        // Re-assert availability UNDER THE LOCK, not just at create time: a
+        // repair can install a unit while a draft transfer for it sits open, and
+        // receiving it afterwards would record a board in a warehouse while it is
+        // physically inside a device.
+        if (unit.disposition !== UNIT_AVAILABLE_DISPOSITION) {
+          throw new ComponentUnitNotAvailableError(unit.serial_no, unit.disposition)
+        }
+        // A NULL location is accepted — but ONLY in combination with the
+        // disposition check above. On its own it would wave through the whole
+        // migrated fleet, which is 'installed' with no location_id. Gated by
+        // disposition it means what it should: free stock whose shelf was never
+        // recorded, and a transfer is a legitimate way to record where it turns
+        // up. A unit sat at a DIFFERENT known location is an error — something
+        // moved it since this transfer was raised.
         if (unit.location_id !== null && unit.location_id !== header.from_location_id) {
           throw new SerializedUnitNotAtSourceError(
             unit.serial_no, labelOf.get(header.from_location_id) ?? header.from_location_id)
@@ -760,7 +819,7 @@ export async function receiveStockTransfer(
       [actor.id, data.stockTransferId, data.version])
     if (updated.length === 0) throw new OptimisticLockError('stock_transfer', data.stockTransferId)
 
-    return { status: 'received', version: updated[0].version, postedBalances }
+    return { status: 'received', version: updated[0].version }
   })
 }
 
