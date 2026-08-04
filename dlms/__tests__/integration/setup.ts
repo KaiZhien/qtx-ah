@@ -1,9 +1,29 @@
 import { Client } from 'pg'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { installIncrementalCache } from './incrementalCache'
 
 const TEST_DB = 'postgresql://postgres:testpw@localhost:55432/qtx_test'
 process.env.TEST_DATABASE_URL = TEST_DB
+
+// Next reads AsyncLocalStorage off the GLOBAL, not off `node:async_hooks`, and
+// substitutes a FakeAsyncLocalStorage that throws from `run()` when it is absent
+// (client/components/async-local-storage.js). The real Next server sets it during
+// boot; nothing does under vitest, so `unstable_cache` blows up with "Invariant:
+// AsyncLocalStorage accessed in runtime where it is not available" the moment it
+// runs its callback. This is the same two lines Next's own
+// server/node-environment.js runs, and it must happen HERE rather than in a test
+// file: the fake is chosen once, at the module scope of the file above, so by the
+// time a test imports anything from `next/cache` the choice is already made.
+if (typeof (globalThis as { AsyncLocalStorage?: unknown }).AsyncLocalStorage !== 'function') {
+  ;(globalThis as { AsyncLocalStorage?: unknown }).AsyncLocalStorage = AsyncLocalStorage
+}
+
+// `unstable_cache` (every dashboard widget is wrapped in one) throws outside a
+// Next request unless a cache backend is present. See incrementalCache.ts for why
+// this is a real in-memory backend rather than a bypass.
+installIncrementalCache()
 
 // The new "operations platform" schema (roles, permissions, app_user, audit_log, ...)
 // lives in the SAME dlms/supabase/migrations directory as the pre-existing DLMS
