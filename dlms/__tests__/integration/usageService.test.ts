@@ -17,7 +17,7 @@ import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
 import {
   recordUsage, listDeviceUsage, listDeviceUsageSummaries, getUsageOverview,
-  listUsageLoggableDevices, UsageDeviceNotFoundError,
+  listUsageLoggableDevices, UsageDeviceNotFoundError, UsageDateInFutureError,
 } from '@/modules/maintenance/services/usageService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
@@ -80,19 +80,42 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  // usage_record refuses DELETE through the guard, so cleanup must disable the
-  // trigger — which is itself proof the guard is attached and firing. The
-  // devices go with it so the shared database is left as it was found.
-  if (createdDeviceIds.length) {
-    await db.query(`ALTER TABLE usage_record DISABLE TRIGGER trg_usage_record_guard`)
-    await db.query(`DELETE FROM usage_record WHERE device_id = ANY($1)`, [createdDeviceIds])
-    await db.query(`ALTER TABLE usage_record ENABLE TRIGGER trg_usage_record_guard`)
-    await db.query(`DELETE FROM audit_log WHERE table_name = 'usage_record'
-                      AND (new_values->>'device_id') = ANY($1)`, [createdDeviceIds])
-    await db.query(`DELETE FROM device WHERE id = ANY($1)`, [createdDeviceIds])
+  // usage_record refuses DELETE through the guards, so cleanup must disable them
+  // — which is itself proof they are attached and firing. The devices go with it
+  // so the shared database is left as it was found.
+  //
+  // THE try/finally IS LOAD-BEARING, NOT TIDINESS. This runs against the SHARED
+  // platform test database. If the DELETE throws — a new FK from some other
+  // module's table, a lock timeout, anything — an unguarded sequence leaves the
+  // append-only guards DISABLED for every test file that runs after this one and
+  // for every subsequent suite run against the same container. That would
+  // silently switch off the exact invariant this slice exists to guarantee, and
+  // the tests asserting immutability would still pass because they run before
+  // this hook. Re-enabling must therefore be unconditional.
+  try {
+    if (createdDeviceIds.length) {
+      await db.query(`ALTER TABLE usage_record DISABLE TRIGGER trg_usage_record_guard`)
+      await db.query(`ALTER TABLE usage_record DISABLE TRIGGER trg_usage_record_insert_guard`)
+      await db.query(`DELETE FROM usage_record WHERE device_id = ANY($1)`, [createdDeviceIds])
+      await db.query(`DELETE FROM audit_log WHERE table_name = 'usage_record'
+                        AND (new_values->>'device_id') = ANY($1)`, [createdDeviceIds])
+      await db.query(`DELETE FROM device WHERE id = ANY($1)`, [createdDeviceIds])
+    }
+  } finally {
+    // Unconditional, and tolerant of the DISABLE itself having failed: ENABLE on
+    // an already-enabled trigger is a no-op, so this is safe on every path.
+    try {
+      await db.query(`ALTER TABLE usage_record ENABLE TRIGGER trg_usage_record_guard`)
+      await db.query(`ALTER TABLE usage_record ENABLE TRIGGER trg_usage_record_insert_guard`)
+    } catch (err) {
+      // Loudly, because a silent failure here poisons every later run.
+      console.error('FAILED TO RE-ENABLE usage_record append-only guards', err)
+      throw err
+    } finally {
+      await db.end()
+      await getPool().end()
+    }
   }
-  await db.end()
-  await getPool().end()
 })
 
 // ─── Schema ────────────────────────────────────────────────────────────────
@@ -213,11 +236,18 @@ describe('recordUsage', () => {
     const explicit = await recordUsage(logger(), {
       deviceId: device, cumulativeSessions: 20, recordedOn: '2025-06-15' })
 
-    const { rows } = await db.query<{ id: string; recorded_on: string }>(
-      `SELECT id, recorded_on::text AS recorded_on FROM usage_record WHERE device_id = $1`, [device])
-    const byId = new Map(rows.map((r) => [r.id, r.recorded_on]))
-    expect(byId.get(auto.usageRecordId)).toBe(new Date().toISOString().slice(0, 10))
-    expect(byId.get(explicit.usageRecordId)).toBe('2025-06-15')
+    // The default is asserted IN THE DATABASE, against the same current_date the
+    // INSERT used — never against the host clock. `new Date().toISOString()` is
+    // UTC while the DB session carries its own timezone, so a host in Singapore
+    // (UTC+8) disagrees with a UTC database for eight hours of every day, and
+    // even a matched pair flips if the run straddles midnight. That is exactly
+    // the class of bug this module's `::text` convention exists to prevent.
+    const { rows } = await db.query<{ id: string; is_today: boolean; recorded_on: string }>(
+      `SELECT id, recorded_on = current_date AS is_today, recorded_on::text AS recorded_on
+         FROM usage_record WHERE device_id = $1`, [device])
+    const byId = new Map(rows.map((r) => [r.id, r]))
+    expect(byId.get(auto.usageRecordId)!.is_today).toBe(true)
+    expect(byId.get(explicit.usageRecordId)!.recorded_on).toBe('2025-06-15')
   })
 
   it('classifies growth, an unchanged counter, and a reset', async () => {
@@ -261,6 +291,40 @@ describe('recordUsage', () => {
       `SELECT entered_by, created_by FROM usage_record WHERE id = $1`, [res.usageRecordId])
     expect(rows[0].entered_by).toBe(other[0].id)
     expect(rows[0].created_by).toBe(userId)
+  })
+
+  // C1. A future reading is uncorrectable on an append-only table: it
+  // permanently owns max(recorded_on), pins the staleness age at 0, and makes
+  // every later genuine reading classify as a reset. Refused at BOTH layers.
+  it('refuses a future-dated reading through the service', async () => {
+    const device = await makeDevice()
+    const future = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10)
+    await expect(recordUsage(logger(), {
+      deviceId: device, cumulativeSessions: 10, recordedOn: future }))
+      .rejects.toThrow(UsageDateInFutureError)
+
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM usage_record WHERE device_id = $1`, [device])
+    expect(Number(rows[0].n)).toBe(0) // nothing was written
+  })
+
+  it('still accepts today, which is the inclusive boundary', async () => {
+    const device = await makeDevice()
+    const { rows } = await db.query<{ d: string }>(`SELECT current_date::text AS d`)
+    const res = await recordUsage(logger(), {
+      deviceId: device, cumulativeSessions: 10, recordedOn: rows[0].d })
+    expect(res.usageRecordId).toBeTruthy()
+  })
+
+  it('refuses a future date at the DATABASE too, binding the import/api writers', async () => {
+    // The `source` CHECK already anticipates import/api writers that will never
+    // pass through recordUsage's schema. A rule only the current writer honours
+    // is a rule the next writer breaks.
+    const device = await makeDevice()
+    await expect(db.query(
+      `INSERT INTO usage_record (device_id, recorded_on, cumulative_sessions, source, created_by)
+       VALUES ($1, current_date + 1, 5, 'import', $2)`, [device, userId]))
+      .rejects.toThrow(/future/)
   })
 
   it('refuses an actor without log_usage_service', async () => {
@@ -356,14 +420,57 @@ describe('listDeviceUsageSummaries', () => {
     await seedReading(wasReset, '2026-05-02', 5)
 
     const all = await listDeviceUsageSummaries(logger(), { limit: 200 })
-    const ids = all.map((s) => s.deviceId)
+    const ids = all.items.map((s) => s.deviceId)
     expect(ids).toContain(plain)
     expect(ids).toContain(wasReset)
 
     const resets = await listDeviceUsageSummaries(logger(), { limit: 200, resetsOnly: true })
-    const resetIds = resets.map((s) => s.deviceId)
+    const resetIds = resets.items.map((s) => s.deviceId)
     expect(resetIds).toContain(wasReset)
     expect(resetIds).not.toContain(plain)
+  })
+
+  // The defect this shape exists to prevent: `resetsOnly` used to filter AFTER
+  // the display limit, so asking for "devices with a reset" returned only those
+  // that happened to fall inside the first N by recency. With a limit of 1 and a
+  // reset device that is NOT the most recently read, the old code returned
+  // nothing while the tile said one existed.
+  it('applies resetsOnly BEFORE the display limit, not after', async () => {
+    const wasReset = await makeDevice()
+    await seedReading(wasReset, '2026-04-01', 900)
+    await seedReading(wasReset, '2026-04-02', 3)   // reset, but dated older
+    const newer = await makeDevice()
+    await seedReading(newer, '2026-07-20', 50)     // monotonic, more recent
+
+    const page = await listDeviceUsageSummaries(logger(), { limit: 1, resetsOnly: true })
+    // The one row returned must be a reset device, never "the newest device,
+    // which happens not to qualify".
+    expect(page.items).toHaveLength(1)
+    expect(page.items[0].hasReset).toBe(true)
+    expect(page.total).toBeGreaterThanOrEqual(1)
+  })
+
+  // The other half: the table's own count must describe the filter that produced
+  // it, so a tile and a table on one screen cannot disagree.
+  it('reports a total that matches the filter, and a limit-independent reset count', async () => {
+    const wasReset = await makeDevice()
+    await seedReading(wasReset, '2026-04-10', 700)
+    await seedReading(wasReset, '2026-04-11', 2)
+
+    const wide = await listDeviceUsageSummaries(logger(), { limit: 200 })
+    const narrow = await listDeviceUsageSummaries(logger(), { limit: 1 })
+
+    // The reset tile counts the SCANNED population, so shrinking the page must
+    // not change it.
+    expect(narrow.devicesWithResets).toBe(wide.devicesWithResets)
+    expect(narrow.total).toBe(wide.total)
+    // …while the rows really are cut.
+    expect(narrow.items).toHaveLength(1)
+    expect(narrow.items.length).toBeLessThanOrEqual(narrow.total)
+
+    const filtered = await listDeviceUsageSummaries(logger(), { limit: 200, resetsOnly: true })
+    expect(filtered.total).toBe(filtered.items.length)
+    expect(filtered.total).toBe(wide.devicesWithResets)
   })
 
   it('ages the latest reading against the injected today', async () => {
@@ -371,22 +478,26 @@ describe('listDeviceUsageSummaries', () => {
     await seedReading(device, '2026-05-10', 10)
     const [summary] = (await listDeviceUsageSummaries(
       logger(), { limit: 200 }, new Date('2026-05-20T00:00:00Z')))
-      .filter((s) => s.deviceId === device)
+      .items.filter((s) => s.deviceId === device)
     expect(summary.daysSinceLastReading).toBe(10)
   })
 })
 
 describe('getUsageOverview / listUsageLoggableDevices', () => {
-  it('counts devices with a reset, which no column holds', async () => {
-    const wasReset = await makeDevice()
-    await seedReading(wasReset, '2026-06-01', 400)
-    await seedReading(wasReset, '2026-06-02', 1)
+  it('answers with SQL aggregates only — no history scan', async () => {
+    const device = await makeDevice()
+    await seedReading(device, '2026-06-01', 400)
+    await seedReading(device, '2026-06-02', 1)
 
     const overview = await getUsageOverview(logger())
     // Global counts are shared with every other integration file, so assert a
     // floor rather than an equality.
-    expect(overview.devicesWithResets).toBeGreaterThanOrEqual(1)
     expect(overview.readingCount).toBeGreaterThanOrEqual(2)
+    expect(overview.deviceCount).toBeGreaterThanOrEqual(1)
+    // devicesWithResets deliberately NO LONGER lives here: counting it means
+    // deriving every device's series, and this runs on the Maintenance landing
+    // page. It moved to listDeviceUsageSummaries, which is bounded.
+    expect('devicesWithResets' in overview).toBe(false)
   })
 
   it('offers every live device, carrying its latest reading for the form hint', async () => {

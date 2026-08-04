@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
   createModification, updateModification, changeModificationStatus, signOffModification,
-  ModificationNotFoundError, ModificationReferenceNotFoundError,
+  ModificationNotFoundError, ModificationReferenceNotFoundError, ModificationTerminalError,
   type CreateModificationInput, type UpdateModificationInput,
   type ChangeModificationStatusInput, type SignOffModificationInput,
 } from '@/modules/maintenance/services/modificationService'
@@ -39,6 +39,11 @@ function toMessage(err: unknown): string {
     // "something you linked no longer exists" is not actionable.
     return `That ${err.reference.replace('_', ' ')} no longer exists. Reload and try again.`
   }
+  // Its own message names the state ("A closed modification cannot be edited."),
+  // which is the whole explanation — the user is looking at a form the page
+  // should not have rendered, most likely because someone signed it off in
+  // another tab.
+  if (err instanceof ModificationTerminalError) return err.message
   if (err instanceof ModificationNotFoundError) {
     return 'That modification no longer exists. Reload and try again.'
   }

@@ -63,14 +63,22 @@ export default async function MaintenancePage() {
           value={openModifications}
           caption={`open modification${openModifications === 1 ? '' : 's'}`}
         />
+        {/*
+          Counts only — no reset figure here, deliberately. "Has a counter reset"
+          is DERIVED, so counting it means loading every usage_record row and
+          re-deriving each device's series. This is the landing page every
+          maintenance user hits, and doing that here was an unbounded fetch on
+          the busiest route in the module — the exact thing MAX_SERIES_ROWS
+          exists to prevent. getUsageOverview is now two SQL aggregates an index
+          answers; the reset count lives on /maintenance/usage, which already has
+          the derived summaries in hand.
+        */}
         <SectionCard
           href="/maintenance/usage"
           title="Usage"
           value={usage.deviceCount}
-          caption={usage.devicesWithResets > 0
-            ? `device${usage.deviceCount === 1 ? '' : 's'} with readings · `
-              + `${usage.devicesWithResets} with a counter reset`
-            : `device${usage.deviceCount === 1 ? '' : 's'} with readings`}
+          caption={`device${usage.deviceCount === 1 ? '' : 's'} with readings · `
+            + `${usage.readingCount} reading${usage.readingCount === 1 ? '' : 's'}`}
         />
       </div>
 

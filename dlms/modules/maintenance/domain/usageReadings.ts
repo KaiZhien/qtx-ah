@@ -204,6 +204,34 @@ export function classifyNewReading(
   return { kind: 'increase', delta: next - previous }
 }
 
+/**
+ * Is this reading dated in the future?
+ *
+ * A future reading is not a policy the specification declined to make — it is a
+ * DOMAIN IMPOSSIBILITY. Nobody read a counter tomorrow.
+ *
+ * It matters far more here than on a mutable table, because `usage_record` gives
+ * up every other integrity mechanism: no UPDATE, no DELETE, no soft-delete. One
+ * future-dated row permanently owns `max(recorded_on)`, which is the spec's
+ * definition of "latest" — so it pins the staleness age at 0 forever, makes
+ * every genuine reading recorded between now and that date classify as a counter
+ * reset (each being lower than the bogus one), and cannot be corrected. Rejecting
+ * on the way in is the only affordable moment.
+ *
+ * `today` is injected, per the house rule for date logic. Compared at UTC
+ * midnight against the YYYY-MM-DD string, so the answer is a pure function of
+ * its two arguments. The DATABASE holds the same rule in
+ * `fn_usage_record_insert_guard` and is the real boundary — this exists so the
+ * common path fails with a sentence a user can act on, and so the rule is
+ * unit-tested rather than only reachable through Postgres.
+ */
+export function isFutureReadingDate(recordedOn: string, today: Date): boolean {
+  const readingMs = Date.parse(`${recordedOn}T00:00:00Z`)
+  if (Number.isNaN(readingMs)) return false // malformed is the date regex's job, not this one's
+  const todayMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  return readingMs > todayMs
+}
+
 const MS_PER_DAY = 86_400_000
 
 /**

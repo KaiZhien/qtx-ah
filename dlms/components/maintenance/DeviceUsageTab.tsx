@@ -52,7 +52,7 @@ export async function DeviceUsageTab({ deviceId }: Props) {
     )
   }
 
-  const { items, summary } = usage
+  const { items, summary, truncated } = usage
   const canLog = can(actor, 'log_usage_service', 'maintenance')
   const today = new Date()
   const todayIso = today.toISOString().slice(0, 10)
@@ -77,11 +77,17 @@ export async function DeviceUsageTab({ deviceId }: Props) {
         <Stat
           // "At least" is not hedging — a reset makes the sessions between the
           // last pre-reset reading and zero unknowable, so this is a lower bound.
-          label={summary.hasReset ? 'Lifetime (at least)' : 'Lifetime sessions'}
+          // `truncated` forces the same qualifier even when no reset is visible,
+          // because the readings the cap dropped may have contained one: without
+          // this, truncation would silently turn a marked floor into an unmarked
+          // wrong number.
+          label={summary.hasReset || truncated ? 'Lifetime (at least)' : 'Lifetime sessions'}
           value={summary.totalSessions.toLocaleString()}
-          hint={summary.hasReset
-            ? `${summary.resetCount} reset${summary.resetCount === 1 ? '' : 's'} — sessions lost at each`
-            : 'measured end to end'}
+          hint={truncated
+            ? 'older readings not loaded — see below'
+            : summary.hasReset
+              ? `${summary.resetCount} reset${summary.resetCount === 1 ? '' : 's'} — sessions lost at each`
+              : 'measured end to end'}
         />
         <Stat label="Readings" value={String(summary.readingCount)} hint="append-only" />
       </dl>

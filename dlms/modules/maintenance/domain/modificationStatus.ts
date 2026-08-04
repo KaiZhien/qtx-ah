@@ -74,6 +74,29 @@ export function allowedNextModificationStatuses(from: ModificationStatus): Modif
   return [...(TRANSITIONS[from] ?? [])]
 }
 
+/**
+ * Is this modification finished — closed by sign-off, or abandoned?
+ *
+ * DELIBERATELY NOT "has no outgoing transitions". `completed` also has an empty
+ * TRANSITIONS entry, because its only exit is the gated sign-off rather than an
+ * ordinary edge, and a `completed` modification is very much still live: it is
+ * waiting to be accepted and its detail fields are exactly what the signer is
+ * about to read. Deriving terminality from the graph's shape would freeze the
+ * record one step early, at the precise moment editing it matters most.
+ *
+ * WHAT THIS GATES. `updateModification` refuses to edit a terminal record, and
+ * the detail page hides the edit form for one. Without that, a signed-off
+ * modification could have its cost or its configuration text rewritten with NO
+ * `modification_status_history` row to show it — the history only logs status
+ * changes — which would make sign-off decorative: the whole point of a terminal
+ * state is that what was accepted is what stays on the record. The sign-off
+ * dialog promises the user exactly this ("cannot be reopened or edited
+ * afterwards"), and a promise the server does not keep is worse than no promise.
+ */
+export function isTerminalModificationStatus(status: ModificationStatus): boolean {
+  return status === 'closed' || status === 'cancelled'
+}
+
 // ── Ordinary transition evaluation (changeModificationStatus) ────────────────
 export type ModificationTransitionErrorCode = 'transition_forbidden' | 'note_required'
 

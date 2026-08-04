@@ -37,11 +37,17 @@ export default async function UsagePage({ searchParams }: PageProps) {
   const canLog = can(actor, 'log_usage_service', 'maintenance')
   const today = new Date()
 
-  const [summaries, overview, devices] = await Promise.all([
+  // ONE call answers the table AND the reset tile, so the two cannot disagree.
+  // getUsageOverview is now two SQL aggregates and reads no history at all — it
+  // used to re-derive the whole table for a tile this page already had the data
+  // for.
+  const [page, overview, devices] = await Promise.all([
     listDeviceUsageSummaries(actor, { resetsOnly }, today),
     getUsageOverview(actor),
     canLog ? listUsageLoggableDevices(actor) : Promise.resolve([]),
   ])
+  const summaries = page.items
+  const hiddenByLimit = page.total - summaries.length
 
   return (
     <div className="space-y-6">
@@ -53,9 +59,16 @@ export default async function UsagePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Tile label="Devices with readings" value={overview.deviceCount} />
-        <Tile label="Readings recorded" value={overview.readingCount} />
-        <Tile label="Devices with a counter reset" value={overview.devicesWithResets} />
+        <Tile label="Devices with readings" value={String(overview.deviceCount)} />
+        <Tile label="Readings recorded" value={String(overview.readingCount)} />
+        <Tile
+          // Counted over the SCANNED population, before the filter — so it does
+          // not change when the chip is toggled. `≥` when the device scan hit
+          // its cap, because then it is itself a floor.
+          label="Devices with a counter reset"
+          value={`${page.scanComplete ? '' : '≥ '}${page.devicesWithResets}`}
+          hint={page.scanComplete ? undefined : `within the ${page.scanned} most recently read`}
+        />
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -81,6 +94,20 @@ export default async function UsagePage({ searchParams }: PageProps) {
             : 'No usage readings recorded yet.'}
         </p>
       ) : (
+        <div className="space-y-2">
+          {/*
+            The table is cut to a display limit. Saying so is the difference
+            between a list and a lie — a silent truncation under a tile counting
+            the whole fleet is two numbers disagreeing with nothing to explain it.
+          */}
+          <p className="text-sm text-muted-foreground">
+            Showing {summaries.length} of {page.scanComplete ? '' : 'at least '}
+            {page.total}
+            {resetsOnly ? ' devices with a counter reset' : ' devices with readings'}
+            {hiddenByLimit > 0 && ` · ${hiddenByLimit} more not shown`}
+            {!page.scanComplete
+              && ` · only the ${page.scanned} most recently read devices were examined`}
+          </p>
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
@@ -129,16 +156,18 @@ export default async function UsagePage({ searchParams }: PageProps) {
             </tbody>
           </table>
         </div>
+        </div>
       )}
     </div>
   )
 }
 
-function Tile({ label, value }: { label: string; value: number }) {
+function Tile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-md border p-4">
       <p className="text-2xl font-semibold text-slate-900">{value}</p>
       <p className="text-sm text-muted-foreground">{label}</p>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }

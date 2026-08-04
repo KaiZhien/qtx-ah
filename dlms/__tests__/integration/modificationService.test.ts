@@ -17,7 +17,7 @@ import { getPool } from '@/lib/db/pool'
 import {
   createModification, updateModification, changeModificationStatus, signOffModification,
   getModification, listModifications,
-  ModificationNotFoundError, ModificationReferenceNotFoundError,
+  ModificationNotFoundError, ModificationReferenceNotFoundError, ModificationTerminalError,
   type UpdateModificationInput,
 } from '@/modules/maintenance/services/modificationService'
 import {
@@ -639,6 +639,55 @@ describe('changeModificationStatus', () => {
     await expect(changeModificationStatus(op(), {
       modificationId: '00000000-0000-0000-0000-000000000000', toStatus: 'approved', version: 1 }))
       .rejects.toThrow(ModificationNotFoundError)
+  })
+})
+
+describe('updateModification — the terminal-state freeze', () => {
+  // The sign-off dialog promises a closed modification "cannot be reopened or
+  // edited afterwards". Without this check that promise was false: cost could be
+  // rewritten 500 → 5000 with NO modification_status_history row, because that
+  // log records status changes only. Which makes sign-off decorative.
+  it('refuses an edit to a SIGNED-OFF modification', async () => {
+    const { modificationId } = await openModification()
+    await driveToCompleted(modificationId)
+    await signOffModification(signer(), {
+      modificationId, version: await currentVersion(modificationId) })
+
+    await expect(updateModification(op(), {
+      modificationId, version: await currentVersion(modificationId), costSgd: 5000 }))
+      .rejects.toThrow(ModificationTerminalError)
+
+    const { rows } = await db.query<{ cost_sgd: string | null; status: string }>(
+      `SELECT cost_sgd, status FROM modification WHERE id = $1`, [modificationId])
+    expect(rows[0].status).toBe('closed')
+    expect(rows[0].cost_sgd).toBeNull() // nothing was written
+  })
+
+  it('refuses an edit to a CANCELLED modification', async () => {
+    const { modificationId } = await openModification()
+    await changeModificationStatus(op(), {
+      modificationId, toStatus: 'cancelled', version: 1, note: 'Not proceeding' })
+
+    await expect(updateModification(op(), {
+      modificationId, version: await currentVersion(modificationId), description: 'sneaky' }))
+      .rejects.toThrow(ModificationTerminalError)
+  })
+
+  // `completed` has no ordinary outgoing edges either, but it is NOT terminal —
+  // it is the state a signer reads and corrects before accepting. Freezing it
+  // would break editing at the moment it matters most.
+  it('ALLOWS an edit to a completed modification awaiting sign-off', async () => {
+    const { modificationId } = await openModification()
+    await driveToCompleted(modificationId)
+
+    const res = await updateModification(op(), {
+      modificationId, version: await currentVersion(modificationId),
+      description: 'corrected before sign-off' })
+    expect(res.version).toBeGreaterThan(0)
+
+    const { rows } = await db.query<{ description: string }>(
+      `SELECT description FROM modification WHERE id = $1`, [modificationId])
+    expect(rows[0].description).toBe('corrected before sign-off')
   })
 })
 

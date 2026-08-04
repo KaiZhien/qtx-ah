@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import {
-  recordUsage, UsageDeviceNotFoundError,
+  recordUsage, UsageDeviceNotFoundError, UsageDateInFutureError,
   type RecordUsageInput, type RecordUsageResult,
 } from '@/modules/maintenance/services/usageService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
@@ -24,6 +24,10 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  // Its own message names the offending date. This IS an error, unlike a
+  // non-monotonic reading: a future date is uncorrectable on an append-only
+  // table, so it has to be refused rather than warned about.
+  if (err instanceof UsageDateInFutureError) return err.message
   if (err instanceof UsageDeviceNotFoundError) {
     return 'That device no longer exists. Reload and try again.'
   }

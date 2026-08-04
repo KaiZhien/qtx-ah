@@ -16,6 +16,13 @@ vi.mock('@/modules/maintenance/services/modificationService', () => ({
   changeModificationStatus: mockChangeStatus,
   signOffModification: mockSignOff,
   ModificationNotFoundError: class ModificationNotFoundError extends Error {},
+  ModificationTerminalError: class ModificationTerminalError extends Error {
+    status: string
+    constructor(_id: string, status: string) {
+      super(`A ${status} modification cannot be edited.`)
+      this.status = status
+    }
+  },
   ModificationReferenceNotFoundError: class ModificationReferenceNotFoundError extends Error {
     reference: string
     referenceId: string
@@ -32,7 +39,7 @@ const {
 } = await import('@/app/(platform)/maintenance/modifications/actions')
 const { MfaRequiredError } = await import('@/modules/shared/auth/session')
 const {
-  ModificationNotFoundError, ModificationReferenceNotFoundError,
+  ModificationNotFoundError, ModificationReferenceNotFoundError, ModificationTerminalError,
 } = await import('@/modules/maintenance/services/modificationService')
 const {
   InvalidModificationTransitionError, ModificationSignOffError,
@@ -129,6 +136,18 @@ describe('updateModificationAction', () => {
     expect(res).toEqual({
       ok: false, error: 'That modification no longer exists. Reload and try again.',
     })
+  })
+
+  // The page hides the edit form on a terminal record, but the action is
+  // directly callable, so the refusal has to survive the UI being bypassed —
+  // and it has to SAY the record is closed, because the likeliest cause is
+  // someone signing it off in another tab.
+  it('explains the terminal-state refusal in the service’s own words', async () => {
+    mockUpdate.mockRejectedValue(new ModificationTerminalError(ID, 'closed'))
+    const res = await updateModificationAction({ modificationId: ID, version: 2, costSgd: 5000 })
+    expect(res.ok).toBe(false)
+    expect((res as { error: string }).error).toContain('closed')
+    expect((res as { error: string }).error).toContain('cannot be edited')
   })
 
   it('RETURNS a failure when the session is not AAL2', async () => {

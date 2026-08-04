@@ -117,6 +117,48 @@ CREATE TRIGGER trg_usage_record_guard BEFORE UPDATE OR DELETE ON usage_record
 COMMENT ON TRIGGER trg_usage_record_guard ON usage_record IS
   'Enforces spec §6.4 immutability. Rejects every UPDATE and every DELETE outright — unlike component_installation''s guard, which allows the one-time removal stamp. Do not relax this to "allow editing the note": the note is part of the observation.';
 
+-- ── Insert guard: recorded_on may not be in the future ─────────────────────
+-- A future reading is not a policy choice, it is a DOMAIN IMPOSSIBILITY: nobody
+-- read a counter tomorrow. On a table where every other integrity mechanism has
+-- been given up — no UPDATE, no DELETE, no soft-delete — validation on the way
+-- IN is the only one left, so the rule has to live here.
+--
+-- WHAT ONE BAD ROW COSTS, and why this is worth a trigger rather than a comment:
+-- `recorded_on` defines "latest" (spec §6.3: latest = max(recorded_on)). A row
+-- dated 2030 becomes the latest reading permanently. It pins
+-- daysSinceLastReading at 0 forever, so the device never ages out of any
+-- staleness view; it makes every genuine reading recorded between now and 2030
+-- classify as a counter reset, because each is lower than the bogus one; and it
+-- cannot be corrected, because the guard above refuses UPDATE and DELETE.
+-- Recovery would mean DISABLE TRIGGER — deliberately breaking the invariant this
+-- table exists to hold. The only affordable moment is before the row lands.
+--
+-- WHY A TRIGGER AND NOT A CHECK CONSTRAINT: a CHECK must be IMMUTABLE, and
+-- current_date is STABLE (it depends on the transaction timestamp). Postgres
+-- accepts `CHECK (recorded_on <= current_date)` in some forms but the constraint
+-- is then only evaluated on write and is a documented footgun for dump/restore,
+-- which re-validates. A BEFORE INSERT trigger says exactly what is meant.
+--
+-- WHY IN THE DATABASE AND NOT ONLY IN THE SERVICE: the `source` CHECK above
+-- already anticipates `import` and `api` writers that do not exist yet. Those
+-- will not come through recordUsage's Zod schema. A rule that only the current
+-- writer honours is a rule the next writer breaks.
+CREATE OR REPLACE FUNCTION fn_usage_record_insert_guard()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  IF NEW.recorded_on > current_date THEN
+    RAISE EXCEPTION
+      'usage_record.recorded_on cannot be in the future (got %, today is %)',
+      NEW.recorded_on, current_date
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER trg_usage_record_insert_guard BEFORE INSERT ON usage_record
+  FOR EACH ROW EXECUTE FUNCTION fn_usage_record_insert_guard();
+COMMENT ON TRIGGER trg_usage_record_insert_guard ON usage_record IS
+  'Refuses a future recorded_on. The last line of defence on an append-only table: a future-dated row permanently owns max(recorded_on), pins the staleness age at 0, makes every later genuine reading look like a counter reset, and cannot be corrected because UPDATE and DELETE are both refused. Binds the import/api writers the source CHECK anticipates, not just recordUsage.';
+
 -- Audit the INSERT — the only event this table has, and exactly the one worth
 -- trailing. fn_audit is shape-agnostic (audit_log.row_id/new_values are
 -- nullable), so a table with no version/updated_at columns attaches cleanly.
@@ -131,3 +173,4 @@ ALTER TABLE usage_record ENABLE ROW LEVEL SECURITY;
 -- No CREATE POLICY statements follow, by design — see above.
 
 REVOKE EXECUTE ON FUNCTION fn_usage_record_guard() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION fn_usage_record_insert_guard() FROM PUBLIC, anon, authenticated;

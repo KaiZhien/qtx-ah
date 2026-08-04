@@ -10,12 +10,21 @@ vi.mock('@/modules/shared/auth/session', () => ({
 vi.mock('@/modules/maintenance/services/usageService', () => ({
   recordUsage: mockRecordUsage,
   UsageDeviceNotFoundError: class UsageDeviceNotFoundError extends Error {},
+  UsageDateInFutureError: class UsageDateInFutureError extends Error {
+    recordedOn: string
+    constructor(recordedOn: string) {
+      super(`A usage reading cannot be dated in the future (got ${recordedOn}).`)
+      this.recordedOn = recordedOn
+    }
+  },
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 const { recordUsageAction } = await import('@/app/(platform)/maintenance/usage/actions')
 const { MfaRequiredError } = await import('@/modules/shared/auth/session')
-const { UsageDeviceNotFoundError } = await import('@/modules/maintenance/services/usageService')
+const {
+  UsageDeviceNotFoundError, UsageDateInFutureError,
+} = await import('@/modules/maintenance/services/usageService')
 const { PermissionError } = await import('@/modules/shared/authz/authorize')
 
 const ACTOR = {
@@ -66,6 +75,19 @@ describe('recordUsageAction', () => {
     expect(res.ok).toBe(false)
     expect((res as { error: string }).error).toContain('Two-factor')
     expect(mockRecordUsage).not.toHaveBeenCalled()
+  })
+
+  // The counterpart to the reset test above, and the distinction that matters:
+  // a LOWER reading is a real observation and comes back ok:true with a warning;
+  // a FUTURE reading is a domain impossibility and comes back ok:false. The two
+  // must not be conflated in either direction.
+  it('reports a future-dated reading as a FAILURE, naming the date', async () => {
+    mockRecordUsage.mockRejectedValue(new UsageDateInFutureError('2030-01-01'))
+    const res = await recordUsageAction({
+      deviceId: DEVICE, cumulativeSessions: 10, recordedOn: '2030-01-01' })
+    expect(res.ok).toBe(false)
+    expect((res as { error: string }).error).toContain('2030-01-01')
+    expect((res as { error: string }).error).toContain('future')
   })
 
   it('reports an unknown device without confirming anything about it', async () => {

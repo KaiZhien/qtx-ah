@@ -4,8 +4,36 @@ import {
   isValidModificationTransition, allowedNextModificationStatuses,
   evaluateModificationTransition, messageForModificationTransitionError,
   evaluateModificationSignOff, messageForModificationSignOffError,
+  isTerminalModificationStatus,
   type ModificationStatus,
 } from '@/modules/maintenance/domain/modificationStatus'
+
+describe('isTerminalModificationStatus', () => {
+  it('treats closed and cancelled as terminal', () => {
+    expect(isTerminalModificationStatus('closed')).toBe(true)
+    expect(isTerminalModificationStatus('cancelled')).toBe(true)
+  })
+
+  it('does NOT treat `completed` as terminal, despite it having no ordinary edges', () => {
+    // The trap: allowedNextModificationStatuses('completed') is [] because its
+    // only exit is the gated sign-off. Deriving terminality from the graph's
+    // shape would freeze the record one step early — exactly when the signer
+    // needs to read and correct it.
+    expect(allowedNextModificationStatuses('completed')).toEqual([])
+    expect(isTerminalModificationStatus('completed')).toBe(false)
+  })
+
+  it('treats the live early states as non-terminal', () => {
+    expect(isTerminalModificationStatus('requested')).toBe(false)
+    expect(isTerminalModificationStatus('approved')).toBe(false)
+  })
+
+  it('classifies every state in the vocabulary', () => {
+    for (const s of MODIFICATION_STATUSES) {
+      expect(typeof isTerminalModificationStatus(s)).toBe('boolean')
+    }
+  })
+})
 
 describe('modification status vocabulary (spec §6.3)', () => {
   it('defines exactly the five states the CHECK constraint fences', () => {

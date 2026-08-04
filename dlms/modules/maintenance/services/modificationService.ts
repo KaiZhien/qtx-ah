@@ -8,6 +8,7 @@ import {
   evaluateModificationTransition, messageForModificationTransitionError,
   InvalidModificationTransitionError,
   evaluateModificationSignOff, messageForModificationSignOffError, ModificationSignOffError,
+  isTerminalModificationStatus,
   type ModificationStatus,
 } from '@/modules/maintenance/domain/modificationStatus'
 
@@ -49,6 +50,31 @@ export class ModificationNotFoundError extends Error {
     super(`Modification ${modificationId} not found`)
     this.name = 'ModificationNotFoundError'
     this.modificationId = modificationId
+  }
+}
+
+/**
+ * An edit was attempted on a modification that is closed or cancelled.
+ *
+ * WHY THIS EXISTS. The sign-off dialog promises the user that a signed-off
+ * modification "cannot be reopened or edited afterwards". Without this the
+ * promise was false: `updateModification` had no status precondition, so a
+ * closed record's cost could be rewritten 500 → 5000 — and because
+ * `modification_status_history` logs STATUS changes only, nothing anywhere would
+ * record that it happened. That makes sign-off decorative, since the whole point
+ * of a terminal state is that what was accepted is what stays.
+ *
+ * Enforced in the SERVICE, not merely by hiding the form: the server action is
+ * directly callable, so a hidden form is a UI convenience and never a control.
+ */
+export class ModificationTerminalError extends Error {
+  readonly modificationId: string
+  readonly status: ModificationStatus
+  constructor(modificationId: string, status: ModificationStatus) {
+    super(`A ${modificationStatusLabel(status).toLowerCase()} modification cannot be edited.`)
+    this.name = 'ModificationTerminalError'
+    this.modificationId = modificationId
+    this.status = status
   }
 }
 
@@ -573,13 +599,25 @@ export async function updateModification(
   return withTransaction(actor.id, async (tx) => {
     // device_id comes back from the lock because the repair link is validated
     // against it below; the column itself is not editable (absent from
-    // UPDATE_COLUMNS), so the locked value is the whole truth.
-    const { rows: modRows } = await tx.query<{ version: number; device_id: string }>(
-      `SELECT version, device_id FROM modification WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    // UPDATE_COLUMNS), so the locked value is the whole truth. `status` comes
+    // back for the terminal check below.
+    const { rows: modRows } = await tx.query<{
+      version: number; device_id: string; status: ModificationStatus
+    }>(
+      `SELECT version, device_id, status FROM modification
+        WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [data.modificationId])
     if (modRows.length === 0) throw new ModificationNotFoundError(data.modificationId)
     if (modRows[0].version !== data.version) {
       throw new OptimisticLockError('modification', data.modificationId)
+    }
+    // A closed or cancelled record is frozen. Checked INSIDE the transaction
+    // under the same lock that established the version, so a sign-off committing
+    // concurrently with an edit cannot let the edit through on a stale read —
+    // the two serialize on this row. `completed` is deliberately NOT terminal:
+    // that is the state a signer reads and corrects before accepting.
+    if (isTerminalModificationStatus(modRows[0].status)) {
+      throw new ModificationTerminalError(data.modificationId, modRows[0].status)
     }
 
     if (data.modificationTypeId) {

@@ -7,6 +7,7 @@ import {
 } from '@/modules/maintenance/services/modificationService'
 import {
   allowedNextModificationStatuses, modificationStatusLabel,
+  isTerminalModificationStatus,
 } from '@/modules/maintenance/domain/modificationStatus'
 import { TaskPanel } from '@/components/tasks/TaskPanel'
 import { ModificationStatusPill } from '@/components/maintenance/ModificationStatusPill'
@@ -62,7 +63,16 @@ export default async function ModificationDetailPage({ params }: PageProps) {
   const modification = await getModification(actor, params.id)
   if (!modification) notFound()
 
-  const canEdit = can(actor, 'edit_records', 'maintenance')
+  // TWO conditions, not one. `edit_records` says the actor may edit A
+  // modification; the terminal check says THIS one is still editable. The
+  // sign-off dialog promises a closed record "cannot be reopened or edited
+  // afterwards", and rendering an edit form beside that promise made it false —
+  // a signed-off record's cost could be rewritten with no status-history row to
+  // show it, since that log records status changes only. The real enforcement is
+  // in updateModification (the action is directly callable); this only stops the
+  // page offering what the server will refuse.
+  const isTerminal = isTerminalModificationStatus(modification.status)
+  const canEdit = can(actor, 'edit_records', 'maintenance') && !isTerminal
   const canSignOff = can(actor, 'sign_off_repairs', 'maintenance')
   const transitions = canEdit ? allowedNextModificationStatuses(modification.status) : []
   // `completed` is this record's awaiting_sign_off: the pure graph has no edge
@@ -120,6 +130,15 @@ export default async function ModificationDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {isTerminal && can(actor, 'edit_records', 'maintenance') && (
+        // Says WHY the edit control is gone. Silently removing it from a record
+        // that had one yesterday reads as a permissions bug.
+        <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+          This modification is {modificationStatusLabel(modification.status).toLowerCase()} and can
+          no longer be edited. Its details are the record of what was accepted.
+        </p>
+      )}
 
       {canEdit && (
         <ModificationEditForm

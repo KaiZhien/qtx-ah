@@ -35,7 +35,14 @@ describe('platform server actions enforce AAL2', () => {
   it('the scan actually found the known server-action modules', () => {
     // Guards against a silently-empty it.each (a broken scan would make the
     // convention checks below register zero tests and pass vacuously).
-    expect(serverActionFiles.length).toBeGreaterThanOrEqual(7)
+    //
+    // RAISE THIS FLOOR WHEN MODULES ARE ADDED. It sat at 7 while the app had 22
+    // action modules, which made the guard almost decorative: a scan that broke
+    // badly enough to find only a third of them would still have passed. 20 is
+    // deliberately just under the current count — low enough that deleting one
+    // module in an ordinary refactor doesn't fail the build, high enough that a
+    // broken glob or a changed directory layout does.
+    expect(serverActionFiles.length).toBeGreaterThanOrEqual(20)
   })
 
   it.each(serverActionFiles)(

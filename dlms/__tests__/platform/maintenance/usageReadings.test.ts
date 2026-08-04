@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   chronologicalUsageOrder, deriveUsageSeries, summarizeUsage,
-  classifyNewReading, daysSinceLastReading,
+  classifyNewReading, daysSinceLastReading, isFutureReadingDate,
   type UsageReading,
 } from '@/modules/maintenance/domain/usageReadings'
 
@@ -292,6 +292,33 @@ describe('classifyNewReading — the write-path warning', () => {
     // Accepted, not refused — the physical counter reset. The service must not
     // treat this as a validation failure.
     expect(c).toMatchObject({ kind: 'reset', previous: 500, next: 20 })
+  })
+})
+
+describe('isFutureReadingDate — a domain impossibility, not a policy', () => {
+  const today = new Date('2026-08-03T00:00:00Z')
+
+  it('rejects tomorrow', () => {
+    expect(isFutureReadingDate('2026-08-04', today)).toBe(true)
+  })
+
+  it('accepts today — the boundary is inclusive', () => {
+    expect(isFutureReadingDate('2026-08-03', today)).toBe(false)
+  })
+
+  it('accepts the past, however far back', () => {
+    expect(isFutureReadingDate('2026-08-02', today)).toBe(false)
+    expect(isFutureReadingDate('2019-01-01', today)).toBe(false)
+  })
+
+  it('ignores the time of day on `today` — late in the day is still today', () => {
+    // A reading dated today, submitted at 23:59, must not read as tomorrow.
+    expect(isFutureReadingDate('2026-08-03', new Date('2026-08-03T23:59:59Z'))).toBe(false)
+    expect(isFutureReadingDate('2026-08-04', new Date('2026-08-03T23:59:59Z'))).toBe(true)
+  })
+
+  it('leaves a malformed date to the format check rather than guessing', () => {
+    expect(isFutureReadingDate('not-a-date', today)).toBe(false)
   })
 })
 

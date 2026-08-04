@@ -4,6 +4,7 @@ import { authorize } from '@/modules/shared/authz/authorize'
 import type { Actor } from '@/modules/shared/authz/catalog'
 import {
   deriveUsageSeries, summarizeUsage, classifyNewReading, daysSinceLastReading,
+  isFutureReadingDate,
   type UsageReading, type DerivedUsageReading, type UsageSummary,
   type NewReadingClassification,
 } from '@/modules/maintenance/domain/usageReadings'
@@ -50,15 +51,44 @@ export class UsageDeviceNotFoundError extends Error {
   }
 }
 
+/**
+ * A reading dated in the future. Refused rather than accepted-with-a-warning —
+ * unlike a non-monotonic reading, which is a real observation. See
+ * `isFutureReadingDate` for why this one cannot be tolerated on an append-only
+ * table. `fn_usage_record_insert_guard` holds the same rule in the database and
+ * is the actual boundary; this exists so the common path gets a usable sentence.
+ */
+export class UsageDateInFutureError extends Error {
+  readonly recordedOn: string
+  constructor(recordedOn: string) {
+    super(`A usage reading cannot be dated in the future (got ${recordedOn}).`)
+    this.name = 'UsageDateInFutureError'
+    this.recordedOn = recordedOn
+  }
+}
+
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
 
 /**
  * A hard ceiling on how many readings one device's derivation will load. A
  * device read weekly for a decade has ~520 rows, so this is far above any real
  * series; it exists so a pathological import cannot turn one page render into an
- * unbounded fetch. If a device ever exceeds it the OLDEST readings are the ones
- * dropped, which keeps the recent picture honest and only makes the lifetime
- * lower bound lower — never wrong in the other direction.
+ * unbounded fetch.
+ *
+ * THIS CAP VIOLATES THE WHOLE-SERIES RULE ABOVE, and pretending otherwise was a
+ * defect. When it bites, the OLDEST readings are dropped, and an earlier draft
+ * of this comment claimed that only makes the lifetime lower bound lower and is
+ * "never wrong in the other direction". That is false, and here is the
+ * counterexample: if the dropped prefix contained the only reset boundary, the
+ * surviving window is monotonic, `hasReset` comes back FALSE, and the UI stops
+ * marking the lifetime figure with `≥`. The number gets smaller AND loses the
+ * qualifier that said it was a floor — the one direction that misleads.
+ *
+ * So callers are told. Every read that applies this cap reports `truncated` when
+ * it comes back exactly full, and the UI qualifies what it prints instead of
+ * asserting a lifetime it cannot support. Nothing in the current fleet is close
+ * to 2000 readings; this makes the failure visible rather than silent when
+ * something is.
  */
 const MAX_SERIES_ROWS = 2000
 
@@ -79,7 +109,9 @@ type UsageRow = {
  * domain compares recordedOn as a YYYY-MM-DD string, so keeping it text end to
  * end sidesteps the timezone entirely.
  */
-async function loadSeries(tx: Tx, deviceId: string): Promise<UsageReading[]> {
+async function loadSeries(
+  tx: Tx, deviceId: string,
+): Promise<{ readings: UsageReading[]; truncated: boolean }> {
   const { rows } = await tx.query<UsageRow>(
     `SELECT id, recorded_on::text AS recorded_on, cumulative_sessions, created_at
        FROM usage_record
@@ -88,7 +120,7 @@ async function loadSeries(tx: Tx, deviceId: string): Promise<UsageReading[]> {
       LIMIT $2`, [deviceId, MAX_SERIES_ROWS])
   // The domain sorts into chronological order itself, so the DESC fetch above
   // (which is what makes the LIMIT keep the NEWEST rows) needs no reversal here.
-  return rows.map(toReading)
+  return { readings: rows.map(toReading), truncated: rows.length === MAX_SERIES_ROWS }
 }
 
 function toReading(r: UsageRow): UsageReading {
@@ -122,7 +154,7 @@ export type UsageReadingRow = DerivedUsageReading & {
  */
 export async function listDeviceUsage(
   actor: Actor, deviceId: string,
-): Promise<{ items: UsageReadingRow[]; summary: UsageSummary } | null> {
+): Promise<{ items: UsageReadingRow[]; summary: UsageSummary; truncated: boolean } | null> {
   authorize(actor, 'view_records', 'maintenance')
 
   return withTransaction(actor.id, async (tx) => {
@@ -156,7 +188,10 @@ export async function listDeviceUsage(
       createdByName: r.created_by_name,
     }))
 
-    return { items, summary: summarizeUsage(derived) }
+    // Exactly full means the cap may have cut the series short — and a dropped
+    // prefix can hide a reset boundary, which silently downgrades the lifetime
+    // figure from a marked floor to an unmarked wrong number. See MAX_SERIES_ROWS.
+    return { items, summary: summarizeUsage(derived), truncated: rows.length === MAX_SERIES_ROWS }
   })
 }
 
@@ -175,23 +210,63 @@ const summariesSchema = z.object({
 export type UsageSummariesFilter = z.input<typeof summariesSchema>
 
 /**
- * Per-device usage summaries for the Maintenance module surface, most recently
- * read first.
+ * How many devices one call will examine, regardless of the display `limit`.
+ *
+ * `resetsOnly` cannot be applied in SQL — "has a reset" is not a fact any column
+ * holds — so the filter has to run over DERIVED summaries, which means deriving
+ * more devices than are displayed. This is what bounds that: the scan is capped
+ * here, the page is cut from the scan's result, and `scanComplete` says whether
+ * the two are the same population.
+ */
+const MAX_SUMMARY_SCAN_DEVICES = 500
+
+export type UsageSummaryPage = {
+  /** The devices to display: filtered, then cut to `limit`. */
+  items: DeviceUsageSummary[]
+  /** How many devices matched the filter within the scan — the honest table total. */
+  total: number
+  /** How many devices were examined. */
+  scanned: number
+  /** False when the device scan hit its cap, so `total` is itself a floor. */
+  scanComplete: boolean
+  /** Devices with a detected reset, within the scan and BEFORE `resetsOnly`. */
+  devicesWithResets: number
+}
+
+/**
+ * Per-device usage summaries for the usage register, most recently read first.
  *
  * `today` is a parameter (defaulted, never captured at module scope) so the
- * aging figures are testable — the house rule for date logic, the same shape the
- * domain modules take.
+ * aging figures are testable — the house rule for date logic.
  *
- * TWO QUERIES, DELIBERATELY. The first picks the devices to report on; the
- * second loads THOSE devices' complete series so the derivation obeys the
- * whole-series rule. A single query with a LIMIT over readings would page the
- * input to the derivation, which is exactly the mistake the module header warns
- * about. `resetsOnly` filters the DERIVED result rather than the SQL, because
- * "has a reset" is not a fact any column holds.
+ * ═══ WHY THIS RETURNS COUNTS AND NOT JUST ROWS ═══
+ *
+ * An earlier version returned a bare array and let the page render its own
+ * headline tiles from a SEPARATE query. That produced two numbers on one screen
+ * that disagreed and nothing saying which was right: a tile counting every
+ * device with readings, above a table silently cut to 50, and a reset tile
+ * counted over the whole table beside a filtered list showing fewer. Both
+ * numbers were individually defensible and the pair was misinformation.
+ *
+ * So one call now answers the whole screen. The tiles and the table come from
+ * the SAME scan, `total` describes the filter that produced `items`, and
+ * `scanComplete` marks the one case where `total` is itself only a floor.
+ *
+ * ORDER OF OPERATIONS, and it is the fix for the second half of that defect:
+ * the scan cap applies to DEVICES, then summaries are derived, THEN `resetsOnly`
+ * filters, THEN the display limit cuts. Filtering after the display limit — the
+ * original bug — meant asking for "devices with a reset" returned only those
+ * that happened to fall inside the first 50 by recency, which is not the
+ * question that was asked.
+ *
+ * TWO QUERIES, DELIBERATELY. The first picks the devices; the second loads THOSE
+ * devices' complete series so the derivation obeys the whole-series rule. A
+ * single query with a LIMIT over readings would page the input to the
+ * derivation, which is the mistake the module header warns about.
  */
 export async function listDeviceUsageSummaries(
   actor: Actor, filter: UsageSummariesFilter = {}, today: Date = new Date(),
-): Promise<DeviceUsageSummary[]> {
+): Promise<UsageSummaryPage> {
   authorize(actor, 'view_records', 'maintenance')
   const f = summariesSchema.parse(filter)
 
@@ -203,8 +278,10 @@ export async function listDeviceUsageSummaries(
                  FROM usage_record GROUP BY device_id) u ON u.device_id = d.id
         WHERE d.deleted_at IS NULL
         ORDER BY u.latest DESC, d.id DESC
-        LIMIT $1`, [f.limit])
-    if (devices.length === 0) return []
+        LIMIT $1`, [MAX_SUMMARY_SCAN_DEVICES])
+    if (devices.length === 0) {
+      return { items: [], total: 0, scanned: 0, scanComplete: true, devicesWithResets: 0 }
+    }
 
     const { rows } = await tx.query<UsageRow & { device_id: string }>(
       `SELECT id, device_id, recorded_on::text AS recorded_on, cumulative_sessions, created_at
@@ -218,7 +295,7 @@ export async function listDeviceUsageSummaries(
       else byDevice.set(r.device_id, [toReading(r)])
     }
 
-    const out = devices.map((d) => {
+    const all = devices.map((d) => {
       const summary = summarizeUsage(byDevice.get(d.id) ?? [])
       return {
         ...summary,
@@ -228,46 +305,52 @@ export async function listDeviceUsageSummaries(
       }
     })
 
-    return f.resetsOnly ? out.filter((s) => s.hasReset) : out
+    // Counted before the filter, so the tile describes the population rather
+    // than the current view — and so switching the filter never changes it.
+    const devicesWithResets = all.filter((s) => s.hasReset).length
+    const matching = f.resetsOnly ? all.filter((s) => s.hasReset) : all
+
+    return {
+      items: matching.slice(0, f.limit),
+      total: matching.length,
+      scanned: all.length,
+      scanComplete: devices.length < MAX_SUMMARY_SCAN_DEVICES,
+      devicesWithResets,
+    }
   })
 }
 
-/** Headline counts for the Maintenance landing. Derived, never stored. */
+/**
+ * Cheap headline counts for the Maintenance landing.
+ *
+ * TWO SQL AGGREGATES AND NOTHING ELSE. An earlier version also reported
+ * `devicesWithResets`, which cannot be counted in SQL — "has a reset" is derived
+ * — so it loaded EVERY row of `usage_record` into JS and derived each device's
+ * series. On `/maintenance`, which is every maintenance user's landing page.
+ * That is precisely the unbounded page-render fetch `MAX_SERIES_ROWS` exists to
+ * prevent, committed on the busier of the two pages, and on the usage register
+ * it read the whole history a second time for tiles the register had already
+ * derived.
+ *
+ * The reset count now comes from `listDeviceUsageSummaries`, which is bounded
+ * and already holds the derived summaries the register renders. The landing tile
+ * asks this function only for what an index can answer.
+ */
 export type UsageOverview = {
   deviceCount: number
   readingCount: number
-  devicesWithResets: number
 }
 
 export async function getUsageOverview(actor: Actor): Promise<UsageOverview> {
   authorize(actor, 'view_records', 'maintenance')
 
   return withTransaction(actor.id, async (tx) => {
-    const { rows: totals } = await tx.query<{ device_count: string; reading_count: string }>(
+    const { rows } = await tx.query<{ device_count: string; reading_count: string }>(
       `SELECT count(DISTINCT device_id)::text AS device_count, count(*)::text AS reading_count
          FROM usage_record`)
-
-    // "Has a reset" is derived, so it cannot be counted in SQL. Load the reading
-    // series (id-free projection — only the shape the domain needs) and count in
-    // JS, which is also this repo's house rule: flat selects + JS reduce.
-    const { rows } = await tx.query<UsageRow & { device_id: string }>(
-      `SELECT id, device_id, recorded_on::text AS recorded_on, cumulative_sessions, created_at
-         FROM usage_record`)
-    const byDevice = new Map<string, UsageReading[]>()
-    for (const r of rows) {
-      const list = byDevice.get(r.device_id)
-      if (list) list.push(toReading(r))
-      else byDevice.set(r.device_id, [toReading(r)])
-    }
-    let devicesWithResets = 0
-    for (const series of byDevice.values()) {
-      if (deriveUsageSeries(series).some((x) => x.isReset)) devicesWithResets += 1
-    }
-
     return {
-      deviceCount: Number(totals[0].device_count),
-      readingCount: Number(totals[0].reading_count),
-      devicesWithResets,
+      deviceCount: Number(rows[0].device_count),
+      readingCount: Number(rows[0].reading_count),
     }
   })
 }
@@ -350,20 +433,35 @@ export type RecordUsageResult = {
  * recording or start lying to the form. So the classification is RETURNED for
  * the UI to surface, and the row is written either way.
  *
+ * A READING DATED IN THE FUTURE IS REFUSED, and that is not the same judgement.
+ * A non-monotonic reading is a real observation of a real counter; a future
+ * reading is a domain impossibility — nobody read a counter tomorrow — and on an
+ * append-only table it is uncorrectable. See `isFutureReadingDate`. The database
+ * holds the same rule (`fn_usage_record_insert_guard`) and is the actual
+ * boundary, binding the import/api writers that will never come through this
+ * schema; the check here exists so the ordinary path fails with a usable
+ * sentence instead of a raw constraint violation.
+ *
  * `recorded_on` defaults to today when the caller doesn't supply one; an
- * explicit date is preserved, because a logbook is often typed up days later.
- * `entered_by` defaults to the acting user but is separable, since the person
- * who read the counter in the field is frequently not the person at the keyboard
- * (see the column's COMMENT).
+ * explicit PAST date is preserved, because a logbook is often typed up days
+ * later. `entered_by` defaults to the acting user but is separable, since the
+ * person who read the counter in the field is frequently not the person at the
+ * keyboard (see the column's COMMENT).
  */
 export async function recordUsage(
-  actor: Actor, input: RecordUsageInput,
+  actor: Actor, input: RecordUsageInput, today: Date = new Date(),
 ): Promise<RecordUsageResult> {
   // Ahead of the connection, deliberately — the ordering `prepareStatusChange`
   // exists to protect in Manufacturing, and the reason a permission failure must
   // never depend on the database being reachable.
   authorize(actor, 'log_usage_service', 'maintenance')
   const data = recordSchema.parse(input)
+
+  // Ahead of the connection too — a date nobody could have read is not worth a
+  // round trip, and the caller gets a sentence rather than a constraint name.
+  if (data.recordedOn && isFutureReadingDate(data.recordedOn, today)) {
+    throw new UsageDateInFutureError(data.recordedOn)
+  }
 
   return withTransaction(actor.id, async (tx) => {
     await assertDeviceLive(tx, data.deviceId)
@@ -381,7 +479,12 @@ export async function recordUsage(
     // differ from the `isReset` flag the row later displays. That is a property
     // of backdating, not a defect: the stored row is identical either way, and
     // the displayed flag is always re-derived from the full series.
-    const series = deriveUsageSeries(await loadSeries(tx, data.deviceId))
+    //
+    // MAX_SERIES_ROWS truncation cannot affect this: the cap keeps the NEWEST
+    // rows and the comparison is against the newest, so the flag it would drop
+    // is never the one being computed here.
+    const { readings } = await loadSeries(tx, data.deviceId)
+    const series = deriveUsageSeries(readings)
     const previous = series[series.length - 1]?.cumulativeSessions ?? null
 
     const { rows } = await tx.query<{ id: string }>(
