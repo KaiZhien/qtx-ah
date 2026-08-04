@@ -16,6 +16,7 @@ describe('buildHandoffNotification', () => {
       deviceSn: 'SN-00042', pcbaASnLegacy: null,
       fromStatus: 'ready_for_delivery', toStatus: 'shipped',
       reason: null, changedByName: 'Wei Chen', module: 'logistics',
+      taskId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     })
     expect(n.category).toBe('status_handoff')
     expect(n.title).toContain('SN-00042')
@@ -24,7 +25,13 @@ describe('buildHandoffNotification', () => {
     expect(n.body).toContain('Wei Chen')
     expect(n.entityType).toBe('device')
     expect(n.entityId).toBe('dddddddd-dddd-dddd-dddd-dddddddddddd')
-    expect(n.url).toContain('dddddddd-dddd-dddd-dddd-dddddddddddd')
+    // THE LINK IS THE TASK, NOT THE DEVICE, and this assertion is the regression guard.
+    // `module` selects an audience holding the RECEIVING department's access (logistics),
+    // but /manufacturing/devices/[id] calls notFound() without view_records in MANUFACTURING
+    // — so linking the device notifies exactly the people who then 404 on the click.
+    expect(n.url).toBe('/tasks/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    expect(n.url).not.toContain('manufacturing')
+    expect(n.url).not.toContain('dddddddd-dddd-dddd-dddd-dddddddddddd')
   })
 
   it('falls back to the legacy PCBA serial, then to the id, when there is no SN', () => {
@@ -33,6 +40,7 @@ describe('buildHandoffNotification', () => {
       deviceId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
       deviceSn: null, pcbaASnLegacy: 'PCBA-9', fromStatus: 'a', toStatus: 'b',
       reason: null, changedByName: 'X', module: 'logistics',
+      taskId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     })
     expect(pcba.title).toContain('PCBA-9')
 
@@ -40,6 +48,7 @@ describe('buildHandoffNotification', () => {
       deviceId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
       deviceSn: null, pcbaASnLegacy: null, fromStatus: 'a', toStatus: 'b',
       reason: null, changedByName: 'X', module: 'logistics',
+      taskId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     })
     expect(bare.title).toContain('dddddddd')
   })
@@ -49,6 +58,7 @@ describe('buildHandoffNotification', () => {
       deviceId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
       deviceSn: 'SN-1', pcbaASnLegacy: null, fromStatus: 'a', toStatus: 'b',
       reason: 'Customer pulled the order forward', changedByName: 'X', module: 'logistics',
+      taskId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     })
     expect(n.body).toContain('Customer pulled the order forward')
   })

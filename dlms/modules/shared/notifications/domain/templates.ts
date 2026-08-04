@@ -60,6 +60,20 @@ export type HandoffNotificationContext = {
   reason: string | null
   changedByName: string
   /**
+   * The handoff task the SAME transaction just created, and the only safe link target.
+   *
+   * The obvious destination is the device page, and it is wrong: `module` below selects an
+   * audience holding the RECEIVING department's access (logistics), while
+   * /manufacturing/devices/[id] calls notFound() without `view_records` in MANUFACTURING.
+   * So linking the device notifies exactly the people who then 404 on the click — the
+   * branch's own fixture is that user, a logistics manager with ['logistics','tasks'].
+   *
+   * /tasks/[id] is reachable by the audience the gate already selected, and points at the
+   * queue item this event actually created. createTaskInTx returns the id for this reason;
+   * do not discard it again.
+   */
+  taskId: string
+  /**
    * The RECEIVING module — the handoff template's own `module`, not 'manufacturing'.
    *
    * A device is a manufacturing record, but a handoff is addressed to the department the
@@ -103,7 +117,9 @@ export function buildHandoffNotification(
     entityType: 'device',
     entityId: ctx.deviceId,
     module: ctx.module,
-    url: `/manufacturing/devices/${ctx.deviceId}`,
+    // The TASK, not the device — see `taskId` above. entityType stays 'device' because the
+    // notification is ABOUT a device; only the click target has to respect the audience.
+    url: `/tasks/${ctx.taskId}`,
   }
 }
 

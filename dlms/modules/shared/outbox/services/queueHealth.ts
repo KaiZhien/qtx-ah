@@ -41,34 +41,50 @@ export type QueueHealth = {
 }
 
 /**
- * Reads all three in ONE round trip.
+ * Probes for the table, THEN counts — deliberately two statements, not one.
  *
- * `to_regclass` guards the case that actually happens on this project: the outbox
- * migration is committed but not yet applied to cloud. Querying `outbox` directly would
- * make both consumers report a hard failure on a deployment whose database is perfectly
- * fine — so a missing table returns **null** (UNKNOWN), never zeros. Zero is the reading
- * an operator stands down on, and it would be false. Same discipline as
- * `DrainResult.parked`.
+ * The obvious single-statement form wraps each count in
+ * `CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE (SELECT …) END`
+ * and DOES NOT WORK. `to_regclass` is a runtime function, but `FROM outbox` is resolved
+ * at PARSE-ANALYSIS — before any CASE branch is evaluated — so a missing table raises
+ * `relation "outbox" does not exist` and the guard never runs. Reproduce it with:
+ *
+ *   SELECT CASE WHEN to_regclass('public.zzz') IS NULL THEN NULL
+ *               ELSE (SELECT count(*) FROM zzz) END;   -- ERROR, not NULL
+ *
+ * That is not a hypothetical: the outbox migration is committed and NOT YET APPLIED to
+ * cloud, so on the next deploy this is the live path. The single-statement version made
+ * `/api/health` answer 503 "database unreachable" on a database that was perfectly fine —
+ * turning the diagnostic into the thing needing diagnosis, which is precisely what this
+ * function exists to avoid.
+ *
+ * A missing table returns **null** (UNKNOWN), never zeros. Zero is the reading an operator
+ * stands down on, and it would be false. Same discipline as `DrainResult.parked`.
  *
  * Throws only if the database itself is unreachable; each caller decides what that means
  * (the health route reports `degraded`; the dashboard renders the widget as unavailable).
  */
 export async function getQueueHealth(): Promise<QueueHealth | null> {
-  const { rows } = await getPool().query<{
-    unprocessed: number | null; parked: number | null; oldest: Date | null
+  const pool = getPool()
+
+  // Statement 1: does the table exist? Names it as a STRING, so nothing is parse-resolved.
+  const probe = await pool.query<{ present: boolean }>(
+    `SELECT to_regclass('public.outbox') IS NOT NULL AS present`)
+  if (!probe.rows[0]?.present) return null
+
+  // Statement 2: only reached once the table is known to exist.
+  const { rows } = await pool.query<{
+    unprocessed: number; parked: number; oldest: Date | null
   }>(
     `SELECT
-       CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE
-         (SELECT count(*)::int FROM outbox WHERE processed_at IS NULL) END AS unprocessed,
-       CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE
-         (SELECT count(*)::int FROM outbox
-           WHERE processed_at IS NULL AND attempts >= $1) END AS parked,
-       CASE WHEN to_regclass('public.outbox') IS NULL THEN NULL ELSE
-         (SELECT min(occurred_at) FROM outbox WHERE processed_at IS NULL) END AS oldest`,
+       count(*) FILTER (WHERE processed_at IS NULL)::int AS unprocessed,
+       count(*) FILTER (WHERE processed_at IS NULL AND attempts >= $1)::int AS parked,
+       min(occurred_at) FILTER (WHERE processed_at IS NULL) AS oldest
+     FROM outbox`,
     [MAX_ATTEMPTS])
 
   const row = rows[0]
-  if (!row || row.unprocessed === null || row.parked === null) return null
+  if (!row) return null
   return {
     unprocessed: row.unprocessed,
     parked: row.parked,

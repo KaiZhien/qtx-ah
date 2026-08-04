@@ -270,7 +270,10 @@ async function handleEvent(
       changedByName: row.caused_by_name,
     }
     const handoff = buildHandoffTask(payload.taskTemplateKey, context)
-    await createTaskInTx(tx, system, {
+    // taskId is LOAD-BEARING, not decoration: it becomes the notification's link target,
+    // because the device page 404s for the very audience notify_roles selects. See
+    // HandoffNotificationContext.taskId.
+    const { taskId } = await createTaskInTx(tx, system, {
       title: handoff.title,
       description: handoff.description,
       priority: handoff.priority,
@@ -282,7 +285,7 @@ async function handleEvent(
     // so the audience is who holds the role when the news is delivered, and gated on the
     // handoff's own module so the notification and the task agree about who is entitled to
     // hear about this event. The causer is excluded — nobody needs telling what they just did.
-    const content = buildHandoffNotification({ ...context, module: handoff.module })
+    const content = buildHandoffNotification({ ...context, module: handoff.module, taskId })
     const recipients = await resolveRoleRecipients(
       tx, payload.notifyRoles, handoff.module, row.created_by)
     return fanOutInTx(tx, system, recipients, content)
