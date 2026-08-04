@@ -52,6 +52,11 @@ const hitIds = (r: { groups: { key: string; hits: { id: string }[] }[] }, key: s
   r.groups.find((g) => g.key === key)?.hits.map((h) => h.id) ?? []
 
 beforeAll(async () => {
+  // The service under test opens its OWN connection through getPool(), which
+  // reads DATABASE_URL. Without this line the pool falls back to libpq defaults
+  // and tries to open a database named after the OS user; only this file's own
+  // `db` client would reach the test container.
+  process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await db.connect()
 

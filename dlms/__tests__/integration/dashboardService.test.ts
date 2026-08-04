@@ -13,9 +13,10 @@
 // device statuses resolved from status_option rather than hardcoded, aging
 // computed from the CURRENT state's entry time, and every returned value
 // JSON-safe so a cache hit cannot differ in shape from a cache miss.
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
+import { resetIncrementalCache } from './incrementalCache'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { Actor, ModuleKey, Permission } from '@/modules/shared/authz/catalog'
 import { dashboardCacheKey } from '@/modules/shared/reporting/domain/cacheKey'
@@ -58,6 +59,11 @@ const makeUser = async (email: string, name: string) =>
      RETURNING id`, [email, name])).rows[0].id
 
 beforeAll(async () => {
+  // The service under test opens its OWN connection through getPool(), which
+  // reads DATABASE_URL. Without this line the pool falls back to libpq defaults
+  // and tries to open a database named after the OS user; only this file's own
+  // `db` client would reach the test container.
+  process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
   db = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await db.connect()
 
@@ -77,6 +83,13 @@ beforeAll(async () => {
     `INSERT INTO buyer (name, created_by, updated_by) VALUES ($1, $2, $2) RETURNING id`,
     [`${TOK} Buyer`, alice])).rows[0].id
 })
+
+// `unstable_cache` really caches here (see __tests__/integration/incrementalCache.ts),
+// which is the point: the isolation tests below need a LIVE cache to prove the key
+// separates two actors. It must not survive between tests, though — a data test that
+// inserts a row and re-reads the widget as the same actor would otherwise be handed
+// the pre-insert entry and assert against it. Cleared between tests, live inside one.
+beforeEach(() => { resetIncrementalCache() })
 
 afterAll(async () => {
   await db.query(`DELETE FROM task_link WHERE task_id = ANY($1::uuid[])`, [createdTaskIds])
@@ -131,8 +144,9 @@ describe('the Home task widget honours the two-gate visibility rule', () => {
       [`Chase overdue payment LEAK-${TOK} — ${TOK} Buyer`, priya, dana])).rows[0].id
     createdTaskIds.push(leakyTaskId)
     await db.query(
-      `INSERT INTO task_link (task_id, entity_type, entity_id, module)
-       VALUES ($1, 'sales_invoice', $2, 'finance')`, [leakyTaskId, invoiceId])
+      // created_by is NOT NULL on task_link (20260719000000_platform_tasks.sql:59).
+      `INSERT INTO task_link (task_id, entity_type, entity_id, module, created_by)
+       VALUES ($1, 'sales_invoice', $2, 'finance', $3)`, [leakyTaskId, invoiceId, dana])
 
     // A control: same assignee, no link at all, so nothing about it is gated.
     plainTaskId = (await db.query<{ id: string }>(
@@ -300,10 +314,14 @@ describe('devices by status — resolved from the vocabulary, never hardcoded', 
       [`DASH-${TOK}-1`, variantId, s.code, alice])).rows[0].id
     createdDeviceIds.push(id)
 
-    // A different actor, so this reads a fresh cache entry rather than Bob's.
-    const after = (await getDevicesByStatus(base(alice, { id: bob })))
+    // A DIFFERENT actor, so this is a fresh cache entry rather than Bob's. The
+    // original read this back as `base(alice, { id: bob })` — whose `id` override
+    // makes it Bob again, so it was a guaranteed cache hit on the pre-insert
+    // answer, and `>= before` then held for the one reason the test was written
+    // to rule out. With a genuinely different key the count has to move.
+    const after = (await getDevicesByStatus(base(alice)))
       .find((r) => r.code === s.code)!.count
-    expect(after).toBeGreaterThanOrEqual(before)
+    expect(after).toBe(before + 1)
   })
 
   it('returns JSON-safe values only, so a cache hit matches a cache miss', async () => {
