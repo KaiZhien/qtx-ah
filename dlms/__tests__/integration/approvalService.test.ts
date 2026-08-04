@@ -157,6 +157,18 @@ const outboxFor = async (approvalId: string) => (await db.query<{
   created_by: string; processed_at: Date | null; attempts: number; last_error: string | null
 }>(`SELECT * FROM outbox WHERE aggregate_id = $1`, [approvalId])).rows
 
+/**
+ * Notifications ABOUT one approval, in one category. Scoped to the approval this test
+ * created — the shared integration database is not rolled back between runs, so a bare
+ * `SELECT … FROM notification` would count another file's rows and last run's too.
+ */
+const notificationsAbout = async (approvalId: string, category: string) => (await db.query<{
+  user_id: string; category: string; title: string; body: string; url: string
+}>(
+  `SELECT user_id, category, title, body, url FROM notification
+    WHERE entity_type = 'approval' AND entity_id = $1 AND category = $2
+    ORDER BY created_at`, [approvalId, category])).rows
+
 const tasksLinkedTo = async (entityId: string) => (await db.query<{
   id: string; title: string; description: string; department: string | null
   priority: string; status: string; entity_type: string; module: string
@@ -199,6 +211,18 @@ afterAll(async () => {
     }
   }
   if (createdApprovalIds.length) {
+    // Notifications first: the drain now fans BOTH approval families out, and a
+    // notification row carries created_by -> app_user, so it outlives its approval and
+    // would be counted by the next run's assertions.
+    const { rows: notificationIds } = await db.query<{ id: string }>(
+      `SELECT id FROM notification WHERE entity_type = 'approval' AND entity_id = ANY($1)`,
+      [createdApprovalIds])
+    if (notificationIds.length) {
+      const ids = notificationIds.map((r) => r.id)
+      await db.query(`DELETE FROM notification WHERE id = ANY($1)`, [ids])
+      await db.query(
+        `DELETE FROM audit_log WHERE table_name='notification' AND row_id = ANY($1)`, [ids])
+    }
     const { rows: outboxIds } = await db.query<{ id: string }>(
       `SELECT id FROM outbox WHERE aggregate_id = ANY($1)`, [createdApprovalIds])
     await db.query(`DELETE FROM outbox WHERE aggregate_id = ANY($1)`, [createdApprovalIds])
@@ -983,6 +1007,176 @@ describe('decideApproval', () => {
     expect(rows[1].changed_columns).toEqual(
       expect.arrayContaining(['status', 'decided_by', 'decided_at', 'version']))
   })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * The DECISION's outbox event — the producer RB-09 specified and the notifications slice
+ * could not write, because this file belonged to another agent at the time.
+ *
+ * The consumer has been built and proven end to end since
+ * (__tests__/integration/notificationService.test.ts): the drain notifies the requester
+ * and creates NO task. What is asserted here is the half that was missing, and
+ * specifically the property that makes the outbox worth having at all — the event and the
+ * decision it describes are ONE transaction. An emit that committed separately would
+ * reintroduce exactly the at-least-once/at-most-once bug the pattern exists to prevent: a
+ * decision nobody is told about, or a notification for a decision that rolled back.
+ */
+describe('decideApproval — the decision and its outbox event are ONE transaction', () => {
+  const pending = async () => {
+    const invoice = await makeInvoice()
+    const { approvalId } = await requestInvoiceApproval(requester(), invoice)
+    return { invoice, approvalId }
+  }
+
+  /** The events this file's requests produce, split by family. */
+  const decidedEvents = async (approvalId: string) =>
+    (await outboxFor(approvalId)).filter((e) => e.event_type === 'approval_decided')
+
+  it('emits approval_decided, carrying the REQUESTER as the recipient', async () => {
+    const { invoice, approvalId } = await pending()
+    await decideApproval(approver(), {
+      approvalId, decision: 'rejected', note: 'Line 3 tax code is wrong' })
+
+    const events = await decidedEvents(approvalId)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      aggregate_type: 'approval', event_type: 'approval_decided',
+      processed_at: null, attempts: 0,
+      // The CAUSE is the decider — which is why the payload has to name the requester
+      // separately. Unlike the other two families, causer and audience differ here.
+      created_by: approverId,
+    })
+    expect(events[0].payload).toMatchObject({
+      kind: 'invoice', module: 'finance',
+      entityType: 'sales_invoice', entityId: invoice.id,
+      decision: 'rejected', note: 'Line 3 tax code is wrong',
+      requestedBy: requesterId,
+    })
+  })
+
+  it('carries the TRIMMED note, and null for an approval with none', async () => {
+    const { approvalId } = await pending()
+    await decideApproval(approver(), { approvalId, decision: 'approved' })
+    expect((await decidedEvents(approvalId))[0].payload).toMatchObject({
+      decision: 'approved', note: null })
+  })
+
+  /**
+   * Direction one: the EVENT cannot be written, so the decision must not stand either.
+   *
+   * This is also the guard against the emit being wrapped in a try/catch "so a
+   * notification problem never blocks a decision" — a swallowed throw makes decideApproval
+   * succeed here, and the rejects.toThrow fails.
+   *
+   * NOTE what this test canNOT prove on its own: a separately-committing emit ALSO passes
+   * it, because the inner transaction's exception still propagates out of the outer one.
+   * The direction that distinguishes them is below.
+   */
+  it('rolls the DECISION back when the event cannot be written', async () => {
+    const { approvalId } = await pending()
+    await db.query(`
+      CREATE OR REPLACE FUNCTION test_block_decision_event() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$ BEGIN
+        RAISE EXCEPTION 'simulated crash between the decision and its outbox event';
+      END $fn$`)
+    // Scoped to the DECIDED event only: the request's own event was written before this
+    // installs, but a broader trigger would break the retry at the end of the test.
+    await db.query(`
+      CREATE TRIGGER trg_test_block_decision_event BEFORE INSERT ON outbox
+        FOR EACH ROW WHEN (NEW.event_type = 'approval_decided')
+        EXECUTE FUNCTION test_block_decision_event()`)
+    try {
+      await expect(decideApproval(approver(), { approvalId, decision: 'approved' }))
+        .rejects.toThrow(/simulated crash/)
+    } finally {
+      await db.query(`DROP TRIGGER IF EXISTS trg_test_block_decision_event ON outbox`)
+      await db.query(`DROP FUNCTION IF EXISTS test_block_decision_event()`)
+    }
+
+    // Still pending, still version 1, still decidable — nothing was half-written.
+    expect(await approvalRow(approvalId)).toMatchObject({
+      status: 'pending', decided_by: null, decided_at: null, version: 1 })
+    expect(await decidedEvents(approvalId)).toEqual([])
+
+    // ...and the record is not wedged: the retry, now unobstructed, succeeds.
+    await decideApproval(approver(), { approvalId, decision: 'approved' })
+    expect(await approvalRow(approvalId)).toMatchObject({ status: 'approved' })
+    expect(await decidedEvents(approvalId)).toHaveLength(1)
+  })
+
+  /**
+   * ═══ THE DIRECTION THAT ACTUALLY PROVES ONE TRANSACTION ═══
+   *
+   * The decision's transaction fails at COMMIT, after both writes have been issued. A
+   * DEFERRABLE INITIALLY DEFERRED constraint trigger is the only way to reach that moment
+   * from a test: it fires when the transaction commits rather than when the row changes,
+   * so both the UPDATE and the INSERT have already happened when it throws.
+   *
+   * An emit on its own connection would have COMMITTED BY THEN and would survive this
+   * rollback — leaving an `approval_decided` event, and therefore a notification to the
+   * requester, describing a decision that never happened. `decideApproval` has no
+   * `…InTx` variant a caller could abort from outside, so this is the only reachable
+   * expression of that failure, and without it "the emit joins the decision's transaction"
+   * is untested: a `withTransaction(actor.id, …)` wrapped around the INSERT passes every
+   * other assertion in this file.
+   */
+  it('leaves NO event behind when the decision’s own transaction fails at COMMIT', async () => {
+    const { approvalId } = await pending()
+    await db.query(`
+      CREATE OR REPLACE FUNCTION test_fail_decision_at_commit() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$ BEGIN
+        RAISE EXCEPTION 'simulated failure at COMMIT, after the decision and its event';
+      END $fn$`)
+    await db.query(`
+      CREATE CONSTRAINT TRIGGER trg_test_fail_decision_at_commit
+        AFTER UPDATE ON approval DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION test_fail_decision_at_commit()`)
+    try {
+      await expect(decideApproval(approver(), { approvalId, decision: 'approved' }))
+        .rejects.toThrow(/simulated failure at COMMIT/)
+    } finally {
+      await db.query(
+        `DROP TRIGGER IF EXISTS trg_test_fail_decision_at_commit ON approval`)
+      await db.query(`DROP FUNCTION IF EXISTS test_fail_decision_at_commit()`)
+    }
+
+    // Neither half survived. The event is the assertion that matters: it is the one an
+    // independently-committing emit would have left behind.
+    expect(await decidedEvents(approvalId)).toEqual([])
+    expect(await approvalRow(approvalId)).toMatchObject({ status: 'pending', version: 1 })
+  })
+
+  /**
+   * Producer meets consumer. Proven separately on both sides already; asserted together
+   * once, because "the wiring is done" is the only claim neither half can make alone.
+   *
+   * The REQUEST is drained first so this test can tell the two families apart: the
+   * request's event creates a task, the decision's must create none.
+   */
+  it('becomes a notification for the requester, and NO further task, once drained',
+    async () => {
+      const { invoice, approvalId } = await pending()
+      await drainOutbox()
+      const tasksFromTheRequest = await tasksLinkedTo(approvalId)
+      expect(tasksFromTheRequest).toHaveLength(1)
+
+      await decideApproval(approver(), {
+        approvalId, decision: 'rejected', note: 'Re-issue at 9,000.' })
+      expect(await notificationsAbout(approvalId, 'approval_decided')).toHaveLength(0)
+
+      await drainOutbox()
+
+      const decided = await notificationsAbout(approvalId, 'approval_decided')
+      expect(decided).toHaveLength(1)
+      expect(decided[0].user_id).toBe(requesterId)
+      expect(decided[0].title.toLowerCase()).toContain('rejected')
+      expect(decided[0].body).toContain('Re-issue at 9,000.')
+
+      // NO SECOND TASK. The decision is the end of the work, not the start of some.
+      expect(await tasksLinkedTo(approvalId)).toHaveLength(1)
+      expect(await tasksLinkedTo(invoice.id)).toHaveLength(1)
+    })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════

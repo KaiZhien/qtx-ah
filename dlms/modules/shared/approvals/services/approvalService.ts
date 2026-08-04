@@ -463,10 +463,16 @@ export async function decideApproval(
   const data = prepareDecision(actor, input)
 
   return withTransaction(actor.id, async (tx) => {
+    // `kind`, `entity_type` and `entity_id` are read for the outbox event below, not for
+    // the decision itself — the drain's payload must be self-contained (see the outbox
+    // table's COMMENT) so it never re-reads an approval that has since changed. Taken
+    // under the SAME `FOR UPDATE` rather than in a second statement: they are immutable on
+    // a pending approval (trg_approval_guard), and reading them here costs nothing.
     const { rows } = await tx.query<{
       status: ApprovalStatus; requested_by: string; module: ModuleKey
+      kind: ApprovalKind; entity_type: string; entity_id: string
     }>(
-      `SELECT status, requested_by, module FROM approval
+      `SELECT status, requested_by, module, kind, entity_type, entity_id FROM approval
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.approvalId])
     if (rows.length === 0) throw new ApprovalNotFoundError(data.approvalId)
     const current = rows[0]
@@ -498,6 +504,44 @@ export async function decideApproval(
       throw new ApprovalDecisionError(
         'already_decided', messageForDecisionError('already_decided'))
     }
+
+    // Transactional outbox, the DECIDED half — the mirror of requestApprovalInTx's emit
+    // above, and it must stay in THIS transaction for the same reason.
+    //
+    // The drain's exactly-once property comes from the notification insert and the
+    // `processed_at` stamp sharing one transaction (RB-09). An emit that committed
+    // separately from the decision it describes would reintroduce precisely the bug the
+    // outbox exists to prevent, in one of two directions depending on which commit landed
+    // first: a decision nobody is ever told about, or a notification announcing a decision
+    // that then rolled back. `withTransaction` takes a fresh pooled connection per call,
+    // so "just call a notify service here" is exactly that mistake.
+    //
+    // NO TASK COMES OF THIS — the drain deliberately creates none, because the decision is
+    // the end of the work rather than the start of some — and a requester who has since
+    // been deactivated is not an error either: there is simply nobody left to tell, and the
+    // event is stamped processed. Both are the consumer's behaviour and are already pinned.
+    //
+    // `requestedBy` is the one field the other two families do not need. For a request and
+    // a handoff the audience IS `created_by`, resolved at drain time; for a decision the
+    // causer and the audience are different people, so the recipient must be named.
+    //
+    // `label` is null: the FOR UPDATE above deliberately does not read `snapshot`, and the
+    // consumer's recordLabel already falls back to "<entity type> <short id>" rather than
+    // rendering "null". Carrying the snapshot label would be a nicer sentence and a fourth
+    // column; RB-09 specifies this shape and the consumer was built against it.
+    await tx.query(
+      `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload, created_by)
+       VALUES ('approval', $1, 'approval_decided', $2::jsonb, $3)`,
+      [data.approvalId, JSON.stringify({
+        kind: current.kind,
+        module: current.module,
+        entityType: current.entity_type,
+        entityId: current.entity_id,
+        label: null,
+        decision: data.decision,
+        note: data.note,
+        requestedBy: current.requested_by,
+      }), actor.id])
 
     return { status: data.decision, version: updated[0].version }
   })
