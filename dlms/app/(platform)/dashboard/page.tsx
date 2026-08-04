@@ -11,7 +11,7 @@ import {
   getDevicesByStatus, getDevicesByVariant, getImportsAwaitingConfirm,
   getActiveRepairsByState, getRepairsByRootCause, getDeliveriesDueThisWeek,
   getInvoicesPendingApproval, getUnpaidInvoices,
-  getUserActivity, getFailedLogins,
+  getUserActivity, getFailedLogins, getJobQueueHealth,
 } from '@/modules/shared/reporting/services/dashboardService'
 
 const SECTION_LABELS: Record<string, string> = {
@@ -310,6 +310,34 @@ async function Widget({ actor, def }: { actor: Actor; def: DashboardWidgetDef })
             <Big n={d.last24h} label="last 24h" />
             <Big n={d.last7d} label="last 7 days" />
           </div>
+        </Card>
+      )
+    }
+
+    case 'jobQueueHealth': {
+      const d = await getJobQueueHealth(actor)
+      if (d === null) {
+        // null is UNKNOWN, never zero — the outbox table is absent. Zero is the
+        // reading an operator stands down on, and it would be false.
+        return (
+          <Card title={def.label}>
+            <p className="text-sm text-slate-500">
+              Unavailable — the outbox table is not present in this database.
+            </p>
+          </Card>
+        )
+      }
+      return (
+        <Card title={def.label}>
+          <Big n={d.unprocessed} label="unprocessed events" />
+          {/* Nested, not adjacent: parked is a SUBSET of unprocessed, and two
+              totals side by side read as though the backlog were their sum. */}
+          <p className="mt-1 text-xs text-slate-500">of which {d.parked} parked</p>
+          <p className="mt-2 text-sm text-slate-600">
+            {d.oldestUnprocessedAt
+              ? `Oldest queued ${new Date(d.oldestUnprocessedAt).toLocaleString()}`
+              : 'Queue empty'}
+          </p>
         </Card>
       )
     }

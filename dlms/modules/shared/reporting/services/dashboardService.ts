@@ -10,9 +10,11 @@ import {
   ACTIVE_REPAIR_STATUSES, OPEN_DO_STATUSES, UNPAID_INVOICE_STATUSES,
 } from '../domain/activeStates'
 import { repairStatusLabel } from '@/modules/maintenance/domain/repairStatus'
+import { getQueueHealth } from '@/modules/shared/outbox/services/queueHealth'
+import { countPendingApprovals } from '@/modules/shared/approvals/services/approvalService'
 import {
-  fetchWarrantyExpiryCounts, fetchRepairsByRootCause, fetchBackupStatus, fetchQueueHealth,
-  type RootCauseCount, type BackupStatus, type QueueHealthView,
+  fetchWarrantyExpiryCounts, fetchRepairsByRootCause, fetchBackupStatus,
+  type RootCauseCount, type BackupStatus,
 } from '../adapters/pendingSources'
 
 /**
@@ -80,59 +82,36 @@ export async function getMyTasksWidget(actor: Actor): Promise<MyTasksWidget> {
   }))
 }
 
-export type MyApprovalsWidget = {
-  pending: number
-  rows: { id: string; kind: string; module: string; requestedAt: string }[]
-}
+export type MyApprovalsWidget = { pending: number }
 
 /**
- * Scoped by the actor's module access exactly as the /approvals page is — a
- * manager who can enter Finance but not Engineering counts only Finance requests.
- * `super_admin` bypasses the module clause, matching `can()`. The
- * `requested_by <> actor` clause is the "nobody decides their own" rule.
+ * "My approvals pending" — delegates to agent APPROVALS' `countPendingApprovals`,
+ * which owns the module scoping.
  *
- * ── TWO NOTES FOR WHOEVER TOUCHES THIS NEXT ────────────────────────────────
+ * ── THREE THINGS TO KNOW BEFORE CHANGING THIS ──────────────────────────────
  *
- * NEVER swap this for `getGoverningApprovalInTx`. Agent APPROVALS added that as
- * an ENFORCEMENT-only read — it takes no actor and runs no `authorize`, because
- * its callers are gates already inside an authorized transaction. It is the
- * obvious-looking helper to reach for here and it would strip the module scoping,
- * leaking Engineering approvals to a Finance-only manager. A dashboard is a
- * DISPLAY read and owes the full scoping.
+ * IT COUNTS WHAT THE QUEUE SHOWS, INCLUDING THE ACTOR'S OWN REQUESTS. That is
+ * their deliberate default and this widget keeps it: a tile linking to /approvals
+ * must not read "3" over a page showing four rows. `excludeOwnRequests: true`
+ * gives the actionable number instead — a different, also-defensible widget, but
+ * then the tile and its destination disagree, so it is not a free change.
  *
- * The count itself should move to `countPendingApprovals(actor)` once agent
- * APPROVALS exports it. It is not called here only because it does not exist on
- * this branch's base and importing it would not compile. The SQL below mirrors
- * `listApprovals`' scoping deliberately, but a shared function is better than a
- * faithful copy — module scoping from outside the owning module is exactly the
- * thing that drifts.
+ * AN EARLIER VERSION OPEN-CODED THIS QUERY HERE. It was replaced rather than kept:
+ * module scoping written outside the owning module is exactly the thing that
+ * drifts, and two implementations of one count is the defect.
+ *
+ * NEVER REACH FOR `getGoverningApprovalInTx`. It is an ENFORCEMENT-only read that
+ * takes no actor and runs no `authorize`, because its callers are gates already
+ * inside an authorized transaction. It is the obvious-looking helper here, and
+ * using it would strip the module scoping — leaking the existence of Engineering
+ * approvals to a Finance-only manager. A dashboard is a DISPLAY read and owes the
+ * full scoping.
  */
 export async function getMyApprovalsWidget(actor: Actor): Promise<MyApprovalsWidget> {
   authorize(actor, 'approve_requests')
-  const modules = [...actor.moduleAccess]
-  const unscoped = actor.roleKey === 'super_admin'
-
-  return withCache(actor, 'myApprovalsPending', () =>
-    withTransaction(actor.id, async (tx) => {
-      const { rows } = await tx.query<{
-        id: string; kind: string; module: string; created_at: string
-      }>(
-        `SELECT a.id, a.kind, a.module, a.created_at::text AS created_at
-           FROM approval a
-          WHERE a.deleted_at IS NULL
-            AND a.status = 'pending'
-            AND a.requested_by <> $1
-            AND ($2::boolean OR a.module = ANY($3::text[]))
-          ORDER BY a.created_at
-          LIMIT 50`, [actor.id, unscoped, modules])
-
-      return {
-        pending: rows.length,
-        rows: rows.slice(0, 5).map((r) => ({
-          id: r.id, kind: r.kind, module: r.module, requestedAt: r.created_at,
-        })),
-      }
-    }))
+  return withCache(actor, 'myApprovalsPending', async () => ({
+    pending: await countPendingApprovals(actor),
+  }))
 }
 
 export type RecentActivityWidget = {
@@ -510,24 +489,49 @@ export async function getFailedLogins(actor: Actor): Promise<FailedLoginsWidget>
   }))
 }
 
+export type JobQueueHealthWidget = {
+  unprocessed: number
+  /** A SUBSET of `unprocessed`. The widget must nest it, never sit it alongside. */
+  parked: number
+  /** ISO string — see below for why this is not a Date. */
+  oldestUnprocessedAt: string | null
+}
+
 /**
- * Job-queue health (spec §8.5 Admin, §13).
+ * Job-queue health (spec §8.5 Admin, §13) — WIRED to agent NOTIFICATIONS'
+ * `getQueueHealth()`, the single definition of outbox depth. `/api/health` calls
+ * that same function, so the dashboard and the health check cannot disagree —
+ * which is exactly how an operator ends up trusting a green health check while a
+ * backlog builds.
  *
- * NOT WIRED — delegates to the adapter, which will call agent NOTIFICATIONS'
- * `getQueueHealth()`. `/api/health` calls that same function, so the dashboard and
- * the health check cannot report different numbers.
+ * An earlier draft computed the depth here from `outbox` with its own literal `5`
+ * for the attempt cap. It was DELETED rather than kept as a fallback: two
+ * implementations of one number is the defect, and a hand-written cap goes
+ * silently wrong the day the drain's `MAX_ATTEMPTS` moves.
  *
- * An earlier draft of this service computed the depth from the `outbox` table
- * here, with its own literal `5` for the attempt cap. That was DELETED rather
- * than kept as a fallback: two implementations of one number is the defect, and a
- * hardcoded cap goes stale silently the day the drain's `MAX_ATTEMPTS` moves.
+ * `null` propagates as UNKNOWN and the widget renders "unavailable", never "0" —
+ * their function returns null when the outbox table is absent, which is a live
+ * case (the migration is committed and not yet applied to cloud). Zero is the
+ * reading an operator stands down on, and it would be false.
  *
- * `null` propagates as UNKNOWN and the widget says "unavailable" — never "0".
+ * `oldestUnprocessedAt` IS CONVERTED TO AN ISO STRING HERE, and that conversion
+ * is load-bearing rather than cosmetic: their function returns a `Date`, and this
+ * result crosses `unstable_cache`, which serialises. A `Date` written on a cache
+ * MISS comes back a `string` on the HIT, so a widget calling a Date method on it
+ * works for sixty seconds and then throws — an intermittent failure that only
+ * reproduces once the cache warms.
  */
-export async function getJobQueueHealth(actor: Actor): Promise<QueueHealthView | null> {
+export async function getJobQueueHealth(actor: Actor): Promise<JobQueueHealthWidget | null> {
   authorize(actor, 'manage_settings', 'admin')
-  return withCache(actor, 'jobQueueHealth', () =>
-    withTransaction(actor.id, (tx) => fetchQueueHealth(tx, actor)))
+  return withCache(actor, 'jobQueueHealth', async () => {
+    const h = await getQueueHealth()
+    if (h === null) return null
+    return {
+      unprocessed: h.unprocessed,
+      parked: h.parked,
+      oldestUnprocessedAt: h.oldestUnprocessedAt?.toISOString() ?? null,
+    }
+  })
 }
 
 /** NOT WIRED — spec §12 backups live on the deferred AWS worker. */

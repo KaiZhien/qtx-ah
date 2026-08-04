@@ -1,5 +1,6 @@
 import {
   Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings, ShieldCheck, LayoutGrid,
+  LayoutDashboard,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -9,6 +10,7 @@ import type { LucideIcon } from 'lucide-react'
 // instead of crashing whichever surface renders it.
 export const MODULE_ICONS: Record<string, LucideIcon> = {
   Wrench, Banknote, Truck, Factory, Hammer, CheckSquare, Settings, ShieldCheck,
+  LayoutDashboard,
 }
 
 export function iconFor(name: string): LucideIcon {

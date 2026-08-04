@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { buildRelationshipsMd } from '@/modules/shared/export/domain/docs'
 import { DASHBOARD_WIDGETS } from '@/modules/shared/reporting/domain/widgets'
 import { SEARCH_GROUPS } from '@/modules/shared/search/domain/searchGroups'
 import { searchHref } from '@/modules/shared/search/domain/searchHref'
@@ -67,33 +70,60 @@ describe('FINANCE contract', () => {
 })
 
 describe('NOTIFICATIONS contract', () => {
-  it('leaves queue health pending on their getQueueHealth, with no duplicate here', () => {
+  it('serves queue health live, from their single definition', () => {
     const w = DASHBOARD_WIDGETS.find((x) => x.key === 'jobQueueHealth')!
-    expect(w.status).toBe('pending')
-    expect(w.pendingOn).toMatch(/getQueueHealth/)
+    expect(w.status).toBe('live')
+    expect(w.pendingOn).toBeUndefined()
+  })
+
+  it('keeps NO second outbox query in the reporting module', () => {
+    // /api/health and this widget must not be able to disagree, so exactly one
+    // place may count the queue — and it is not here. A literal attempt cap would
+    // be the same defect in miniature: MAX_ATTEMPTS belongs to the drain.
+    const src = readFileSync(
+      join(__dirname, '../../../modules/shared/reporting/services/dashboardService.ts'),
+      'utf8')
+    expect(src).toMatch(/getQueueHealth/)
+    expect(src).not.toMatch(/FROM outbox/i)
+    expect(src).not.toMatch(/attempts\s*>=/)
   })
 })
 
-describe('Cross-branch schema changes must not be merged unnoticed', () => {
-  it('flags variant_bom_line, whose effectivity columns change what this exports', () => {
-    // ENGINEERING drops UNIQUE(variant_id, component_type_id) for a partial index
-    // over the open line, so the table starts carrying superseded history. This
-    // CSV would silently grow and manifest.json would report the inflated count as
-    // if it were intended.
-    const bom = EXPORT_ENTITIES.find((e) => e.table === 'variant_bom_line')!
-    expect(bom.pendingSchemaChange).toBeTruthy()
-    expect(bom.pendingSchemaChange).toMatch(/effective_to_date/)
-  })
+describe('ENGINEERING BOM effectivity — the change that silently doubles an export', () => {
+  const bom = EXPORT_ENTITIES.find((e) => e.table === 'variant_bom_line')!
 
-  it('makes every flagged entity say what to do about it', () => {
-    for (const e of EXPORT_ENTITIES.filter((x) => x.pendingSchemaChange)) {
-      expect(e.pendingSchemaChange, `${e.table}`).toMatch(/ACTION AT INTEGRATION/)
+  it('exports the effectivity columns, so history is READABLE not merely present', () => {
+    // UNIQUE(variant_id, component_type_id) is gone, replaced by a partial unique
+    // index over the still-open line, so this table now holds superseded revisions
+    // too. Exporting those rows WITHOUT the columns that mark them as history is
+    // the worst of both worlds: the CSV grows and nothing in it says why.
+    for (const c of ['effective_from_date', 'effective_to_date',
+      'effective_from_serial', 'effective_to_serial',
+      'created_by_eco_id', 'superseded_by_eco_id']) {
+      expect(bom.columns, `missing ${c}`).toContain(c)
     }
   })
 
-  it('flags exactly the entities known to be changing, and no others', () => {
-    // A stale flag is as bad as a missing one — it trains the reader to ignore them.
+  it('orders by effectivity so a variant reads as a chronology', () => {
+    expect(bom.orderBy).toMatch(/effective_from_date/)
+  })
+
+  it('warns in its description that a row count here counts REVISIONS', () => {
+    // manifest.json blesses whatever row count it is given, which is exactly what
+    // makes an inflated one look deliberate.
+    expect(bom.description).toMatch(/effective_to_date IS NULL/)
+    expect(bom.description).toMatch(/REVISIONS/i)
+  })
+
+  it('documents the filter in relationships.md, where an analyst will look', () => {
+    const md = buildRelationshipsMd()
+    expect(md).toMatch(/variant_bom_line/)
+    expect(md).toMatch(/effective_to_serial IS NULL/)
+  })
+
+  it('carries no stale pending-schema flags', () => {
+    // A flag left standing after the change landed trains the reader to ignore them.
     expect(EXPORT_ENTITIES.filter((e) => e.pendingSchemaChange).map((e) => e.table))
-      .toEqual(['variant_bom_line'])
+      .toEqual([])
   })
 })

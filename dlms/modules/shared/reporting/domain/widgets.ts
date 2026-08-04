@@ -93,14 +93,12 @@ export const DASHBOARD_WIDGETS: readonly DashboardWidgetDef[] = [
     permission: 'manage_users', module: 'admin', status: 'live', sort: 40 },
   { key: 'failedLogins', label: 'Failed logins', section: 'admin',
     permission: 'manage_users', module: 'admin', status: 'live', sort: 41 },
+  // Reads getQueueHealth() from modules/shared/outbox — the same function
+  // /api/health calls, so the two can never report different numbers. It returns
+  // null when the outbox table is absent, and the renderer says "unavailable"
+  // rather than 0.
   { key: 'jobQueueHealth', label: 'Job queue health', section: 'admin',
-    permission: 'manage_settings', module: 'admin', status: 'pending',
-    pendingOn: 'agent NOTIFICATIONS\' `getQueueHealth()` in '
-      + '`modules/shared/outbox/services/queueHealth.ts`, which `/api/health` also '
-      + 'calls so the two can never disagree. A duplicate implementation reading '
-      + '`outbox` directly was written here and DELETED rather than kept as a '
-      + 'fallback. See reporting/adapters/pendingSources.ts#fetchQueueHealth.',
-    sort: 42 },
+    permission: 'manage_settings', module: 'admin', status: 'live', sort: 42 },
   { key: 'backupStatus', label: 'Backup status', section: 'admin',
     permission: 'manage_settings', module: 'admin', status: 'pending',
     pendingOn: 'Spec §12 puts nightly `pg_dump` → S3 with Object Lock on the worker, '

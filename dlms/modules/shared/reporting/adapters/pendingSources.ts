@@ -124,63 +124,6 @@ export async function fetchRepairsByRootCause(
   return rows.map((r) => ({ code: r.code, label: r.label, count: Number(r.n) }))
 }
 
-export type QueueHealthView = {
-  /** processed_at IS NULL. INCLUDES `parked` — see below. */
-  unprocessed: number
-  /** processed_at IS NULL AND attempts >= MAX_ATTEMPTS. A SUBSET of `unprocessed`. */
-  parked: number
-  /** ISO string, not a Date — see the note on serialisation below. */
-  oldestUnprocessedAt: string | null
-}
-
-/**
- * Spec §8.5 Admin "job-queue health", §13 `/api/health` queue depth.
- *
- * OWNER: agent NOTIFICATIONS. NOT WIRED — `modules/shared/outbox/services/
- * queueHealth.ts` is not on this branch's base.
- *
- * TO IMPLEMENT:
- *
- *     const h = await getQueueHealth()          // outbox/services/queueHealth
- *     return h === null ? null : { ...h, oldestUnprocessedAt: h.oldestUnprocessedAt?.toISOString() ?? null }
- *
- * `/api/health` calls that same function, so the dashboard and the health check
- * cannot report different numbers. An earlier draft of this file computed the
- * depth from the `outbox` table directly; that duplicate was DELETED rather than
- * kept as a fallback, because two implementations of one number is the defect.
- *
- * FOUR THINGS THIS ADAPTER MUST NOT GET WRONG:
- *
- *   1. `parked` IS A SUBSET OF `unprocessed`, not a sibling bucket. Parked rows
- *      are still unprocessed, just no longer retried. Rendered as adjacent totals,
- *      a reader adds them and double-counts the backlog — so the UI says
- *      "of which N parked", nested under the total, never beside it.
- *   2. `null` MEANS UNKNOWN, NEVER ZERO. The outbox migration is committed and
- *      unapplied, so "the table does not exist" is a live case today. Zero is the
- *      reading an operator stands down on; unknown is the one they investigate.
- *      Same discipline as `DrainResult.parked` being `number | null`, which is a
- *      standing carried finding in this repo. Do not collapse it.
- *   3. NEVER write a literal for the parked threshold. `MAX_ATTEMPTS` lives with
- *      the drain and moves with it; calling their function makes the question
- *      disappear entirely.
- *   4. CONVERT `oldestUnprocessedAt` TO AN ISO STRING AT THIS BOUNDARY. Their
- *      function returns a `Date`, and every dashboard result crosses
- *      `unstable_cache`, which serialises — a `Date` written on a cache miss comes
- *      back a `string` on the hit, so a widget that calls `.getTime()` on it works
- *      for sixty seconds and then throws.
- *
- * WHY `oldestUnprocessedAt` IS THE FIELD THAT MATTERS: neither count tells you
- * whether the schedule is alive. `unprocessed: 3` is healthy at thirty seconds old
- * and means the drain has stopped at thirty hours old — and nothing schedules the
- * drain today (RB-09). This is the field that detects the real failure mode, which
- * is why the widget leads with it rather than with a count.
- */
-export async function fetchQueueHealth(
-  _tx: Tx, _actor: Actor,
-): Promise<QueueHealthView | null> {
-  return null
-}
-
 export type BackupStatus = {
   lastSucceededAt: string | null
   lastVerifiedAt: string | null

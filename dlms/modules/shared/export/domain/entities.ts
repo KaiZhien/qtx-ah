@@ -159,28 +159,21 @@ export const EXPORT_ENTITIES: readonly ExportEntity[] = [
   },
   {
     table: 'variant_bom_line', format: 'csv',
-    columns: ['id', 'variant_id', 'component_type_id', 'quantity', 'notes', ...AUDIT_COLS],
-    orderBy: 'variant_id, component_type_id', liveOnly: false,
-    description: 'Flat per-variant bill of materials — one line per component type, '
-      + 'with quantity. No nested sub-assemblies (spec D17).',
-    pendingSchemaChange:
-      'agent ENGINEERING adds BOM EFFECTIVITY to this table: effective_from_date, '
-      + 'effective_to_date, effective_from_serial, effective_to_serial, '
-      + 'created_by_eco_id, superseded_by_eco_id — and DROPS '
-      + 'UNIQUE(variant_id, component_type_id) for a PARTIAL unique index over only '
-      + 'the still-open line. '
-      + 'CONSEQUENCE FOR THIS EXPORT: the table stops holding one row per '
-      + '(variant, component type) and starts holding SUPERSEDED HISTORY TOO, so this '
-      + 'CSV silently grows without anything looking wrong — and manifest.json will '
-      + 'report the inflated count as though it were intended, which is precisely what '
-      + 'makes it hard to catch. '
-      + 'ACTION AT INTEGRATION, pick one deliberately: (a) keep exporting every row '
-      + 'and add the six columns above so the history is READABLE rather than merely '
-      + 'present — the honest choice for a full-system export, whose job is fidelity; '
-      + 'or (b) restrict to the open line with '
-      + '`WHERE effective_to_date IS NULL AND effective_to_serial IS NULL`. '
-      + 'Do NOT leave it as-is: today\'s column list would export history rows while '
-      + 'omitting the very columns that say they are history.',
+    columns: ['id', 'variant_id', 'component_type_id', 'quantity', 'notes',
+      // BOM EFFECTIVITY (agent ENGINEERING). These six are not decoration — see below.
+      'effective_from_date', 'effective_to_date',
+      'effective_from_serial', 'effective_to_serial',
+      'created_by_eco_id', 'superseded_by_eco_id',
+      ...AUDIT_COLS],
+    orderBy: 'variant_id, component_type_id, effective_from_date NULLS FIRST',
+    liveOnly: false,
+    description: 'Per-variant bill of materials WITH EFFECTIVITY HISTORY — one row per '
+      + '(variant, component type, effectivity window), not one row per component type. '
+      + 'The CURRENT BOM is the rows where effective_to_date IS NULL AND '
+      + 'effective_to_serial IS NULL; earlier rows are superseded revisions, and '
+      + 'created_by_eco_id / superseded_by_eco_id are the provenance chain saying which '
+      + 'ECO opened and closed each one. Filter before counting: a naive row count over '
+      + 'this file is a count of REVISIONS, not of parts in a machine.',
   },
 
   // ── Tasks ─────────────────────────────────────────────────────────────────

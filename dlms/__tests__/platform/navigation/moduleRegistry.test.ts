@@ -65,10 +65,15 @@ describe('visibleModules', () => {
 })
 
 describe('CROSS_MODULE_LINKS', () => {
-  it('offers Approvals, gated on the bare approve_requests permission', () => {
-    expect(CROSS_MODULE_LINKS.map((l) => l.key)).toEqual(['approvals'])
-    const approvals = CROSS_MODULE_LINKS[0]
-    expect(approvals).toMatchObject({ href: '/approvals', gate: 'approve_requests' })
+  it('offers Dashboard and Approvals, each on a bare (module-less) permission', () => {
+    expect(CROSS_MODULE_LINKS.map((l) => l.key)).toEqual(['dashboard', 'approvals'])
+    expect(CROSS_MODULE_LINKS.find((l) => l.key === 'approvals'))
+      .toMatchObject({ href: '/approvals', gate: 'approve_requests' })
+    // Spec §8.5's Home widget set is "everyone", so the PAGE is gated on the bare
+    // view_records and each WIDGET carries its own gate. A module argument here
+    // would hide the dashboard from someone whose only section is that module.
+    expect(CROSS_MODULE_LINKS.find((l) => l.key === 'dashboard'))
+      .toMatchObject({ href: '/dashboard', gate: 'view_records' })
   })
 
   it('does not collide with a module key', () => {
@@ -91,7 +96,12 @@ describe('CROSS_MODULE_LINKS', () => {
 
 describe('visibleCrossModuleLinks', () => {
   it('hides Approvals from someone who cannot decide requests', () => {
-    expect(visibleCrossModuleLinks(actor())).toEqual([])
+    const keys = visibleCrossModuleLinks(actor()).map((l) => l.key)
+    expect(keys).not.toContain('approvals')
+  })
+
+  it('shows Dashboard to anyone who can read records at all', () => {
+    expect(visibleCrossModuleLinks(actor()).map((l) => l.key)).toContain('dashboard')
   })
 
   it('shows it to a manager who holds approve_requests in ANY module', () => {
@@ -102,7 +112,7 @@ describe('visibleCrossModuleLinks', () => {
       permissions: new Set(['view_records', 'approve_requests']),
       moduleAccess: new Set(['finance']),
     })
-    expect(visibleCrossModuleLinks(mgr).map((l) => l.key)).toEqual(['approvals'])
+    expect(visibleCrossModuleLinks(mgr).map((l) => l.key)).toContain('approvals')
   })
 
   it('shows nothing to a deactivated user, even one who holds the permission', () => {

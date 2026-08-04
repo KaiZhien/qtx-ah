@@ -68,6 +68,13 @@ export type CrossModuleLink = {
  * exactly once"), which is a property worth keeping.
  */
 export const CROSS_MODULE_LINKS: readonly CrossModuleLink[] = [
+  // Spec §8.5's Home widget set is "everyone", so the gate is the bare
+  // `view_records` with no module: the PAGE is for anyone who can read anything,
+  // and each WIDGET on it carries its own gate (see reporting/domain/widgets.ts).
+  // Asking for a module here would hide the dashboard from someone whose only
+  // section is the one being asked about.
+  { key: 'dashboard', label: 'Dashboard', href: '/dashboard', icon: 'LayoutDashboard',
+    gate: 'view_records' },
   { key: 'approvals', label: 'Approvals', href: '/approvals', icon: 'ShieldCheck',
     gate: 'approve_requests' },
 ]
