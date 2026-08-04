@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
+import { ApprovalGateError } from '@/modules/shared/approvals/domain/approvalGate'
+import { EcoScopeLockedError } from '@/modules/shared/approvals/domain/ecoApproval'
 import {
   addAffectedItem, removeAffectedItem, applyEcoEffectivity,
   BomEcoNotFoundError, BomApplyError, AffectedItemNotFoundError,
@@ -24,6 +26,11 @@ function toMessage(err: unknown): string {
   if (err instanceof BomApplyError) return err.message
   if (err instanceof AffectedItemLockedError) return err.message
   if (err instanceof DuplicateAffectedItemError) return err.message
+  // The approval refusals. `ApprovalGateError` names the fields that drifted and
+  // `EcoScopeLockedError` says the content is fixed; both are the only actionable
+  // thing the caller gets, so neither may fall through to the generic line.
+  if (err instanceof ApprovalGateError) return err.message
+  if (err instanceof EcoScopeLockedError) return err.message
   if (err instanceof BomEcoNotFoundError) {
     return 'That change order no longer exists. Reload and try again.'
   }

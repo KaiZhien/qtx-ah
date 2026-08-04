@@ -8,7 +8,9 @@ import {
 } from '@/modules/engineering/domain/ecoStatus'
 import { FIRMWARE_INITIAL_STATUS, isValidFirmwareTransition } from '@/modules/engineering/domain/firmwareStatus'
 import { InvalidTransitionError } from '@/modules/engineering/domain/transition'
-import { assertEcoApprovalInTx } from '@/modules/engineering/services/ecoService'
+import {
+  assertEcoApprovalInTx, assertEcoScopeEditableInTx,
+} from '@/modules/engineering/services/ecoService'
 
 /**
  * Engineering write paths (spec §4/§7.5). Every entry point:
@@ -202,14 +204,33 @@ const ECO_UPDATE_COLUMNS = {
   effectivityNotes: 'effectivity_notes',
 } as const
 
+/**
+ * Edit an ECO's content.
+ *
+ * THE APPROVAL SCOPE LOCK. `effectivity_date` and `effectivity_serial` are read
+ * LIVE by `applyEcoEffectivityTx` at the moment it rewrites the BOM — not from the
+ * approval, not from the status change — so an ECO approved for
+ * "EE-02A-2603-0001 to 0015" and edited to "0001 to 0900" while approved lands the
+ * rewrite on the wider range. Every other column here is in the approval snapshot
+ * for the same reason. So once an approval has been acted on the content is frozen:
+ * `assertEcoScopeEditableInTx` refuses, under the row lock taken just above, so a
+ * concurrent approval cannot slip in between the check and the UPDATE.
+ *
+ * An ECO with NO approval request is untouched by this — "requested ⇒ binding",
+ * the posture the whole consumer migration shipped on — and so is a submitted one,
+ * whose edits are still re-checked at submitted → approved.
+ */
 export async function updateEco(actor: Actor, input: UpdateEcoInput): Promise<{ version: number }> {
   authorize(actor, 'edit_records', 'engineering')
   const data = updateEcoSchema.parse(input)
   return withTransaction(actor.id, async (tx) => {
-    const cur = await tx.query<{ version: number }>(
-      `SELECT version FROM eco WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
+    const cur = await tx.query<{ status: string; version: number }>(
+      `SELECT status, version FROM eco WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
     if (cur.rows.length === 0) throw new RecordNotFoundError('ECO', data.id)
     if (cur.rows[0].version !== data.version) throw new OptimisticLockError('eco', data.id)
+    // AFTER the version check: a stale screen should be told to reload, not told
+    // the record is frozen — the second sentence is only true for the current one.
+    await assertEcoScopeEditableInTx(tx, data.id, cur.rows[0].status)
 
     const params: unknown[] = []
     const p = (v: unknown) => { params.push(v); return `$${params.length}` }

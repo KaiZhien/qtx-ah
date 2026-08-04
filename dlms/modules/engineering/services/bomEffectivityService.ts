@@ -6,6 +6,9 @@ import {
   resolveBomAt, findBomEffectivityConflicts, isUsableEffectivityPoint,
   type BomLineEffectivity, type BomAt,
 } from '@/modules/engineering/domain/bomEffectivity'
+import {
+  assertEcoApprovalInTx, assertEcoScopeEditableInTx,
+} from '@/modules/engineering/services/ecoService'
 
 /**
  * BOM effectivity automation (spec §6.3 ec_affected_item + variant_bom_line).
@@ -270,9 +273,20 @@ const addItemSchema = z.object({
 export type AddAffectedItemInput = z.input<typeof addItemSchema>
 
 /**
- * List a component type as affected by an ECO. Refused once the ECO has been
- * applied: an item added afterwards would apply on a later, unrelated run and
- * silently backdate itself to the ECO's effectivity point.
+ * List a component type as affected by an ECO.
+ *
+ * TWO REFUSALS, answering different questions and both necessary:
+ *
+ *   ALREADY APPLIED — an item added after an apply would be picked up by a later,
+ *     unrelated run and silently backdate itself to this ECO's effectivity point,
+ *     producing a BOM history that never happened.
+ *
+ *   SCOPE LOCKED BY AN APPROVAL — these rows ARE what an approval covers. They
+ *     alone decide which variant's BOM is rewritten, which component type, add /
+ *     change / remove, and at what quantity, so adding one to an ECO somebody has
+ *     already approved changes the change itself. The applied check does not cover
+ *     this at all: it only ever fires AFTER the BOM was rewritten, and the whole
+ *     window between `approved` and the apply sits before it.
  */
 export async function addAffectedItem(
   actor: Actor, input: AddAffectedItemInput,
@@ -281,9 +295,10 @@ export async function addAffectedItem(
   const data = addItemSchema.parse(input)
 
   return withTransaction(actor.id, async (tx) => {
-    const { rows: ecoRows } = await tx.query<{ id: string }>(
-      `SELECT id FROM eco WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.ecoId])
+    const { rows: ecoRows } = await tx.query<{ id: string; status: string }>(
+      `SELECT id, status FROM eco WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.ecoId])
     if (ecoRows.length === 0) throw new BomEcoNotFoundError(data.ecoId)
+    await assertEcoScopeEditableInTx(tx, data.ecoId, ecoRows[0].status)
 
     const { rows: applied } = await tx.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM ec_affected_item
@@ -311,7 +326,20 @@ const removeItemSchema = z.object({
 })
 export type RemoveAffectedItemInput = z.input<typeof removeItemSchema>
 
-/** Soft-delete an affected item. Refused once it has been applied. */
+/**
+ * Soft-delete an affected item. Refused once it has been applied, and refused once
+ * an approval covers it — REMOVING an item is as much a change of scope as adding
+ * one, and it is the half a "nothing new was smuggled in" reading of the gate
+ * misses.
+ *
+ * LOCK ORDER IS ECO → ITEM, matching `addAffectedItem` and `applyEcoEffectivityTx`.
+ * The parent id is resolved with an unlocked read first, purely so the ECO can be
+ * locked BEFORE the item: taking the item lock first would give this function the
+ * reverse order from its two siblings, which is how two of them deadlock against
+ * each other on one ECO. It also makes the ECO row lock the item-list lock, which
+ * is what lets ecoService's snapshot projection read the items without a lock of
+ * its own.
+ */
 export async function removeAffectedItem(
   actor: Actor, input: RemoveAffectedItemInput,
 ): Promise<{ version: number }> {
@@ -319,9 +347,20 @@ export async function removeAffectedItem(
   const data = removeItemSchema.parse(input)
 
   return withTransaction(actor.id, async (tx) => {
+    const { rows: parent } = await tx.query<{ eco_id: string }>(
+      `SELECT eco_id FROM ec_affected_item WHERE id = $1 AND deleted_at IS NULL`, [data.id])
+    if (parent.length === 0) throw new AffectedItemNotFoundError(data.id)
+
+    const { rows: ecoRows } = await tx.query<{ status: string }>(
+      `SELECT status FROM eco WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [parent[0].eco_id])
+    if (ecoRows.length === 0) throw new BomEcoNotFoundError(parent[0].eco_id)
+    await assertEcoScopeEditableInTx(tx, parent[0].eco_id, ecoRows[0].status)
+
     const { rows } = await tx.query<{ version: number; applied_at: Date | null }>(
       `SELECT version, applied_at FROM ec_affected_item
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.id])
+    // Re-checked after the lock: the unlocked read above resolved the parent, it
+    // did not establish that the row survived until we got here.
     if (rows.length === 0) throw new AffectedItemNotFoundError(data.id)
     if (rows[0].version !== data.version) throw new OptimisticLockError('ec_affected_item', data.id)
     if (rows[0].applied_at) throw new AffectedItemLockedError()
@@ -362,6 +401,26 @@ type EcoEffectivity = {
  * Everything it touches is locked FOR UPDATE in a fixed order (eco → items →
  * BOM lines), so concurrent applies serialize rather than interleave, and the
  * per-item `applied_at` stamp makes the second one a no-op.
+ *
+ * ── THE APPROVAL RE-CHECK LIVES HERE, ON THE ACT ────────────────────────────
+ * This function is where an ECO stops being a document and starts being a bill of
+ * materials: it closes lines, opens lines, and reads `effectivity_date` /
+ * `effectivity_serial` LIVE off the ECO rather than off any approval. Every fact
+ * it uses can be edited after the approval that authorised it, and the ECO status
+ * change — the only edge that used to be gated — happens two steps earlier.
+ *
+ * So the snapshot is re-checked HERE, after the ECO and its items are locked and
+ * before a single BOM row is written. Putting it on `approved → implemented`
+ * instead would gate a status label while leaving the rewrite ungated, and would
+ * split `ecoTransitionRequiresApproval` into two predicates answering different
+ * questions ("which edge needs approve_requests" vs "which edge needs a snapshot
+ * re-check") — a design change that buys nothing this does not already cover.
+ *
+ * ORDER. The two BomApplyError preconditions run FIRST, deliberately, the same way
+ * repairService runs its sign-off precondition ahead of its approval gate: "this
+ * order is not implemented yet" and "this order has no effectivity point" are
+ * facts about whether the apply makes sense at all, and answering them with "your
+ * approval drifted" sends the reader to the wrong fix.
  */
 export async function applyEcoEffectivityTx(
   tx: Tx, actorId: string, ecoId: string,
@@ -403,6 +462,16 @@ export async function applyEcoEffectivityTx(
       WHERE eco_id = $1 AND deleted_at IS NULL
       ORDER BY created_at, id
         FOR UPDATE`, [eco.id])
+
+  // The snapshot re-check, after both locks and before any write. It runs even
+  // when every item is already stamped: `alreadyApplied` is still an answer about
+  // this ECO's approved scope, and short-circuiting above it would make the gate's
+  // presence depend on how far a previous crashed run happened to get.
+  //
+  // The projection it compares against is ecoService's, NOT the row set just read
+  // here — that one is ordered for its own locking reasons and carries applied_at,
+  // neither of which belongs in a snapshot. Two readers of one table, two jobs.
+  await assertEcoApprovalInTx(tx, eco.id, 'applied to the BOM')
 
   const pending = items.filter((i) => i.applied_at === null)
   if (pending.length === 0) {

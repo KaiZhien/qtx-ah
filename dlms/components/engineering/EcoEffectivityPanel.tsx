@@ -4,6 +4,7 @@ import { can } from '@/modules/shared/authz/policy'
 import {
   listAffectedItems, listBomVariantOptions,
 } from '@/modules/engineering/services/bomEffectivityService'
+import { getEcoApprovalState } from '@/modules/engineering/services/ecoService'
 import { listComponentTypeOptions } from '@/modules/engineering/services/engineeringReadService'
 import { AffectedItemsEditor } from './AffectedItemsEditor'
 import { ApplyEffectivityButton } from './ApplyEffectivityButton'
@@ -44,7 +45,22 @@ export async function EcoEffectivityPanel({
   const allApplied = items.length > 0 && items.every((i) => i.appliedAt !== null)
   const hasEffectivityPoint = !!effectivityDate || !!effectivitySerial?.trim()
 
-  const [variantOptions, componentTypeOptions] = canEdit && !anyApplied
+  /**
+   * The second reason this list can be frozen: an approval that has already been
+   * acted on covers these exact rows, so `addAffectedItem` / `removeAffectedItem`
+   * refuse. Read from the service rather than re-derived from `status` here — the
+   * rule lives in `ecoScopeLockedByApproval` and a second copy of it in a component
+   * is a copy that will disagree.
+   *
+   * Only read it when it could change what is rendered: an actor who cannot edit,
+   * or an ECO already applied, has a frozen list either way and this would be a
+   * query asked to confirm a conclusion already reached.
+   */
+  const approvalState = canEdit && !anyApplied ? await getEcoApprovalState(actor, ecoId) : null
+  const scopeLocked = approvalState?.scopeLocked ?? false
+  const editable = canEdit && !anyApplied && !scopeLocked
+
+  const [variantOptions, componentTypeOptions] = editable
     ? await Promise.all([listBomVariantOptions(actor), listComponentTypeOptions(actor)])
     : [[], []]
 
@@ -77,6 +93,17 @@ export async function EcoEffectivityPanel({
           Applied to the BOM. <Link href="/engineering/bom" className="underline">View effective BOM</Link>
         </p>
       )}
+      {scopeLocked && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          {approvalState?.scopeLockedReason}
+        </p>
+      )}
+      {approvalState && approvalState.drift.length > 0 && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-900">
+          This order no longer matches the state that was approved, so it cannot be applied to the
+          BOM: {approvalState.drift.join('; ')}
+        </p>
+      )}
 
       <AffectedItemsEditor
         ecoId={ecoId}
@@ -88,7 +115,7 @@ export async function EcoEffectivityPanel({
         }))}
         variantOptions={variantOptions}
         componentTypeOptions={componentTypeOptions}
-        editable={canEdit && !anyApplied}
+        editable={editable}
       />
     </section>
   )

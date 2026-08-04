@@ -51,8 +51,12 @@ vi.mock('@/modules/engineering/services/bomEffectivityService', () => ({
 }))
 
 const {
-  addAffectedItemAction, applyEcoEffectivityAction,
+  addAffectedItemAction, removeAffectedItemAction, applyEcoEffectivityAction,
 } = await import('@/app/(platform)/engineering/bom/effectivityActions')
+// The REAL classes — both are pure-domain modules with no I/O, so there is nothing
+// to mock and an `instanceof` against a mock would prove nothing about production.
+const { ApprovalGateError } = await import('@/modules/shared/approvals/domain/approvalGate')
+const { EcoScopeLockedError } = await import('@/modules/shared/approvals/domain/ecoApproval')
 const { MfaRequiredError } = await import('@/modules/shared/auth/session')
 const {
   BomApplyError, AffectedItemLockedError, DuplicateAffectedItemError,
@@ -103,6 +107,35 @@ describe('error sanitization', () => {
     mockAdd.mockRejectedValue(new DuplicateAffectedItemError())
     await expect(addAffectedItemAction(ITEM)).resolves.toEqual({
       ok: false, error: DUPLICATE_MESSAGE,
+    })
+  })
+
+  /**
+   * The approval refusals reach the user or they are worthless. Before this pass
+   * neither class was mapped anywhere in Engineering, so an ECO whose approval had
+   * drifted refused the apply with "Something went wrong" — hiding the one sentence
+   * that names what moved, and logging a spurious error for an intended refusal.
+   */
+  it('passes an approval-drift refusal through, naming the fields that moved', async () => {
+    mockApply.mockRejectedValue(new ApprovalGateError(
+      'approval_drifted',
+      'This ECO changed after it was approved: affectedItems[1]: added ({"variantId":"v2"}).'))
+    await expect(applyEcoEffectivityAction({ ecoId: 'e1' })).resolves.toEqual({
+      ok: false,
+      error: 'This ECO changed after it was approved: affectedItems[1]: added ({"variantId":"v2"}).',
+    })
+  })
+
+  it('passes the scope-locked refusal through on both item writes', async () => {
+    const locked = new EcoScopeLockedError(
+      'This change order has an approval request on it and has already moved past submitted.')
+    mockAdd.mockRejectedValue(locked)
+    mockRemove.mockRejectedValue(locked)
+    await expect(addAffectedItemAction(ITEM)).resolves.toEqual({
+      ok: false, error: locked.message,
+    })
+    await expect(removeAffectedItemAction({ ecoId: 'e1', id: 'i1', version: 1 })).resolves.toEqual({
+      ok: false, error: locked.message,
     })
   })
 

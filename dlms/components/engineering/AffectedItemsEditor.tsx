@@ -25,7 +25,11 @@ type Props = {
   items: EditableItem[]
   variantOptions: Option[]
   componentTypeOptions: Option[]
-  /** False once any item is applied — the list is frozen from then on. */
+  /**
+   * False once the list is frozen, for either of two independent reasons: an item
+   * has been applied to the BOM, or an approval that has already been acted on
+   * covers these rows. The panel decides; this only renders it.
+   */
   editable: boolean
 }
 
@@ -34,11 +38,15 @@ const DISPOSITION_LABEL: Record<string, string> = {
 }
 
 /**
- * Edits the list of component types an ECO affects. Frozen (editable=false) once
- * any item has been applied: an item added after an apply would be picked up by
- * a later run and silently backdated to this ECO's effectivity point, which is a
- * BOM history that never happened. The server enforces the same rule — this only
- * hides the controls.
+ * Edits the list of component types an ECO affects. Frozen (editable=false) for
+ * two independent reasons, and the server enforces BOTH — this only hides the
+ * controls:
+ *
+ *   an item has been APPLIED: an item added afterwards would be picked up by a
+ *     later run and silently backdated to this ECO's effectivity point, which is
+ *     a BOM history that never happened.
+ *   an APPROVAL covers the list: these rows are what a second pair of eyes agreed
+ *     to, and they alone decide which BOM the apply rewrites.
  */
 export function AffectedItemsEditor({
   ecoId, items, variantOptions, componentTypeOptions, editable,
