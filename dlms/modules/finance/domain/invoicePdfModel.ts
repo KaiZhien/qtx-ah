@@ -20,6 +20,7 @@
  * ───────────────────────────────────────────────────────────────────────────
  */
 import type { InvoiceStatus } from '@/modules/finance/domain/invoiceStatus'
+import { formatIsoDate } from '@/modules/finance/domain/formatDate'
 
 const STATUS_LABEL: Record<InvoiceStatus, string> = {
   draft: 'Draft', issued: 'Issued', paid: 'Paid', void: 'Void',
@@ -61,25 +62,6 @@ export function formatSgd(amount: string | null | undefined): string {
     if (fromEnd > 1 && fromEnd % 3 === 1) grouped += ','
   }
   return `${negative ? '-' : ''}S$${grouped}.${fraction}`
-}
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
-
-/**
- * 'YYYY-MM-DD' -> '01 Jan 2026', by string slicing.
- *
- * Deliberately NOT `new Date(iso).toLocaleDateString()`: that parses the string
- * as UTC midnight and formats it in the host's zone, so an invoice dated
- * 2026-01-01 prints as 31 Dec 2025 anywhere west of Greenwich. On a financial
- * document the date is a legal fact, not a rendering preference.
- */
-function formatIsoDate(iso: string | null): string {
-  if (!iso) return '—'
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
-  if (!m) return iso
-  const month = MONTHS[Number(m[2]) - 1]
-  return month ? `${m[3]} ${month} ${m[1]}` : iso
 }
 
 function pad(n: number): string { return String(n).padStart(2, '0') }

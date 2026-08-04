@@ -21,14 +21,17 @@ export default async function FinancePage() {
   const actor = await requireActor()
   if (!can(actor, 'view_finance', 'finance')) notFound()
 
-  // Warranty reads are gated on view_records-in-finance, a LOWER bar than this
-  // page's view_finance gate — so anyone who got here already passes it and the
-  // call cannot throw. (The reverse gap is real and deliberate: a Viewer with
-  // Finance module access may read /finance/warranties directly but cannot see
-  // this landing page, because it also shows invoice money.)
+  // Warranty reads want view_records-in-finance. That is NOT implied by the
+  // view_finance gate above: can() tests independent permissions, and per-user
+  // overrides are a shipped feature, so an actor holding view_finance WITHOUT
+  // view_records is constructible — they would pass the gate and then
+  // getWarrantyExpiryCounts would throw inside this Promise.all and 500 the whole
+  // Finance landing. Check it explicitly and hide the section, the same
+  // graceful-hide shape as the device profile's warranty panel.
+  const canSeeWarranty = can(actor, 'view_records', 'finance')
   const [counts, warrantyCounts] = await Promise.all([
     getInvoiceStatusCounts(actor),
-    getWarrantyExpiryCounts(actor),
+    canSeeWarranty ? getWarrantyExpiryCounts(actor) : Promise.resolve(null),
   ])
 
   return (
@@ -56,36 +59,48 @@ export default async function FinancePage() {
         </div>
       </div>
 
-      <div>
-        <h2 className="mb-3 text-sm font-medium text-muted-foreground">Warranty expiry</h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {([30, 60, 90] as const).map((w) => (
-            <Link
-              key={w}
-              href={`/finance/warranties?within=${w}`}
-              className="rounded-md border p-4 hover:bg-slate-50"
-            >
-              <p className="text-2xl font-semibold text-slate-900">
-                {w === 30 ? warrantyCounts.within30 : w === 60 ? warrantyCounts.within60 : warrantyCounts.within90}
-              </p>
-              <p className="text-xs text-muted-foreground">Expiring within {w} days</p>
-            </Link>
-          ))}
-          <Link href="/finance/warranties" className="rounded-md border p-4 hover:bg-slate-50">
-            <p className="text-2xl font-semibold text-slate-900">{warrantyCounts.expired}</p>
-            <p className="text-xs text-muted-foreground">Already expired</p>
-          </Link>
+      {warrantyCounts && (
+        <div>
+          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Warranty expiry</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {([30, 60, 90] as const).map((w) => (
+              <Link
+                key={w}
+                href={`/finance/warranties?within=${w}`}
+                className="rounded-md border p-4 hover:bg-slate-50"
+              >
+                <p className="text-2xl font-semibold text-slate-900">
+                  {w === 30 ? warrantyCounts.within30 : w === 60 ? warrantyCounts.within60 : warrantyCounts.within90}
+                </p>
+                <p className="text-xs text-muted-foreground">Expiring within {w} days</p>
+              </Link>
+            ))}
+            {/*
+              NOT a link. /finance/warranties hard-filters end_date >= current_date,
+              so drilling into it from an "already expired" count lands on an empty
+              table reading "No warranties expire in the next N days" — a count that
+              contradicts the page it opens. Matches the warranties page, whose own
+              expired tile is a plain div for the same reason. Make this a link only
+              once the radar grows a view that can actually show expired rows.
+            */}
+            <div className="rounded-md border p-4">
+              <p className="text-2xl font-semibold text-slate-900">{warrantyCounts.expired}</p>
+              <p className="text-xs text-muted-foreground">Already expired</p>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
-        <Link
-          href="/finance/warranties"
-          className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
-        >
-          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-          Warranties
-        </Link>
+        {canSeeWarranty && (
+          <Link
+            href="/finance/warranties"
+            className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
+          >
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            Warranties
+          </Link>
+        )}
         <Link
           href="/finance/invoices"
           className="flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"

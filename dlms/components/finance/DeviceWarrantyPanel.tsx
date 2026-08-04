@@ -2,6 +2,7 @@ import { ShieldCheck } from 'lucide-react'
 import { WarrantyStatusPill } from '@/components/finance/WarrantyStatusPill'
 import { WarrantyDialog } from '@/components/finance/WarrantyDialog'
 import { RemoveWarrantyButton } from '@/components/finance/RemoveWarrantyButton'
+import { formatIsoDate } from '@/modules/finance/domain/formatDate'
 import type { WarrantyRecord } from '@/modules/finance/services/warrantyService'
 
 type Props = {
@@ -13,18 +14,11 @@ type Props = {
   canManage: boolean
 }
 
-/** 'YYYY-MM-DD' -> '01 Jan 2026'. Sliced, never round-tripped through a Date. */
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-function formatIso(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
-  return m ? `${m[3]} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : iso
-}
-
 function coverSentence(w: WarrantyRecord): string {
   if (w.status === 'expired') {
-    return `Expired ${formatIso(w.endDate)} (${Math.abs(w.daysRemaining)} days ago).`
+    return `Expired ${formatIsoDate(w.endDate)} (${Math.abs(w.daysRemaining)} days ago).`
   }
-  if (!w.inForce) return `Cover starts ${formatIso(w.startDate)} — not yet in force.`
+  if (!w.inForce) return `Cover starts ${formatIsoDate(w.startDate)} — not yet in force.`
   if (w.daysRemaining === 0) return 'Last day of cover — a claim opened today is still covered.'
   return `${w.daysRemaining} days of cover remaining.`
 }
@@ -70,8 +64,8 @@ export function DeviceWarrantyPanel({ deviceId, warranty, history, canManage }: 
       {warranty ? (
         <>
           <dl className="grid grid-cols-1 gap-x-8 gap-y-4 rounded-md border p-4 sm:grid-cols-3">
-            <Field label="Start date" value={formatIso(warranty.startDate)} />
-            <Field label="End date" value={formatIso(warranty.endDate)} />
+            <Field label="Start date" value={formatIsoDate(warranty.startDate)} />
+            <Field label="End date" value={formatIsoDate(warranty.endDate)} />
             <Field label="Cover" value={coverSentence(warranty)} />
             <div className="sm:col-span-3">
               <dt className="text-xs font-medium text-muted-foreground">Terms</dt>
@@ -89,7 +83,7 @@ export function DeviceWarrantyPanel({ deviceId, warranty, history, canManage }: 
               <ul className="space-y-1 rounded-md border p-3 text-sm text-slate-600">
                 {history.map((h) => (
                   <li key={h.id} className="flex flex-wrap gap-x-3">
-                    <span>{formatIso(h.startDate)} → {formatIso(h.endDate)}</span>
+                    <span>{formatIsoDate(h.startDate)} → {formatIsoDate(h.endDate)}</span>
                     {h.terms && <span className="text-muted-foreground">· {h.terms}</span>}
                   </li>
                 ))}

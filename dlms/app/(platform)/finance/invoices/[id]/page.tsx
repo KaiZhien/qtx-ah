@@ -34,9 +34,11 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
   if (!invoice) notFound()
 
   const canEdit = can(actor, 'manage_finance', 'finance')
-  // Who has downloaded the PDF is a staff-monitoring view, so it rides on
-  // view_full_audit rather than on ordinary finance reading.
-  const canSeeAccessLog = can(actor, 'view_full_audit', 'finance')
+  // "Who holds a copy of the document I am responsible for" is a record-scoped
+  // audit question, so it rides on view_audit_record — which Finance itself
+  // holds. view_full_audit would be admin-only and hide the panel from exactly
+  // the role that needs it. Must match listInvoiceDocumentAccess's own gate.
+  const canSeeAccessLog = can(actor, 'view_audit_record', 'finance')
   const [transitions, buyerOptions, approvalState, documentAccess] = await Promise.all([
     canEdit ? listAllowedInvoiceTransitions(actor, invoice.status) : Promise.resolve([]),
     canEdit ? listBuyerOptions(actor) : Promise.resolve([]),
@@ -54,20 +56,38 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
           <InvoiceStatusPill status={invoice.status} />
           <div className="ml-auto flex items-center gap-2">
             {/*
-              A plain link, not a fetch: the route streams application/pdf with a
-              Content-Disposition attachment header, so the browser's own download
-              handling is exactly the right behaviour. Every click writes a
-              document_access_log row server-side (spec §10). No prefetch — a
-              prefetched download would log an access nobody asked for.
+              A PLAIN <a>, deliberately NOT next/link. This is the codebase's
+              existing pattern for route-handler downloads (components/analytics/
+              ExportMenu.tsx, components/device/DeviceTable.tsx) and here it is
+              load-bearing, not stylistic:
+
+              next/link intercepts the click (preventDefault + router.push), and
+              fetchServerResponse issues an RSC fetch. The response is
+              application/pdf rather than text/x-component, so isFlightResponse is
+              false and Next falls back to doMpaNavigation — BY WHICH POINT THIS
+              ROUTE HAS ALREADY RUN TO COMPLETION. The PDF was rendered and the
+              document_access_log row committed; the browser navigation then runs
+              the whole thing a second time. One click, two access rows, two audit
+              rows, two renders — which would make the table whose entire purpose
+              is "who pulled this, when" systematically 2x, and would turn the
+              service's conservative "over-log rather than under-log" position
+              from a rare edge case into every single download.
+
+              prefetch={false} does NOT help: it only disables hover/viewport
+              prefetch, never the click-time fetch.
+
+              It also fixes the error path: with next/link an AAL1 admin's 403 is
+              followed by doMpaNavigation onto a bare text/plain page with no way
+              back. A plain download link leaves them on the invoice.
             */}
-            <Link
+            <a
               href={`/finance/invoices/${invoice.id}/pdf`}
-              prefetch={false}
+              download
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-slate-50"
             >
               <FileDown className="h-3.5 w-3.5" aria-hidden="true" />
               Download PDF
-            </Link>
+            </a>
             {canEdit && (
               <InvoiceEditDialog key={invoice.version} invoice={invoice} buyerOptions={buyerOptions} />
             )}

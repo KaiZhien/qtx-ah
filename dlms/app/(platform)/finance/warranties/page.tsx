@@ -4,23 +4,23 @@ import { ShieldCheck } from 'lucide-react'
 import { requireActor } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import {
-  getExpiringWarranties, getWarrantyExpiryCounts, EXPIRY_WINDOWS, type ExpiryWindow,
+  getExpiringWarranties, getWarrantyExpiryCounts, EXPIRY_WINDOWS, EXPIRING_SOON_DAYS,
+  type ExpiryWindow,
 } from '@/modules/finance/services/warrantyService'
+import { formatIsoDate } from '@/modules/finance/domain/formatDate'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { WarrantyStatusPill } from '@/components/finance/WarrantyStatusPill'
 
 type PageProps = { searchParams: { within?: string } }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-/** 'YYYY-MM-DD' -> '01 Jan 2026', sliced. Never round-tripped through a Date. */
-function formatIso(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
-  return m ? `${m[3]} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : iso
-}
-
 function parseWindow(raw: string | undefined): ExpiryWindow {
   const n = Number(raw)
-  return (EXPIRY_WINDOWS as readonly number[]).includes(n) ? (n as ExpiryWindow) : 30
+  // Falls back to EXPIRING_SOON_DAYS, matching getExpiringWarranties' own default
+  // so the badge and the list agree. Anything unrecognised — including junk in the
+  // query string — lands on the default rather than erroring.
+  return (EXPIRY_WINDOWS as readonly number[]).includes(n)
+    ? (n as ExpiryWindow)
+    : (EXPIRING_SOON_DAYS as ExpiryWindow)
 }
 
 /**
@@ -31,6 +31,20 @@ function parseWindow(raw: string | undefined): ExpiryWindow {
  * read gate — NOT on view_finance, which is the money gate. A Viewer with
  * Finance access can see which warranties are running out; they still cannot see
  * an invoice.
+ *
+ * NO SIDEBAR ENTRY, deliberately. MODULE_REGISTRY is keyed by ModuleKey and
+ * pinned to exactly one row per module by
+ * __tests__/platform/navigation/moduleRegistry.test.ts; warranties is a Finance
+ * SUB-page, like /finance/invoices and /finance/buyers, and neither of those has
+ * a sidebar entry either. Inventing a sub-nav concept for one page is the wrong
+ * trade. The real surfaces are the Finance landing (which links here) and the
+ * device profile's Post-sales panel, which is where a warranty is actually read.
+ *
+ * KNOWN GAP, and the reason this is written down: the Finance landing is gated on
+ * view_finance, this page on view_records. So an actor with Finance module access
+ * but no view_finance — a Viewer — can load this URL directly but has no link
+ * that leads here. Fixing it properly needs a sub-nav or a lower-gated Finance
+ * landing; both are bigger than this page and neither is this task.
  */
 export default async function WarrantiesPage({ searchParams }: PageProps) {
   const actor = await requireActor()
@@ -106,9 +120,9 @@ export default async function WarrantiesPage({ searchParams }: PageProps) {
                   </Link>
                 </TableCell>
                 <TableCell className="text-sm text-slate-600">
-                  {formatIso(w.startDate)} → {formatIso(w.endDate)}
+                  {formatIsoDate(w.startDate)} → {formatIsoDate(w.endDate)}
                 </TableCell>
-                <TableCell>{formatIso(w.endDate)}</TableCell>
+                <TableCell>{formatIsoDate(w.endDate)}</TableCell>
                 <TableCell className="text-right">{w.daysRemaining}</TableCell>
                 <TableCell>
                   <WarrantyStatusPill status={w.status} daysRemaining={w.daysRemaining} />

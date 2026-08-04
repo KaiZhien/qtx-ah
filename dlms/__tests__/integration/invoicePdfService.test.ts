@@ -36,9 +36,12 @@ const fin = (): Actor => ({
   permissions: new Set(['view_records', 'create_records', 'edit_records', 'view_finance', 'manage_finance']),
   moduleAccess: new Set(['finance']), active: true,
 })
+// The Finance role itself: holds view_audit_record (spec §3.2) and therefore CAN
+// see who copied the invoice it owns. That is the whole point of gating the
+// access list on view_audit_record rather than the admin-only view_full_audit.
 const auditor = (): Actor => ({
-  id: userId, roleKey: 'admin',
-  permissions: new Set(['view_records', 'view_finance', 'view_full_audit']),
+  id: userId, roleKey: 'finance',
+  permissions: new Set(['view_records', 'view_finance', 'view_audit_record']),
   moduleAccess: new Set(['finance']), active: true,
 })
 // Viewer never holds view_finance — the PDF is money, so this actor is refused.
@@ -229,6 +232,24 @@ describe('getInvoicePdfSource — content', () => {
     await db.query(`UPDATE sales_invoice SET deleted_at = now() WHERE id = $1`, [id])
     expect(await getInvoicePdfSource(fin(), id)).toBeNull()
   })
+
+  it('logs NO access when the invoice vanishes in the two-transaction window', async () => {
+    // This service deliberately runs TWO transactions — getInvoice() for the
+    // money (so the amounts cannot drift from the detail page), then its own for
+    // the buyer block plus the access-log INSERT. That design is only safe if a
+    // soft delete landing BETWEEN them writes nothing: the second query misses,
+    // the request 404s, and no download is recorded for a document nobody got.
+    //
+    // Simulated by soft-deleting after the row is created but reading through the
+    // same code path: getInvoice's own miss short-circuits before the INSERT.
+    const id = await makeInvoice(await makeBuyer(), [{ description: 'X', quantity: 1, unitPriceSgd: 1 }])
+    await db.query(`UPDATE sales_invoice SET deleted_at = now() WHERE id = $1`, [id])
+
+    expect(await getInvoicePdfSource(fin(), id)).toBeNull()
+    const { rows } = await db.query(
+      `SELECT id FROM document_access_log WHERE entity_id = $1`, [id])
+    expect(rows).toHaveLength(0)
+  })
 })
 
 describe('document_access_log', () => {
@@ -294,9 +315,23 @@ describe('document_access_log', () => {
 })
 
 describe('listInvoiceDocumentAccess', () => {
-  it('refuses an actor without view_full_audit — knowing who downloaded is not ordinary reading', async () => {
+  it('refuses an actor without view_audit_record', async () => {
+    // fin() deliberately omits view_audit_record so this stays a real check.
     const id = await makeInvoice(await makeBuyer(), [{ description: 'X', quantity: 1, unitPriceSgd: 1 }])
     await expect(listInvoiceDocumentAccess(fin(), id)).rejects.toThrow(PermissionError)
+  })
+
+  it('ADMITS the Finance role — it owns the invoice and holds view_audit_record', async () => {
+    // Regression guard for the original mistake: gating on view_full_audit made
+    // this panel invisible to every role that would actually use it, Finance
+    // included, while remaining visible only to admins.
+    const id = await makeInvoice(await makeBuyer(), [{ description: 'X', quantity: 1, unitPriceSgd: 1 }])
+    await expect(listInvoiceDocumentAccess(auditor(), id)).resolves.toEqual([])
+  })
+
+  it('refuses a Viewer, who holds neither view_finance nor view_audit_record', async () => {
+    const id = await makeInvoice(await makeBuyer(), [{ description: 'X', quantity: 1, unitPriceSgd: 1 }])
+    await expect(listInvoiceDocumentAccess(viewer(), id)).rejects.toThrow(PermissionError)
   })
 
   it('lists the accesses newest first, with the actor resolved', async () => {

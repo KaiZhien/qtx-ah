@@ -135,14 +135,19 @@ export type InvoiceDocumentAccess = {
  * trail is visible where it matters rather than only in the admin audit console
  * — an access log nobody looks at is not a control.
  *
- * Gated on view_full_audit: knowing WHICH COLLEAGUES downloaded a document is a
- * staff-monitoring capability, not ordinary finance reading, and the platform
- * already has a permission that means exactly "may see the whole trail".
+ * Gated on view_audit_record, NOT view_full_audit. The distinction is the whole
+ * point: view_full_audit is admin/super_admin only (spec §3.2 matrix), so gating
+ * here would hide the panel from Finance — the role that OWNS the invoice and has
+ * the strongest legitimate need to know who holds a copy of it. Framing this as
+ * "staff monitoring" inverts the question; it is not "what has Alice been doing",
+ * it is "who has a copy of the document I am responsible for", which is
+ * record-scoped. view_audit_record already means exactly that, and Finance,
+ * Manager, Operator and Admin all hold it while Viewer does not.
  */
 export async function listInvoiceDocumentAccess(
   actor: Actor, invoiceId: string, limit = 20,
 ): Promise<InvoiceDocumentAccess[]> {
-  authorize(actor, 'view_full_audit', 'finance')
+  authorize(actor, 'view_audit_record', 'finance')
   const id = z.string().uuid().safeParse(invoiceId)
   if (!id.success) return []
 

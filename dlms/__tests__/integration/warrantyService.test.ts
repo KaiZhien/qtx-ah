@@ -394,6 +394,25 @@ describe('renewWarranty', () => {
       startDate: await dayOffset(0), endDate: await dayOffset(730),
     })).rejects.toThrow(PermissionError)
   })
+
+  it('refuses to renew cover on a soft-deleted device, and supersedes nothing', async () => {
+    // createWarranty has always enforced this; renew did not, so the door
+    // createWarranty closed stood open through Renew — fresh commercial cover on
+    // a retired device.
+    const d = await makeDevice()
+    const first = await makeWarranty(d, -400, -1)
+    await db.query(`UPDATE device SET deleted_at = now() WHERE id = $1`, [d])
+
+    await expect(renewWarranty(fin(), {
+      warrantyId: first.warrantyId, version: first.version,
+      startDate: await dayOffset(0), endDate: await dayOffset(730),
+    })).rejects.toThrow(DeviceNotFoundError)
+
+    // The whole thing is one transaction: the original must still be live.
+    const { rows } = await db.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM warranty WHERE id = $1`, [first.warrantyId])
+    expect(rows[0].deleted_at).toBeNull()
+  })
 })
 
 describe('listDeviceWarrantyHistory', () => {
@@ -516,7 +535,29 @@ describe('getExpiringWarranties', () => {
     expect(ids).not.toContain(first.warrantyId)
   })
 
-  it('carries no buyer identity — that is behind view_buyer_details', async () => {
+  it('defaults to the same window the expiring_soon badge uses', async () => {
+    // The default and EXPIRING_SOON_DAYS used to disagree (30 vs 60), so a
+    // warranty 45 days out was badged "Expiring soon" and yet missing from the
+    // default list. Anchored to one constant now.
+    const d = await makeDevice(); await makeWarranty(d, -10, 45)
+    const ids = (await getExpiringWarranties(fin(), { limit: 200 })).map((w) => w.deviceId)
+    expect(ids).toContain(d)
+    expect((await getDeviceWarranty(fin(), d))!.status).toBe('expiring_soon')
+  })
+
+  it('excludes a warranty whose device was soft-deleted', async () => {
+    // Nothing clears a warranty when its device is retired, and the radar links
+    // straight to the device page — which 404s for a soft-deleted device.
+    const d = await makeDevice(); await makeWarranty(d, -10, 10)
+    expect((await getExpiringWarranties(fin(), { withinDays: 30, limit: 200 }))
+      .map((w) => w.deviceId)).toContain(d)
+
+    await db.query(`UPDATE device SET deleted_at = now() WHERE id = $1`, [d])
+    expect((await getExpiringWarranties(fin(), { withinDays: 30, limit: 200 }))
+      .map((w) => w.deviceId)).not.toContain(d)
+  })
+
+  it('carries no buyer identity — a scope decision, not a permission check', async () => {
     const d = await makeDevice(); await makeWarranty(d, -10, 10)
     const hit = (await getExpiringWarranties(fin(), { withinDays: 30, limit: 200 }))
       .find((w) => w.deviceId === d)!
@@ -541,7 +582,7 @@ describe('getWarrantyExpiryCounts', () => {
     expect(after.within30 - before.within30).toBe(0)
     expect(after.within60 - before.within60).toBe(1)
     expect(after.within90 - before.within90).toBe(1)
-    expect(after.active - before.active).toBe(1)
+    expect(after.notExpired - before.notExpired).toBe(1)
     expect(after.expired - before.expired).toBe(0)
   })
 
@@ -551,8 +592,17 @@ describe('getWarrantyExpiryCounts', () => {
     const after = await getWarrantyExpiryCounts(fin())
 
     expect(after.expired - before.expired).toBe(1)
-    expect(after.active - before.active).toBe(0)
+    expect(after.notExpired - before.notExpired).toBe(0)
     expect(after.within90 - before.within90).toBe(0)
+  })
+
+  it('stops counting a warranty whose device was soft-deleted', async () => {
+    const d = await makeDevice(); await makeWarranty(d, -10, 20)
+    const withDevice = await getWarrantyExpiryCounts(fin())
+    await db.query(`UPDATE device SET deleted_at = now() WHERE id = $1`, [d])
+    const without = await getWarrantyExpiryCounts(fin())
+    expect(withDevice.within30 - without.within30).toBe(1)
+    expect(withDevice.notExpired - without.notExpired).toBe(1)
   })
 
   it('stops counting a warranty once it is removed', async () => {

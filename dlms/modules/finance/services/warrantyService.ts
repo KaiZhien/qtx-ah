@@ -75,6 +75,21 @@ const WARRANTY_SELECT = `
          current_date::text AS today
     FROM warranty w JOIN device d ON d.id = w.device_id`
 
+/**
+ * Warranties belonging to a soft-deleted device must not appear in ANY
+ * cross-device listing or count.
+ *
+ * There is no ON DELETE cascade for a soft delete — nothing clears the warranty
+ * when a device is retired — so without this predicate the expiry radar lists
+ * rows whose "Device" link resolves to a 404 (deviceReadService treats a
+ * soft-deleted device as absent), and the dashboard tiles count devices that are
+ * gone. Per-device lookups do NOT use this: they are reached from a device page
+ * that has already resolved the device, and hiding history there would be
+ * surprising rather than safe.
+ */
+const LIVE_DEVICE_EXISTS = `EXISTS (
+  SELECT 1 FROM device dl WHERE dl.id = w.device_id AND dl.deleted_at IS NULL)`
+
 type WarrantyRow = {
   id: string; device_id: string; device_sn: string | null
   start_date: string; end_date: string; terms: string | null
@@ -99,8 +114,18 @@ function toRecord(r: WarrantyRow): WarrantyRecord {
 // whole masking story for amounts). Warranty dates are not money — they are the
 // service-entitlement fact a technician needs before quoting a repair. Gating
 // them behind view_finance would hide warranty cover from every Viewer and from
-// Operators, which is the wrong failure. The buyer's identity is NOT in any
-// payload here precisely because that IS behind view_buyer_details.
+// Operators, which is the wrong failure, and it would push people back to
+// inferring cover from ship dates — the exact fabrication the migration header
+// exists to kill.
+//
+// No buyer identity appears in any payload here. To be precise about WHY, since
+// the reason matters if someone later wants to add it: this is a scope decision,
+// not an enforcement of view_buyer_details. Nothing in this module checks that
+// permission, and no service anywhere currently does. Warranty is device-scoped
+// and needs no buyer field, so the safe thing is to omit it rather than ship a
+// field whose gate does not yet exist. If a buyer name is ever added to
+// getExpiringWarranties, it MUST come with a real authorize() call — do not
+// assume the comment above ever enforced anything.
 
 /** The one live warranty for a device, or null. Null is also the "no cover" answer. */
 export async function getDeviceWarranty(
@@ -151,7 +176,14 @@ export type ExpiringWarrantyItem = {
 }
 
 const expiringSchema = z.object({
-  withinDays: z.union([z.literal(30), z.literal(60), z.literal(90)]).default(30),
+  // Defaults to EXPIRING_SOON_DAYS (60), NOT 30. The two constants used to
+  // disagree, and the disagreement was visible: a warranty 45 days out reported
+  // status 'expiring_soon' but was missing from the default list, and at
+  // ?within=90 rows labelled "Active" appeared under a heading reading "Expiring
+  // within 90 days" — the pill contradicting the page it sits on. Anchoring the
+  // default to the same constant the badge uses makes the list and the badge
+  // agree by construction on the default view.
+  withinDays: z.union([z.literal(30), z.literal(60), z.literal(90)]).default(EXPIRING_SOON_DAYS),
   limit: z.number().int().min(1).max(200).default(50),
 })
 export type ExpiringWarrantyFilter = z.input<typeof expiringSchema>
@@ -176,6 +208,7 @@ export async function getExpiringWarranties(
     const { rows } = await tx.query<WarrantyRow>(
       `${WARRANTY_SELECT}
         WHERE w.deleted_at IS NULL
+          AND ${LIVE_DEVICE_EXISTS}
           AND w.end_date >= current_date
           AND w.end_date <= current_date + ($1::int * INTERVAL '1 day')
         ORDER BY w.end_date ASC, d.device_sn ASC NULLS LAST, w.id ASC
@@ -199,8 +232,16 @@ export type WarrantyExpiryCounts = {
   within90: number
   /** Already past end_date. */
   expired: number
-  /** Every non-expired live warranty, including the expiring ones. */
-  active: number
+  /**
+   * Every live warranty not yet past its end date — expiring ones included.
+   *
+   * Named notExpired, NOT `active`, on purpose: the domain's WarrantyStatus
+   * 'active' means "not expiring within 60 days", so a field called `active`
+   * here would be a different set under the same word, and the two would
+   * eventually be compared. This is the strictly larger set:
+   * notExpired = active + expiring_soon.
+   */
+  notExpired: number
 }
 
 /**
@@ -225,12 +266,12 @@ export async function getWarrantyExpiryCounts(actor: Actor): Promise<WarrantyExp
          count(*) FILTER (WHERE end_date >= current_date
                             AND end_date <= current_date + INTERVAL '90 days')::text AS within90,
          count(*) FILTER (WHERE end_date <  current_date)::text AS expired,
-         count(*) FILTER (WHERE end_date >= current_date)::text AS active
-       FROM warranty WHERE deleted_at IS NULL`)
+         count(*) FILTER (WHERE end_date >= current_date)::text AS not_expired
+       FROM warranty w WHERE w.deleted_at IS NULL AND ${LIVE_DEVICE_EXISTS}`)
     const r = rows[0]
     return {
       within30: Number(r.within30), within60: Number(r.within60), within90: Number(r.within90),
-      expired: Number(r.expired), active: Number(r.active),
+      expired: Number(r.expired), notExpired: Number(r.not_expired),
     }
   })
 }
@@ -385,6 +426,12 @@ export async function renewWarranty(
         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [data.warrantyId])
     if (cur.length === 0) throw new WarrantyNotFoundError(data.warrantyId)
     if (cur[0].version !== data.version) throw new OptimisticLockError('warranty', data.warrantyId)
+
+    // Same live-device precondition createWarranty enforces. Without it the door
+    // createWarranty closes stands open through Renew: a device soft-deleted
+    // after its warranty was written could still be given fresh cover, which is
+    // a new commercial commitment on a retired device.
+    await requireLiveDevice(tx, cur[0].device_id)
 
     const { rowCount } = await tx.query(
       `UPDATE warranty SET deleted_at = now(), updated_at = now(), updated_by = $1,

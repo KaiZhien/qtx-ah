@@ -24,6 +24,15 @@ import { renderInvoicePdf } from '@/modules/finance/pdf/invoicePdfDocument'
  * dynamic = 'force-dynamic' is equally load-bearing: this response depends on
  * the caller's identity, and a statically-optimized or cached one would serve a
  * finance document to the wrong person.
+ *
+ * KNOWN, ACCEPTED: Next serves HEAD by running GET and discarding the body, so a
+ * HEAD request renders the PDF and writes a document_access_log row for a
+ * download that never transferred. Left alone because the alternative — an
+ * explicit HEAD export that skips the audit — is a strictly worse failure: it
+ * hands anyone a way to reach this handler WITHOUT being logged, and
+ * under-logging is the one direction this feature must not fail in. The cost is
+ * an occasional phantom row from a link-prefetcher; the benefit is that there is
+ * no unlogged path to a finance document.
  * ───────────────────────────────────────────────────────────────────────────
  */
 export const runtime = 'nodejs'
@@ -56,10 +65,12 @@ export async function GET(
   _req: Request, { params }: { params: { id: string } },
 ): Promise<NextResponse> {
   try {
-    // requireAal2Actor, NOT requireActor. Next does not run the (platform)
-    // layout for a route handler, so the layout's MFA gate does not apply here
-    // any more than it applies to a server action. Streaming a finance document
-    // is a capability; it gets the capability-layer gate.
+    // requireAal2Actor, never the bare non-AAL session helper. Next does not run
+    // the (platform) layout for a route handler, so the layout's MFA gate does
+    // not apply here any more than it applies to a server action. Streaming a
+    // finance document is a capability; it gets the capability-layer gate.
+    // (__tests__/actionAalPinning.test.ts greps raw source, so this comment
+    // deliberately avoids spelling the forbidden identifier — see its header.)
     const actor = await requireAal2Actor()
 
     // Cheap gate first, before any I/O — and before the service confirms
