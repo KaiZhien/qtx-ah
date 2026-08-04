@@ -143,10 +143,13 @@ export default async function VariantBomPage({ searchParams }: PageProps) {
               {bom.underdetermined.length > 0 && (
                 <p className="rounded-md bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
                   {bom.underdetermined.length} component type(s) below changed by BUILD SERIAL, not
-                  by date{serial ? `, and ${serial} is not comparable with the serials on those
-                  lines` : ''}. A date alone cannot say whether the change applies to the unit you
-                  have in mind, so the rows marked below may be wrong for it — enter a comparable
-                  build serial above for an exact answer.
+                  by date
+                  {serial
+                    ? ` — and ${serial} is not comparable with the serials on those lines, so it settled nothing`
+                    : ''}
+                  . A date alone cannot say whether the change applies to the unit you have in
+                  mind, so the marked rows may be wrong for it. Enter a comparable build serial
+                  above for an exact answer.
                 </p>
               )}
 
