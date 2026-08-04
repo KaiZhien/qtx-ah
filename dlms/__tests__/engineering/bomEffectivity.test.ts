@@ -7,7 +7,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   serialSortKey, serialAxisVerdict, dateAxisVerdict, lineAppliesAt,
-  resolveBomAt, findBomEffectivityConflicts, isUsableEffectivityPoint,
+  resolveBomAt, findBomEffectivityConflicts, findUnderdeterminedLines,
+  serialOnlyBounds, closesBeforeItOpened, isUsableEffectivityPoint,
   type BomLineEffectivity,
 } from '@/modules/engineering/domain/bomEffectivity'
 
@@ -198,6 +199,33 @@ describe('resolveBomAt', () => {
       .toEqual([])
   })
 
+  it('never invents a CROSS-FAMILY serial ordering when breaking a tie', () => {
+    // serialAxisVerdict refuses to order 'QTX-B-00900' against 'QTX-P-00100'
+    // forty lines earlier — different prefix families, and comparing the digit
+    // runs alone would say the B-family line starts 800 units later. The
+    // tie-break must refuse the same comparison and fall through to the date.
+    const crossFamily = [
+      line({ id: 'b', effectiveFromSerial: 'QTX-B-00900', effectiveFromDate: '2026-01-01' }),
+      line({ id: 'p', effectiveFromSerial: 'QTX-P-00100', effectiveFromDate: '2026-06-01' }),
+    ]
+    expect(resolveBomAt(crossFamily, { date: '2030-01-01' }).map((l) => l.id)).toEqual(['p'])
+    expect(resolveBomAt([...crossFamily].reverse(), { date: '2030-01-01' }).map((l) => l.id))
+      .toEqual(['p'])
+  })
+
+  it('still ranks a serial-bounded start above an unbounded one, family or not', () => {
+    // An ABSENT lower bound is "since the beginning of time" on both axes, so it
+    // loses to any present one — this is the mixed-axis rule above and it must
+    // survive the cross-family refusal.
+    const mixed = [
+      line({ id: 'unbounded', effectiveFromDate: '2026-06-01' }),
+      line({ id: 'bounded', effectiveFromSerial: 'QTX-B-00900' }),
+    ]
+    expect(resolveBomAt(mixed, { date: '2030-01-01' }).map((l) => l.id)).toEqual(['bounded'])
+    expect(resolveBomAt([...mixed].reverse(), { date: '2030-01-01' }).map((l) => l.id))
+      .toEqual(['bounded'])
+  })
+
   it('treats a null from-bound as the beginning of time, not as the latest start', () => {
     const overlapping = [
       line({ id: 'always', effectiveFromDate: null, createdAt: '2026-09-01T00:00:00.000Z' }),
@@ -228,6 +256,198 @@ describe('findBomEffectivityConflicts', () => {
     ]
     expect(findBomEffectivityConflicts(overlapping, { date: '2026-12-01' }))
       .toEqual([{ componentTypeId: 'ct-a', lineIds: ['a', 'b'] }])
+  })
+
+  // The hole findBomEffectivityConflicts cannot see, and why the sibling below
+  // exists: it counts lines per component type, so a disposition that leaves
+  // exactly ONE line is invisible to it however wrong that line's verdict is.
+  it('is blind to a single serial-bounded line, however wrong the date answer is', () => {
+    const removedAtASerial = [line({ id: 'bead', effectiveToSerial: 'QTX-P-00500' })]
+    expect(findBomEffectivityConflicts(removedAtASerial, { date: '2030-01-01' })).toEqual([])
+  })
+})
+
+describe('serialOnlyBounds', () => {
+  it('names a bound that exists on the serial axis and NOT on the date axis', () => {
+    expect(serialOnlyBounds(line({ id: 'l', effectiveToSerial: 'QTX-P-00500' })))
+      .toEqual({ from: null, to: 'QTX-P-00500' })
+    expect(serialOnlyBounds(line({ id: 'l', effectiveFromSerial: 'QTX-P-00500' })))
+      .toEqual({ from: 'QTX-P-00500', to: null })
+  })
+
+  it('is empty when the same edge also carries a date bound — the date was stated', () => {
+    expect(serialOnlyBounds(line({
+      id: 'l', effectiveFromSerial: 'QTX-P-00500', effectiveFromDate: '2026-06-01',
+    }))).toEqual({ from: null, to: null })
+  })
+
+  it('judges the two edges independently', () => {
+    // Closed by a serial-only ECO, opened by a date-and-serial one.
+    expect(serialOnlyBounds(line({
+      id: 'l',
+      effectiveFromSerial: 'QTX-P-00100', effectiveFromDate: '2026-01-01',
+      effectiveToSerial: 'QTX-P-00500',
+    }))).toEqual({ from: null, to: 'QTX-P-00500' })
+  })
+
+  it('is empty for a line with no serial bounds at all', () => {
+    expect(serialOnlyBounds(line({ id: 'l', effectiveFromDate: '2026-06-01' })))
+      .toEqual({ from: null, to: null })
+  })
+})
+
+/**
+ * C1 — a serial-only ECO writes NULL on the date axis for the bound it moves,
+ * and dateAxisVerdict then answers 'in' for EVERY date. That is the right answer
+ * for a line with no date bounds and the WRONG answer for a line whose real
+ * bound sits on the other axis. ALL THREE dispositions leave that shape, but
+ * only `change` leaves TWO lines — so the overlap detector catches one case in
+ * three and the other two are silent.
+ *
+ * The fix is NOT to invent a date bound at apply time (that would fabricate a
+ * calendar claim the engineer never made, on the axis this module documents as
+ * "only a proxy"). It is to report the answer as UNDER-DETERMINED, which is what
+ * it genuinely is: the honest answer to "what was the BOM on date D" for a
+ * per-unit change is "it depends which unit".
+ */
+describe('findUnderdeterminedLines — the serial-only bound the date axis cannot judge', () => {
+  it('REMOVE keyed to a serial: the closed line still reads as effective, forever', () => {
+    const removed = [line({ id: 'bead', effectiveToSerial: 'QTX-P-00500' })]
+    // The defect, pinned: a date-only question still shows the removed component…
+    expect(resolveBomAt(removed, { date: '2030-01-01' }).map((l) => l.id)).toEqual(['bead'])
+    // …with one line, so nothing overlaps and the yellow banner never fires…
+    expect(findBomEffectivityConflicts(removed, { date: '2030-01-01' })).toEqual([])
+    // …which is exactly what this reports instead.
+    expect(findUnderdeterminedLines(removed, { date: '2030-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['bead'] }])
+  })
+
+  it('ADD keyed to a serial: the new line reads as effective years BEFORE the change', () => {
+    const added = [line({ id: 'shield', effectiveFromSerial: 'QTX-P-00500' })]
+    expect(resolveBomAt(added, { date: '2020-01-01' }).map((l) => l.id)).toEqual(['shield'])
+    expect(findBomEffectivityConflicts(added, { date: '2020-01-01' })).toEqual([])
+    expect(findUnderdeterminedLines(added, { date: '2020-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['shield'] }])
+  })
+
+  it('CHANGE keyed to a serial: reports both lines, agreeing with the overlap detector', () => {
+    const changed = [
+      line({ id: 'old', effectiveFromDate: '2026-06-01', effectiveToSerial: 'QTX-P-00500' }),
+      line({ id: 'new', effectiveFromSerial: 'QTX-P-00500', quantity: 7 }),
+    ]
+    expect(findBomEffectivityConflicts(changed, { date: '2030-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['old', 'new'] }])
+    expect(findUnderdeterminedLines(changed, { date: '2030-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['old', 'new'] }])
+  })
+
+  it('a COMPARABLE query serial settles all three — the serial axis decided, so no caveat', () => {
+    const removed = [line({ id: 'bead', effectiveToSerial: 'QTX-P-00500' })]
+    const added = [line({ id: 'shield', effectiveFromSerial: 'QTX-P-00500' })]
+    const at = { date: '2030-01-01', serial: 'QTX-P-00600' }
+    expect(findUnderdeterminedLines(removed, at)).toEqual([])
+    expect(findUnderdeterminedLines(added, at)).toEqual([])
+    // and the answers themselves are now exact
+    expect(resolveBomAt(removed, at)).toEqual([])
+    expect(resolveBomAt(added, at).map((l) => l.id)).toEqual(['shield'])
+  })
+
+  it('an UNCOMPARABLE query serial settles nothing, so the caveat stays', () => {
+    // Another prefix family: serialAxisVerdict abstains and the date axis answers
+    // — the same guess as with no serial at all, so the same warning.
+    const removed = [line({ id: 'bead', effectiveToSerial: 'QTX-P-00500' })]
+    expect(findUnderdeterminedLines(removed, { date: '2030-01-01', serial: 'ZZZ-99-00001' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['bead'] }])
+  })
+
+  it('says nothing about a date-keyed change — the ECO made a calendar claim', () => {
+    const dated = [
+      line({ id: 'old', effectiveToDate: '2026-06-01' }),
+      line({ id: 'new', effectiveFromDate: '2026-06-01' }),
+    ]
+    expect(findUnderdeterminedLines(dated, { date: '2026-07-01' })).toEqual([])
+  })
+
+  it('says nothing when the ECO carried BOTH axes — the date bound is stated, not missing', () => {
+    const both = [
+      line({
+        id: 'old', effectiveToDate: '2026-06-01', effectiveToSerial: 'QTX-P-00500',
+      }),
+      line({
+        id: 'new', effectiveFromDate: '2026-06-01', effectiveFromSerial: 'QTX-P-00500',
+      }),
+    ]
+    expect(findUnderdeterminedLines(both, { date: '2026-07-01' })).toEqual([])
+  })
+
+  it('reports only lines the answer actually shows', () => {
+    // Opened on a date, closed at a serial: BEFORE the from-date the date axis is
+    // exact ('out'), so there is nothing to caveat. On and after it, there is.
+    const l = line({ id: 'l', effectiveFromDate: '2027-01-01', effectiveToSerial: 'QTX-P-00500' })
+    expect(findUnderdeterminedLines([l], { date: '2026-01-01' })).toEqual([])
+    expect(findUnderdeterminedLines([l], { date: '2027-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['l'] }])
+  })
+
+  it('groups by component type and leaves clean types out', () => {
+    const mixed = [
+      line({ id: 'a1', componentTypeId: 'ct-a', effectiveToSerial: 'QTX-P-00500' }),
+      line({ id: 'a2', componentTypeId: 'ct-a', effectiveFromSerial: 'QTX-P-00500' }),
+      line({ id: 'b1', componentTypeId: 'ct-b', effectiveFromDate: '2026-01-01' }),
+    ]
+    expect(findUnderdeterminedLines(mixed, { date: '2030-01-01' }))
+      .toEqual([{ componentTypeId: 'ct-a', lineIds: ['a1', 'a2'] }])
+  })
+
+  it('is empty for an empty BOM', () => {
+    expect(findUnderdeterminedLines([], { date: '2026-01-01' })).toEqual([])
+  })
+})
+
+/**
+ * I4 — ECOs are approved in APPROVAL order, not in effectivity order, so
+ * applying one whose point sits BELOW a line's own lower bound is ordinary.
+ * The date axis has a CHECK (bom_line_date_window) that turns it into a raw
+ * 23514 and a dead-end generic message; the serial axis has none and cannot
+ * have one (serials are free text), so the inverted window is simply WRITTEN
+ * and the line becomes unreachable at every serial with nothing flagged.
+ */
+describe('closesBeforeItOpened — the window an out-of-order apply would invert', () => {
+  it('is null for a point at or after the line start on both axes', () => {
+    const l = line({ id: 'l', effectiveFromDate: '2026-06-01', effectiveFromSerial: 'QTX-P-00300' })
+    expect(closesBeforeItOpened(l, { date: '2026-06-02', serial: 'QTX-P-00301' })).toBeNull()
+    // Equal is legal: [D, D) is an empty window, which is what two ECOs on the
+    // same day legitimately produce.
+    expect(closesBeforeItOpened(l, { date: '2026-06-01', serial: 'QTX-P-00300' })).toBeNull()
+  })
+
+  it('names the DATE axis when the effectivity date precedes the line start', () => {
+    const l = line({ id: 'l', effectiveFromDate: '2026-06-01' })
+    expect(closesBeforeItOpened(l, { date: '2026-05-31', serial: null })).toBe('date')
+  })
+
+  it('names the SERIAL axis when the effectivity serial precedes the line start', () => {
+    // The case the database cannot catch: the line opened at 00500, this ECO is
+    // effective at 00300, and [00500, 00300) is accepted without a murmur.
+    const l = line({ id: 'l', effectiveFromSerial: 'QTX-P-00500' })
+    expect(closesBeforeItOpened(l, { date: null, serial: 'QTX-P-00300' })).toBe('serial')
+  })
+
+  it('abstains on an UNCOMPARABLE serial pair rather than inventing an order', () => {
+    const l = line({ id: 'l', effectiveFromSerial: 'QTX-B-00900' })
+    expect(closesBeforeItOpened(l, { date: null, serial: 'QTX-P-00100' })).toBeNull()
+    expect(closesBeforeItOpened(line({ id: 'l', effectiveFromSerial: 'BATCH ONE' }),
+      { date: null, serial: 'QTX-P-00100' })).toBeNull()
+  })
+
+  it('says nothing about an unbounded line — there is no start to precede', () => {
+    expect(closesBeforeItOpened(line({ id: 'l' }), { date: '2020-01-01', serial: 'QTX-P-00001' }))
+      .toBeNull()
+  })
+
+  it('reports the DATE axis first when both are inverted, so the message is stable', () => {
+    const l = line({ id: 'l', effectiveFromDate: '2026-06-01', effectiveFromSerial: 'QTX-P-00500' })
+    expect(closesBeforeItOpened(l, { date: '2026-01-01', serial: 'QTX-P-00100' })).toBe('date')
   })
 })
 

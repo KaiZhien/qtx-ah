@@ -48,6 +48,35 @@
  * from = null  → effective from the beginning of time (the pre-effectivity BOM
  *                lines that existed before this feature landed).
  * to   = null  → still effective (the current line).
+ *
+ * ═══ THE ANSWER THAT IS A GUESS, AND WHY IT IS STILL GIVEN ══════════════════
+ * A SERIAL-ONLY ECO ("drop the ferrite bead from SN QTX-P-00500 onward") writes
+ * its bound on the serial axis and NULL on the date axis. dateAxisVerdict then
+ * answers 'in' for EVERY date — correct for a line with no date bounds, wrong
+ * for a line whose real bound is on the other axis. All three dispositions leave
+ * that shape:
+ *
+ *   remove → the closed line has to_serial = S, to_date = NULL, no successor.
+ *            One line, so findBomEffectivityConflicts sees no overlap. The
+ *            removed component is listed on every date-only BOM, forever.
+ *   add    → the new line has from_serial = S, from_date = NULL, so it is listed
+ *            on every date-only BOM, including dates years before the change.
+ *   change → the only shape leaving TWO simultaneously-effective lines, and so
+ *            the only one the overlap detector ever saw.
+ *
+ * TWO FIXES WERE AVAILABLE AND ONE IS WRONG. Writing a date bound as well at
+ * apply time — synthesising one from the apply clock or the ECO's implemented
+ * date — would fabricate a calendar claim the engineer never made, on the axis
+ * this module documents as never more than a proxy: units 00450–00499 built
+ * AFTER that synthetic date really do still carry the bead, and the row would
+ * say otherwise, permanently and invisibly. That is precisely the invention
+ * serialAxisVerdict abstains rather than commit.
+ *
+ * So the date axis still answers — it is the floor, and refusing to answer is
+ * worse than answering — and findUnderdeterminedLines reports WHICH lines that
+ * answer is a guess about, so every surface can say so. "What was the BOM on
+ * date D" for a per-unit change genuinely has no single answer; the honest
+ * response is the newest definition plus "it depends which unit — name one".
  */
 
 export type BomLineEffectivity = {
@@ -156,14 +185,23 @@ export function lineAppliesAt(line: BomLineEffectivity, at: BomAt): boolean {
 // supersedes a change keyed to a calendar date, exactly as a serial bound
 // overrides a date bound when both can be judged.
 //
-// A null from-bound means "since the beginning of time", so it must sort LOWEST,
-// not highest — hence the explicit -Infinity / '' rather than a naive
-// nulls-last comparator. createdAt then id break the remaining ties so the
-// answer never depends on input order.
+// "when both can be judged" is enforced here too: two PRESENT lower bounds from
+// DIFFERENT prefix families are not comparable, so this criterion abstains and
+// the date criterion below decides. Comparing the trailing digit runs alone
+// would rank 'QTX-B-00900' above 'QTX-P-00100' — inventing exactly the
+// cross-family ordering serialAxisVerdict refuses to invent forty lines up.
+// An ABSENT (or unorderable) lower bound is different from an uncomparable one:
+// it means "since the beginning of time" on this axis, so it loses to any
+// present bound regardless of family. createdAt then id break the remaining ties
+// so the answer never depends on input order.
 function laterStartFirst(a: BomLineEffectivity, b: BomLineEffectivity): number {
-  const seqA = serialSortKey(a.effectiveFromSerial)?.seq ?? -Infinity
-  const seqB = serialSortKey(b.effectiveFromSerial)?.seq ?? -Infinity
-  if (seqA !== seqB) return seqB - seqA
+  const keyA = serialSortKey(a.effectiveFromSerial)
+  const keyB = serialSortKey(b.effectiveFromSerial)
+  if (keyA && keyB) {
+    if (keyA.prefix === keyB.prefix && keyA.seq !== keyB.seq) return keyB.seq - keyA.seq
+  } else if (keyA || keyB) {
+    return keyA ? -1 : 1
+  }
 
   // '' sorts before every 'YYYY-MM-DD', which is what "beginning of time" needs.
   const dateA = a.effectiveFromDate ?? ''
@@ -213,6 +251,10 @@ export function resolveBomAt<L extends BomLineEffectivity>(
  * which the UI must say out loud rather than quietly rendering one of the two —
  * see resolveBomAt for the two causes (a serial-keyed change queried without a
  * serial, versus a genuinely corrupt row).
+ *
+ * NOT a complete "is this answer trustworthy" check, and never was: it counts
+ * lines, so a serial-keyed `add` or `remove` — which leave exactly one — pass it
+ * cleanly while being wrong. findUnderdeterminedLines is the other half.
  */
 export function findBomEffectivityConflicts<L extends BomLineEffectivity>(
   lines: readonly L[], at: BomAt,
@@ -227,6 +269,100 @@ export function findBomEffectivityConflicts<L extends BomLineEffectivity>(
   return [...byType.entries()]
     .filter(([, ids]) => ids.length > 1)
     .map(([componentTypeId, lineIds]) => ({ componentTypeId, lineIds }))
+}
+
+/**
+ * The bounds this line carries on the SERIAL axis and NOT on the date axis —
+ * i.e. the edges a date-only question cannot judge at all. The two edges are
+ * independent: a line opened by a date+serial ECO and closed by a serial-only
+ * one has an exact lower bound and an unjudgeable upper one.
+ *
+ * `{ from: null, to: null }` means every bound this line has is also expressed
+ * on the date axis, so the date axis answers exactly.
+ */
+export function serialOnlyBounds(
+  line: BomLineEffectivity,
+): { from: string | null; to: string | null } {
+  return {
+    from: line.effectiveFromSerial !== null && line.effectiveFromDate === null
+      ? line.effectiveFromSerial : null,
+    to: line.effectiveToSerial !== null && line.effectiveToDate === null
+      ? line.effectiveToSerial : null,
+  }
+}
+
+/**
+ * Lines that ARE part of the answer at `at`, but only because the date axis was
+ * asked a question it cannot answer — see the header's "the answer that is a
+ * guess". A line qualifies when it carries a serial-only bound (serialOnlyBounds
+ * above) AND the serial axis abstained, which happens when the query names no
+ * serial at all or names one from another prefix family.
+ *
+ * This is the sibling findBomEffectivityConflicts cannot be: that one counts
+ * lines per component type, so a disposition leaving exactly ONE line is
+ * invisible to it — `remove` and `add` keyed to a build serial both do, and both
+ * are silently wrong on every date-only query without this.
+ *
+ * Out-of-answer lines are deliberately not reported: a line whose date axis says
+ * 'out' was excluded by a bound the date axis really does carry, so that verdict
+ * is exact and there is nothing to caveat.
+ *
+ * Shape matches findBomEffectivityConflicts so a caller can treat the two the
+ * same way; the CALLER decides the wording, because the two mean different
+ * things (this one is "ask a better question", that one is "fix the data").
+ */
+export function findUnderdeterminedLines<L extends BomLineEffectivity>(
+  lines: readonly L[], at: BomAt,
+): { componentTypeId: string; lineIds: string[] }[] {
+  const byType = new Map<string, string[]>()
+  for (const l of lines) {
+    if (!lineAppliesAt(l, at)) continue
+    const bounds = serialOnlyBounds(l)
+    if (bounds.from === null && bounds.to === null) continue
+    // The serial axis actually decided this line, so the answer is exact.
+    if (at.serial && serialAxisVerdict(l, at.serial) !== 'unknown') continue
+    const bucket = byType.get(l.componentTypeId)
+    if (bucket) bucket.push(l.id)
+    else byType.set(l.componentTypeId, [l.id])
+  }
+  return [...byType.entries()].map(([componentTypeId, lineIds]) => ({ componentTypeId, lineIds }))
+}
+
+/** The point an ECO's effectivity names — either axis may be absent. */
+export type EffectivityPoint = { date: string | null; serial: string | null }
+
+/**
+ * Which axis (if any) an apply at `point` would INVERT on this line: an
+ * exclusive upper bound written BELOW the line's own inclusive lower bound.
+ *
+ * ECOs are approved in approval order, not in effectivity order, so applying one
+ * out of sequence is ordinary rather than exotic. On the date axis the database
+ * catches it (bom_line_date_window) but only as a raw 23514 the operator cannot
+ * act on. On the SERIAL axis there is no CHECK and there cannot be one — serials
+ * are free text with no total order at the column level — so [QTX-P-00500,
+ * QTX-P-00300) is simply accepted, the line becomes unreachable at every serial,
+ * and the history table renders "From QTX-P-00500 / To QTX-P-00300" with nothing
+ * flagged. This is the only place that can refuse it.
+ *
+ * EQUAL IS LEGAL: [P, P) is an empty window, which is exactly what a second ECO
+ * effective on the same day (or at the same serial) as the first legitimately
+ * produces. Only strictly-below is inverted.
+ *
+ * Uncomparable serials ABSTAIN, per serialAxisVerdict's rule — there is no
+ * ordering between prefix families to violate, so there is nothing to refuse.
+ * The date axis is reported first so the message is stable when both invert.
+ */
+export function closesBeforeItOpened(
+  line: Pick<BomLineEffectivity, 'effectiveFromDate' | 'effectiveFromSerial'>,
+  point: EffectivityPoint,
+): 'date' | 'serial' | null {
+  if (point.date && line.effectiveFromDate && point.date < line.effectiveFromDate) return 'date'
+  if (point.serial && line.effectiveFromSerial) {
+    const p = serialSortKey(point.serial)
+    const from = serialSortKey(line.effectiveFromSerial)
+    if (p && from && p.prefix === from.prefix && p.seq < from.seq) return 'serial'
+  }
+  return null
 }
 
 /**
