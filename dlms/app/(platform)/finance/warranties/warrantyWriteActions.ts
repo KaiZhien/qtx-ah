@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   createWarranty, updateWarranty, renewWarranty, removeWarranty,
   WarrantyNotFoundError, DuplicateWarrantyError,
@@ -25,6 +27,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   // Written FOR the user — it names exactly which date is wrong.
   if (err instanceof InvalidWarrantyPeriodError) return err.message
   // Also written for the user, and it names the fix (renew, don't add).

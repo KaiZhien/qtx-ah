@@ -10,6 +10,8 @@ const mockOptions = vi.fn()
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
   MfaRequiredError: FakeMfaRequired,
+  UnauthenticatedError: class UnauthenticatedError extends Error {},
+  SESSION_EXPIRED_MESSAGE: 'Your session has expired. Sign in again.',
 }))
 // The real error classes take structured constructor arguments (component code,
 // location code, requested, available). These stand-ins take a plain message so

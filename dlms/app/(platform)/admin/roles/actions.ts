@@ -2,7 +2,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { ZodError } from 'zod'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import {
   setRolePermission, addOverride, FabricLockoutError,
@@ -21,6 +23,7 @@ function toUserMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof PermissionError) return "You don't have permission to do that"
   if (err instanceof FabricLockoutError) return err.message
   if (err instanceof ZodError) return err.issues[0]?.message ?? 'Please check the form and try again'

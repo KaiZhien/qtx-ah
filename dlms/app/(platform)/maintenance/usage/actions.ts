@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   recordUsage, UsageDeviceNotFoundError, UsageDateInFutureError,
   type RecordUsageInput, type RecordUsageResult,
@@ -24,6 +26,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   // Its own message names the offending date. This IS an error, unlike a
   // non-monotonic reading: a future date is uncorrectable on an append-only
   // table, so it has to be refused rather than warned about.

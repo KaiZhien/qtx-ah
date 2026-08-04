@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   createRepair, updateRepair, changeRepairStatus, signOffRepair,
   RepairNotFoundError, RepairDeviceNotFoundError,
@@ -27,6 +29,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof InvalidRepairTransitionError) return err.message
   if (err instanceof RepairSignOffError) return err.message
   // A repair write can now fail on the DEVICE half: since the device move shares

@@ -2,7 +2,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { z, ZodError } from 'zod'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   listStockTransfers, createStockTransfer, changeTransferStatus, receiveStockTransfer,
   listTransferOptions,
@@ -31,6 +33,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof DuplicateTransferNumberError) return err.message
   if (err instanceof InsufficientStockError) return err.message
   if (err instanceof TrackingModeMismatchError) return err.message
@@ -132,6 +135,7 @@ export async function loadMoreStockTransfersAction(
     if (err instanceof MfaRequiredError) {
       return { error: 'Two-factor authentication required — reload the page to finish signing in.' }
     }
+    if (err instanceof UnauthenticatedError) return { error: SESSION_EXPIRED_MESSAGE }
     if (err instanceof PermissionError) {
       return { error: "You don't have permission to view these transfers." }
     }

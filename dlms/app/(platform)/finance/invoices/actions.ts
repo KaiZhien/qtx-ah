@@ -1,6 +1,8 @@
 'use server'
 
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { listInvoices } from '@/modules/finance/services/invoiceService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type { InvoiceFilter, InvoiceListItem } from '@/modules/finance/services/invoiceService'
@@ -20,6 +22,7 @@ export async function loadMoreInvoicesAction(filter: InvoiceFilter): Promise<Loa
     if (err instanceof MfaRequiredError) {
       return { error: 'Two-factor authentication required — reload the page to finish signing in.' }
     }
+    if (err instanceof UnauthenticatedError) return { error: SESSION_EXPIRED_MESSAGE }
     if (err instanceof PermissionError) {
       return { error: "You don't have permission to view these invoices." }
     }

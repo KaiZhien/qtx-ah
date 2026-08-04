@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   createModification, updateModification, changeModificationStatus, signOffModification,
   ModificationNotFoundError, ModificationReferenceNotFoundError, ModificationTerminalError,
@@ -27,6 +29,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof InvalidModificationTransitionError) return err.message
   if (err instanceof ModificationSignOffError) return err.message
   // The same-device rule on a linked repair (assertSameDevice). Its own message

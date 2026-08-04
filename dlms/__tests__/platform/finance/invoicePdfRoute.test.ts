@@ -32,6 +32,7 @@ vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: h.requireAal2Actor,
   MfaRequiredError: h.MfaRequiredError,
   UnauthenticatedError: h.UnauthenticatedError,
+  SESSION_EXPIRED_MESSAGE: 'Your session has expired. Sign in again.',
 }))
 
 vi.mock('@/modules/finance/services/invoicePdfService', () => ({

@@ -1,7 +1,8 @@
 'use server'
 
-import { requireAal2Actor, MfaRequiredError, UnauthenticatedError }
-  from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { globalSearch, type SearchResult } from '@/modules/shared/search/services/searchService'
 
@@ -20,7 +21,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication is required. Reload the page and complete it.'
   }
-  if (err instanceof UnauthenticatedError) return 'Your session has expired. Sign in again.'
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   // A PermissionError here would be a BUG, not a denial: globalSearch filters
   // groups by permission and never queries a denied one. Answered generically so
   // that bug can never become a disclosure.

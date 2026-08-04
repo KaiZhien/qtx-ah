@@ -12,6 +12,8 @@ const mockRequireAal2Actor = vi.fn()
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
   MfaRequiredError: class MfaRequiredError extends Error {},
+  UnauthenticatedError: class UnauthenticatedError extends Error {},
+  SESSION_EXPIRED_MESSAGE: 'Your session has expired. Sign in again.',
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/modules/shared/authz/authorize', () => ({

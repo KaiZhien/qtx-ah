@@ -2,7 +2,9 @@
 
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import {
@@ -28,6 +30,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof SettingNotEditableError) return err.message
   if (err instanceof OptimisticLockError) {
     return 'Someone else changed this setting while you were editing it. Reload the page to see '

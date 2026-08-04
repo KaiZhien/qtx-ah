@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   createDevice, updateDevice, changeDeviceStatus,
   DeviceNotFoundError, DuplicateSerialError,
@@ -23,6 +25,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof DuplicateSerialError) return err.message
   if (err instanceof InvalidStatusChangeError) return err.message
   if (err instanceof DeviceNotFoundError) return 'That device no longer exists. Reload and try again.'

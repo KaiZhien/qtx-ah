@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import {
-  requireAal2Actor, MfaRequiredError, UnauthenticatedError,
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
 } from '@/modules/shared/auth/session'
 import { can } from '@/modules/shared/authz/policy'
 import { PermissionError } from '@/modules/shared/authz/authorize'
@@ -97,7 +97,11 @@ export async function GET(
       },
     })
   } catch (err) {
-    if (err instanceof UnauthenticatedError) return plain(401, 'Sign in to download this invoice.')
+    // 401 with the app's one session-expired sentence. The status is what makes
+    // it actionable for a download the user reached by clicking a link on a page
+    // that rendered fine a moment ago; the wording is shared so the PDF and the
+    // page behind it do not describe the same expiry two different ways.
+    if (err instanceof UnauthenticatedError) return plain(401, SESSION_EXPIRED_MESSAGE)
     if (err instanceof MfaRequiredError) {
       // Deliberately not 404: this says nothing about the invoice, only about
       // the session, and telling the user to finish signing in is actionable

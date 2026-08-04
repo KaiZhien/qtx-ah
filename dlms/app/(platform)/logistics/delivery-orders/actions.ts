@@ -1,6 +1,8 @@
 'use server'
 
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { listDeliveryOrders } from '@/modules/logistics/services/deliveryOrderService'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import type {
@@ -23,6 +25,7 @@ export async function loadMoreDeliveryOrdersAction(filter: DeliveryOrderFilter):
     if (err instanceof MfaRequiredError) {
       return { error: 'Two-factor authentication required — reload the page to finish signing in.' }
     }
+    if (err instanceof UnauthenticatedError) return { error: SESSION_EXPIRED_MESSAGE }
     if (err instanceof PermissionError) {
       return { error: "You don't have permission to view these delivery orders." }
     }

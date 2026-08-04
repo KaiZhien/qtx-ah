@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   createInvoice, updateInvoice, changeInvoiceStatus, requestInvoiceApproval,
   InvoiceNotFoundError, DuplicateInvoiceNoError,
@@ -28,6 +30,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof DuplicateInvoiceNoError) return err.message
   if (err instanceof InvalidInvoiceStatusChangeError) return err.message
   // The approval gate's refusals are written FOR the user — they name the

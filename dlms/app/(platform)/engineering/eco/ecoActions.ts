@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import { PermissionError } from '@/modules/shared/authz/authorize'
 import { OptimisticLockError } from '@/lib/db/tx'
 import { InvalidTransitionError } from '@/modules/engineering/domain/transition'
@@ -19,6 +21,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof InvalidTransitionError) return err.message
   // Both are refusals the user has to ACT on — "the approval you are relying on no
   // longer describes this order" and "this order's content is fixed". Their messages

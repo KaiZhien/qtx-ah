@@ -1,7 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAal2Actor, MfaRequiredError } from '@/modules/shared/auth/session'
+import {
+  requireAal2Actor, MfaRequiredError, UnauthenticatedError, SESSION_EXPIRED_MESSAGE,
+} from '@/modules/shared/auth/session'
 import {
   replaceComponentInstallation, installComponent, type ReplaceInput,
 } from '@/modules/manufacturing/services/componentService'
@@ -22,6 +24,7 @@ function toMessage(err: unknown): string {
   if (err instanceof MfaRequiredError) {
     return 'Two-factor authentication required — reload the page to finish signing in.'
   }
+  if (err instanceof UnauthenticatedError) return SESSION_EXPIRED_MESSAGE
   if (err instanceof InvalidReplacementError) return err.message
   // The §5.4 attribution rule: its message already names the problem precisely
   // ("that repair is for a different device"), so it surfaces as written.

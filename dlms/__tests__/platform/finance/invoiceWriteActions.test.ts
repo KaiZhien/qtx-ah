@@ -7,6 +7,8 @@ const mockChangeInvoiceStatus = vi.fn()
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
   MfaRequiredError: class MfaRequiredError extends Error {},
+  UnauthenticatedError: class UnauthenticatedError extends Error {},
+  SESSION_EXPIRED_MESSAGE: 'Your session has expired. Sign in again.',
 }))
 vi.mock('@/modules/finance/services/invoiceService', () => ({
   createInvoice: vi.fn(),

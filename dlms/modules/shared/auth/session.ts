@@ -12,6 +12,26 @@ export class UnauthenticatedError extends Error {
 }
 
 /**
+ * The ONE user-facing sentence for an expired or absent session, shared by every
+ * error mapper in app/(platform)/**.
+ *
+ * It lives beside the error it describes rather than in each of the thirty
+ * mappers because the wording is the part that drifts: this text was already
+ * written three subtly different ways across the app before it was hoisted, and
+ * a session that ends is the single most common non-bug failure a user hits.
+ *
+ * Two properties matter and neither is decoration. It says the session ENDED
+ * rather than "something went wrong", because signing in again is an action the
+ * user can take and "try again" is not. And it discloses nothing: no account
+ * state, no reason, no hint about whether the record they were touching exists.
+ *
+ * `__tests__/platform/auth/sessionExpiredMapping.test.ts` pins that every
+ * actor-gated entry point maps UnauthenticatedError to THIS constant — a
+ * hand-typed copy fails the scan even when it happens to read identically.
+ */
+export const SESSION_EXPIRED_MESSAGE = 'Your session has expired. Sign in again.'
+
+/**
  * A signed-in actor of an MFA-required role invoked a privileged action while
  * their session is still AAL1 (password only, no verified TOTP challenge). The
  * page-level gate (app/(platform)/layout.tsx) never ran for a server-action

@@ -9,6 +9,8 @@ const mockRemoveWarranty = vi.fn()
 vi.mock('@/modules/shared/auth/session', () => ({
   requireAal2Actor: mockRequireAal2Actor,
   MfaRequiredError: class MfaRequiredError extends Error {},
+  UnauthenticatedError: class UnauthenticatedError extends Error {},
+  SESSION_EXPIRED_MESSAGE: 'Your session has expired. Sign in again.',
 }))
 // Only the four entry points are doubled; the REAL error classes are kept
 // (importActual is safe here — lib/db/pool creates its Pool lazily inside
