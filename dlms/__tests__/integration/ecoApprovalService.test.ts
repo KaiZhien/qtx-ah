@@ -10,6 +10,9 @@
 //
 // The drift test is the point of the whole slice: approve, edit the ECO, attempt
 // the gated move, and assert the refusal NAMES the field and both values.
+//
+// NOT run in this worktree — the integration DB port is shared with the other
+// agents working in parallel; the controller runs the suite serially at merge.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { Client } from 'pg'
 import { getPool } from '@/lib/db/pool'
@@ -20,9 +23,13 @@ import {
   createEco, updateEco, changeEcoStatus,
 } from '@/modules/engineering/services/engineeringWriteService'
 import {
+  addAffectedItem, removeAffectedItem, applyEcoEffectivity,
+} from '@/modules/engineering/services/bomEffectivityService'
+import {
   requestEcoApproval, getEcoApprovalState,
   EcoApprovalError, EcoApprovalRequestError, EcoNotFoundError,
 } from '@/modules/engineering/services/ecoService'
+import { EcoScopeLockedError } from '@/modules/shared/approvals/domain/ecoApproval'
 import { decideApproval } from '@/modules/shared/approvals/services/approvalService'
 import { drainOutbox } from '@/modules/shared/outbox/services/outboxService'
 
@@ -33,6 +40,13 @@ vi.mock('@/lib/supabase/server', () => ({ createAdminClient: () => ({}) }))
 let db: Client
 let engineerId: string
 let approverId: string
+// Private BOM fixtures, tagged per run: `variant_bom_line` is shared, non-rollback
+// state and a test that rewrote a seeded variant's BOM would corrupt every later
+// run. Nothing here touches a seeded row.
+let variantA: string
+let variantB: string
+let typeA: string
+let typeB: string
 
 const createdEcoIds: string[] = []
 const createdApprovalIds: string[] = []
@@ -69,8 +83,15 @@ const ecoRow = async (id: string) => (await db.query<{
   status: string; version: number; title: string; effectivity_serial: string | null
 }>(`SELECT status, version, title, effectivity_serial FROM eco WHERE id=$1`, [id])).rows[0]
 
-/** Creates an ECO and drives it to `submitted`, the state the gated edge leaves. */
-async function submittedEco(over: Record<string, unknown> = {}) {
+/**
+ * Creates an ECO, optionally lists affected items on it, and drives it to
+ * `submitted` — the state the gated edge leaves. Items are added BEFORE the
+ * submit so they are part of what a request captures.
+ */
+async function submittedEco(
+  over: Record<string, unknown> = {},
+  items: { variantId: string; componentTypeId: string; quantity?: number }[] = [],
+) {
   const eco = await createEco(eng(), {
     title: `Regulator change ${runTag}`,
     description: 'Thermal margin too small on rev C.',
@@ -79,11 +100,28 @@ async function submittedEco(over: Record<string, unknown> = {}) {
     ...over,
   })
   createdEcoIds.push(eco.id)
+  for (const item of items) {
+    await addAffectedItem(eng(), {
+      ecoId: eco.id, variantId: item.variantId, componentTypeId: item.componentTypeId,
+      disposition: 'change', quantity: item.quantity ?? 1,
+    })
+  }
   const v0 = (await ecoRow(eco.id)).version
   const { version } = await changeEcoStatus(eng(), {
     id: eco.id, toStatus: 'submitted', version: v0 })
   return { id: eco.id, ecoNo: eco.ecoNo, version }
 }
+
+/** The snapshot an approval actually stored, straight from the column. */
+const snapshotOf = async (approvalId: string) => (await db.query<{
+  snapshot: Record<string, unknown>
+}>(`SELECT snapshot FROM approval WHERE id=$1`, [approvalId])).rows[0].snapshot
+
+/** Live affected-item rows for an ECO, in the projection's own order. */
+const itemRowsOf = async (ecoId: string) => (await db.query<{
+  variant_id: string; component_type_id: string; disposition: string
+}>(`SELECT variant_id, component_type_id, disposition FROM ec_affected_item
+     WHERE eco_id=$1 AND deleted_at IS NULL ORDER BY id`, [ecoId])).rows
 
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL
@@ -91,6 +129,27 @@ beforeAll(async () => {
   await db.connect()
   engineerId = await makeUser('eco-approval-engineer@test.local', 'Elena Engineer', 'operator')
   approverId = await makeUser('eco-approval-manager@test.local', 'Manny Manager', 'manager')
+
+  const variant = async (suffix: string) => (await db.query<{ id: string }>(
+    `INSERT INTO device_variant (code, name, active) VALUES ($1,$2,true) RETURNING id`,
+    [`ecoappr-${suffix}-${runTag}`, `ECO Approval ${suffix} ${runTag}`])).rows[0].id
+  const compType = async (suffix: string) => (await db.query<{ id: string }>(
+    `INSERT INTO component_type (code, name, tracking_mode, created_by)
+     VALUES ($1,$2,'serialized',$3) RETURNING id`,
+    [`ea-${suffix}-${runTag}`, `EA Type ${suffix} ${runTag}`, engineerId])).rows[0].id
+
+  variantA = await variant('a')
+  variantB = await variant('b')
+  typeA = await compType('a')
+  typeB = await compType('b')
+
+  // A starting BOM on variant A only — unbounded on both axes, the state every
+  // pre-effectivity line is in. Variant B deliberately has none, which is what
+  // makes "an item added after approval names a variant the approval never saw"
+  // a rewrite of a BOM nobody reviewed.
+  await db.query(
+    `INSERT INTO variant_bom_line (variant_id, component_type_id, quantity, created_by, updated_by)
+     VALUES ($1,$2,1,$3,$3)`, [variantA, typeA, engineerId])
 })
 
 afterAll(async () => {
@@ -119,10 +178,19 @@ afterAll(async () => {
       [createdApprovalIds])
   }
   if (createdEcoIds.length) {
+    const { rows: itemIds } = await db.query<{ id: string }>(
+      `SELECT id FROM ec_affected_item WHERE eco_id = ANY($1)`, [createdEcoIds])
+    await db.query(`DELETE FROM ec_affected_item WHERE eco_id = ANY($1)`, [createdEcoIds])
+    await db.query(`DELETE FROM audit_log WHERE table_name='ec_affected_item'
+                      AND row_id = ANY($1)`, [itemIds.map((r) => r.id)])
     await db.query(`DELETE FROM eco WHERE id = ANY($1)`, [createdEcoIds])
     await db.query(`DELETE FROM audit_log WHERE table_name='eco' AND row_id = ANY($1)`,
       [createdEcoIds])
   }
+  // BOM lines before their variants — the apply tests open new ones.
+  await db.query(`DELETE FROM variant_bom_line WHERE variant_id = ANY($1)`, [[variantA, variantB]])
+  await db.query(`DELETE FROM component_type WHERE id = ANY($1)`, [[typeA, typeB]])
+  await db.query(`DELETE FROM device_variant WHERE id = ANY($1)`, [[variantA, variantB]])
   await db.end()
   await getPool().end()
 })
@@ -359,22 +427,46 @@ describe('the ECO approval gate', () => {
     expect((await ecoRow(eco.id)).status).toBe('submitted')
   })
 
-  it('does not gate the un-gated edges', async () => {
-    // approved → implemented carries no approval requirement, so a stale or
-    // drifted approval must not block it.
+  /**
+   * `approved → implemented` carries no approval requirement and still does not.
+   *
+   * THIS TEST USED TO ENCODE THE BUG. Its original body edited the ECO's
+   * effectivity notes AFTER the approval had been acted on and asserted that
+   * `implemented` succeeded — which was true, and was precisely the hole: the last
+   * re-check happened at `approved`, so every edit after it rode free. What was
+   * legitimately being claimed is that the edge itself is un-gated, and that claim
+   * is tested here on an ECO with NO approval request, where it is the whole of
+   * the "requested ⇒ binding" posture. The edit-after-approval half moved to the
+   * scope-lock block below, where it is now a REFUSAL.
+   */
+  it('does not gate the un-gated edges on an ECO nobody raised a request for', async () => {
     const eco = await submittedEco()
-    const { approvalId } = track(await requestEcoApproval(eng(), {
-      ecoId: eco.id, version: eco.version }))
-    await decideApproval(mgr(), { approvalId, decision: 'approved' })
     const approved = await changeEcoStatus(mgr(), {
       id: eco.id, toStatus: 'approved', version: eco.version })
 
+    // No approval exists, so editing an approved ECO is unchanged behaviour...
     const { version: edited } = await updateEco(eng(), {
       id: eco.id, version: approved.version, effectivityNotes: 'changed after approval' })
+    // ...and so is implementing it.
     const impl = await changeEcoStatus(eng(), {
       id: eco.id, toStatus: 'implemented', version: edited })
     expect(impl.status).toBe('implemented')
   })
+
+  it('leaves approved → implemented un-gated even WITH an approval, when nothing moved',
+    async () => {
+      // The edge is not where the check belongs — the apply is. An untouched ECO
+      // walks to `implemented` exactly as it always did.
+      const eco = await submittedEco({}, [{ variantId: variantA, componentTypeId: typeA }])
+      const { approvalId } = track(await requestEcoApproval(eng(), {
+        ecoId: eco.id, version: eco.version }))
+      await decideApproval(mgr(), { approvalId, decision: 'approved' })
+      const approved = await changeEcoStatus(mgr(), {
+        id: eco.id, toStatus: 'approved', version: eco.version })
+      const impl = await changeEcoStatus(eng(), {
+        id: eco.id, toStatus: 'implemented', version: approved.version })
+      expect(impl.status).toBe('implemented')
+    })
 
   it('nobody decides their own request, even holding approve_requests', async () => {
     const eco = await submittedEco()
@@ -383,6 +475,290 @@ describe('the ECO approval gate', () => {
       ecoId: eco.id, version: eco.version }))
     await expect(decideApproval(mgr(), { approvalId, decision: 'approved' }))
       .rejects.toMatchObject({ name: 'ApprovalDecisionError', code: 'self_approval' })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3b. THE AFFECTED ITEMS — the scope `effectivity_serial` never covered.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('the ECO approval snapshot covers ec_affected_item', () => {
+  it('stores the affected items with the request, by identity', async () => {
+    const eco = await submittedEco({}, [
+      { variantId: variantA, componentTypeId: typeA, quantity: 2 },
+    ])
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+
+    const snapshot = await snapshotOf(approvalId)
+    expect(snapshot.affectedItems).toEqual([{
+      variantId: variantA, componentTypeId: typeA,
+      disposition: 'change', quantity: 2, notes: null,
+    }])
+  })
+
+  it('stores an empty array for an ECO that affects no BOM, not a missing key', async () => {
+    // `null` and absent are different events to describeSnapshotDrift, and an ECO
+    // that later GAINS its first item must read as drift rather than as agreement.
+    const eco = await submittedEco()
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    expect(await snapshotOf(approvalId)).toMatchObject({ affectedItems: [] })
+  })
+
+  /**
+   * ORDERED BY AN IMMUTABLE KEY. The display query (`listAffectedItems`) orders by
+   * `v.name, ct.sort, ct.name`; array order is significant to `snapshotsAgree`, so
+   * reusing it would make RENAMING A VARIANT report drift on an ECO nobody touched.
+   * Renaming both variants here must leave the approval agreeing exactly.
+   */
+  it('does not drift when a variant is RENAMED — the projection carries ids', async () => {
+    const eco = await submittedEco({}, [
+      { variantId: variantA, componentTypeId: typeA },
+      { variantId: variantB, componentTypeId: typeB },
+    ])
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    await decideApproval(mgr(), { approvalId, decision: 'approved' })
+
+    // Swap the names so any name-ordered projection re-orders the array, and any
+    // name-carrying projection changes its content.
+    await db.query(`UPDATE device_variant SET name = $2 WHERE id = $1`,
+      [variantA, `zzz-renamed-a-${runTag}`])
+    await db.query(`UPDATE device_variant SET name = $2 WHERE id = $1`,
+      [variantB, `aaa-renamed-b-${runTag}`])
+
+    expect((await getEcoApprovalState(eng(), eco.id))!.drift).toEqual([])
+    const res = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+    expect(res.status).toBe('approved')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3c. THE SCOPE LOCK — the edit is refused at the moment of the mistake.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('an acted-on approval freezes what the ECO changes', () => {
+  /** Requests, approves, and crosses the gated edge. Returns the approved ECO. */
+  async function approvedEco(items = [{ variantId: variantA, componentTypeId: typeA }]) {
+    const eco = await submittedEco({}, items)
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    await decideApproval(mgr(), { approvalId, decision: 'approved' })
+    const approved = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+    return { ...eco, version: approved.version }
+  }
+
+  it('refuses ADDING an affected item once the approval has been acted on', async () => {
+    const eco = await approvedEco()
+    await expect(addAffectedItem(eng(), {
+      ecoId: eco.id, variantId: variantB, componentTypeId: typeB,
+      disposition: 'change', quantity: 1,
+    })).rejects.toThrow(EcoScopeLockedError)
+    expect(await itemRowsOf(eco.id)).toHaveLength(1)
+  })
+
+  it('refuses REMOVING one too — narrowing is a change of scope as much as widening',
+    async () => {
+      const eco = await approvedEco()
+      const [item] = await db.query<{ id: string; version: number }>(
+        `SELECT id, version FROM ec_affected_item WHERE eco_id=$1 AND deleted_at IS NULL`,
+        [eco.id]).then((r) => r.rows)
+      await expect(removeAffectedItem(eng(), { id: item.id, version: item.version }))
+        .rejects.toThrow(EcoScopeLockedError)
+      expect(await itemRowsOf(eco.id)).toHaveLength(1)
+    })
+
+  /**
+   * `updateEco` had NO status guard at all, and `applyEcoEffectivityTx` reads
+   * `effectivity_serial` LIVE at apply time — so approving at "0001 to 0015",
+   * editing to "0001 to 0900" while approved and applying landed the BOM rewrite
+   * on the wider range.
+   */
+  it('refuses WIDENING the effectivity range on an approved ECO', async () => {
+    const eco = await approvedEco()
+    await expect(updateEco(eng(), {
+      id: eco.id, version: eco.version, effectivitySerial: 'EE-02A-2603-0001 to 0900',
+    })).rejects.toThrow(EcoScopeLockedError)
+    expect((await ecoRow(eco.id)).effectivity_serial).toBe('EE-02A-2603-0001 to 0015')
+  })
+
+  it('still allows every one of those on an ECO with NO approval request', async () => {
+    // The regression guard for the new refusal: "requested ⇒ binding" means an ECO
+    // nobody asked for a second pair of eyes on is untouched, in every status.
+    const eco = await submittedEco({}, [{ variantId: variantA, componentTypeId: typeA }])
+    const approved = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+
+    const added = await addAffectedItem(eng(), {
+      ecoId: eco.id, variantId: variantB, componentTypeId: typeB,
+      disposition: 'change', quantity: 1 })
+    expect(added.id).toBeTruthy()
+    const { rows: [row] } = await db.query<{ version: number }>(
+      `SELECT version FROM ec_affected_item WHERE id=$1`, [added.id])
+    await removeAffectedItem(eng(), { id: added.id, version: row.version })
+    const edited = await updateEco(eng(), {
+      id: eco.id, version: approved.version, effectivitySerial: 'EE-02A-2603-0001 to 0900' })
+    expect(edited.version).toBeGreaterThan(approved.version)
+  })
+
+  it('still allows them while the ECO is SUBMITTED, so drift stays re-checkable', async () => {
+    // Editing under a live approval is how the put-it-back behaviour works. The
+    // lock must not start until the gated edge has actually been crossed.
+    const eco = await submittedEco({}, [{ variantId: variantA, componentTypeId: typeA }])
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    await decideApproval(mgr(), { approvalId, decision: 'approved' })
+
+    const added = await addAffectedItem(eng(), {
+      ecoId: eco.id, variantId: variantB, componentTypeId: typeB,
+      disposition: 'change', quantity: 1 })
+    // …and the ADDED ITEM is what the gate now refuses at the edge.
+    const err = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version }).catch((e) => e)
+    expect(err).toBeInstanceOf(EcoApprovalError)
+    expect(err.code).toBe('approval_drifted')
+    expect(err.message).toContain('affectedItems')
+    expect(err.message).toContain(variantB)
+
+    // Put it back, and the same approval describes the ECO again.
+    const { rows: [row] } = await db.query<{ version: number }>(
+      `SELECT version FROM ec_affected_item WHERE id=$1`, [added.id])
+    await removeAffectedItem(eng(), { id: added.id, version: row.version })
+    expect((await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })).status).toBe('approved')
+  })
+
+  it('reports the freeze on the read path so a screen can stop offering the edit', async () => {
+    const eco = await approvedEco()
+    const state = await getEcoApprovalState(eng(), eco.id)
+    expect(state!.scopeLocked).toBe(true)
+    expect(state!.scopeLockedReason).toMatch(/approval/i)
+
+    const open = await submittedEco({}, [{ variantId: variantA, componentTypeId: typeA }])
+    const openState = await getEcoApprovalState(eng(), open.id)
+    expect(openState!.scopeLocked).toBe(false)
+    expect(openState!.scopeLockedReason).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3d. THE APPLY GATE — the check on the act that rewrites the BOM.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('applying an ECO re-checks its approval', () => {
+  it('applies normally when the approval still describes the ECO', async () => {
+    const eco = await submittedEco({ effectivityDate: '2026-09-01' },
+      [{ variantId: variantA, componentTypeId: typeA, quantity: 3 }])
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    await decideApproval(mgr(), { approvalId, decision: 'approved' })
+    const approved = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+    await changeEcoStatus(eng(), {
+      id: eco.id, toStatus: 'implemented', version: approved.version })
+
+    const result = await applyEcoEffectivity(eng(), { ecoId: eco.id })
+    expect(result).toMatchObject({ itemsApplied: 1, alreadyApplied: false })
+  })
+
+  /**
+   * ═══ THE REVIEWER'S SCENARIO, END TO END ═══════════════════════════════════
+   *
+   * BEFORE: create an ECO with 1 affected item → submit → request → approve →
+   * changeEcoStatus to `approved` (the snapshot agreed, so it passed) → ADD FOUR
+   * MORE ITEMS ACROSS ANOTHER VARIANT → `implemented` (never gated) → apply. An
+   * approval for a one-line change implemented a five-line change, and the drift
+   * re-check never fired once.
+   *
+   * AFTER: the service refuses the additions outright. This test then FORCES them
+   * in with direct SQL — standing in for any write path that does not go through
+   * `addAffectedItem`, which is exactly why the second gate exists — and the apply
+   * refuses, naming `affectedItems` and the variant that appeared. Not one BOM row
+   * is written.
+   */
+  it('REFUSES the apply when items were added after approval, and writes no BOM row',
+    async () => {
+      const eco = await submittedEco({ effectivityDate: '2026-09-01' },
+        [{ variantId: variantA, componentTypeId: typeA }])
+      const { approvalId } = track(await requestEcoApproval(eng(), {
+        ecoId: eco.id, version: eco.version }))
+      await decideApproval(mgr(), { approvalId, decision: 'approved' })
+      const approved = await changeEcoStatus(mgr(), {
+        id: eco.id, toStatus: 'approved', version: eco.version })
+
+      // Gate 1 — the edit is refused at the moment of the mistake.
+      await expect(addAffectedItem(eng(), {
+        ecoId: eco.id, variantId: variantB, componentTypeId: typeB,
+        disposition: 'change', quantity: 1,
+      })).rejects.toThrow(EcoScopeLockedError)
+
+      // Force it in behind the service's back — a bulk editor, an import, a
+      // migration, a psql session. Gate 2 must not care how the row arrived.
+      await db.query(
+        `INSERT INTO ec_affected_item
+           (eco_id, variant_id, component_type_id, disposition, quantity, created_by, updated_by)
+         VALUES ($1,$2,$3,'change',1,$4,$4)`, [eco.id, variantB, typeB, engineerId])
+      expect(await itemRowsOf(eco.id)).toHaveLength(2)
+
+      await changeEcoStatus(eng(), {
+        id: eco.id, toStatus: 'implemented', version: approved.version })
+
+      // Gate 2 — the act itself.
+      const err = await applyEcoEffectivity(eng(), { ecoId: eco.id }).catch((e) => e)
+      expect(err).toBeInstanceOf(EcoApprovalError)
+      expect(err.code).toBe('approval_drifted')
+      expect(err.message).toContain('affectedItems')
+      expect(err.message).toContain(variantB)
+
+      // Nothing was half-written: no line opened on either variant, no item stamped.
+      const { rows: opened } = await db.query(
+        `SELECT 1 FROM variant_bom_line WHERE created_by_eco_id = $1`, [eco.id])
+      expect(opened).toHaveLength(0)
+      const { rows: closed } = await db.query(
+        `SELECT 1 FROM variant_bom_line WHERE superseded_by_eco_id = $1`, [eco.id])
+      expect(closed).toHaveLength(0)
+      const { rows: stamped } = await db.query(
+        `SELECT 1 FROM ec_affected_item WHERE eco_id = $1 AND applied_at IS NOT NULL`, [eco.id])
+      expect(stamped).toHaveLength(0)
+    })
+
+  it('REFUSES the apply when the effectivity range was widened after approval', async () => {
+    // The apply reads effectivity LIVE, so this is the drift that would otherwise
+    // rewrite the BOM for 900 devices on an approval granted for 15.
+    const eco = await submittedEco({ effectivityDate: '2026-09-01' },
+      [{ variantId: variantA, componentTypeId: typeA }])
+    const { approvalId } = track(await requestEcoApproval(eng(), {
+      ecoId: eco.id, version: eco.version }))
+    await decideApproval(mgr(), { approvalId, decision: 'approved' })
+    const approved = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+    await changeEcoStatus(eng(), {
+      id: eco.id, toStatus: 'implemented', version: approved.version })
+
+    await db.query(
+      `UPDATE eco SET effectivity_serial = $2 WHERE id = $1`,
+      [eco.id, 'EE-02A-2603-0001 to 0900'])
+
+    const err = await applyEcoEffectivity(eng(), { ecoId: eco.id }).catch((e) => e)
+    expect(err).toBeInstanceOf(EcoApprovalError)
+    expect(err.message).toContain('effectivitySerial')
+    expect(err.message).toContain('0900')
+  })
+
+  it('applies an ECO nobody raised a request for, exactly as before', async () => {
+    // The apply gate is "requested ⇒ binding" too: no request, no new refusal.
+    const eco = await submittedEco({ effectivityDate: '2026-10-01' },
+      [{ variantId: variantB, componentTypeId: typeB, quantity: 1 }])
+    const approved = await changeEcoStatus(mgr(), {
+      id: eco.id, toStatus: 'approved', version: eco.version })
+    await changeEcoStatus(eng(), {
+      id: eco.id, toStatus: 'implemented', version: approved.version })
+    // An `add` is the right disposition for variant B, which carries no open line.
+    await db.query(
+      `UPDATE ec_affected_item SET disposition='add' WHERE eco_id=$1`, [eco.id])
+
+    const result = await applyEcoEffectivity(eng(), { ecoId: eco.id })
+    expect(result).toMatchObject({ itemsApplied: 1, linesOpened: 1, alreadyApplied: false })
   })
 })
 
