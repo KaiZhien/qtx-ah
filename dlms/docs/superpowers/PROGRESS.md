@@ -42,8 +42,8 @@ Every item below is implemented, individually code-reviewed (7 with the stronges
 |---|---|---|
 | Apply platform migrations + seed to cloud `qtx-ops-platform` | ✅ | Done 2026-07-20 (Singapore region) |
 | **Enable RLS on platform tables (close anon-key exposure)** | ✅ | Done 2026-07-20 — advisor `rls_disabled` ERROR cleared; deny-via-REST verified |
-| Configure cloud Auth: enable TOTP MFA, disable public signups, password min-12, redirect URLs | ⏳ | In-app enforcement (gate/step logic, layout AAL2 gate, `/mfa` enroll+challenge, admin factor-reset) now exists and is merged — only the dashboard TOTP toggle + Super Admin bootstrap + one manual end-to-end pass remain |
-| Bootstrap Super Admin sets password / accepts invite | ⏳ | You (`reetmitra8@gmail.com` app_user row exists, awaits first login) |
+| Configure cloud Auth: enable TOTP MFA, disable public signups, password min-12, redirect URLs | 🔄 | TOTP ✅ confirmed working 2026-08-05 (a real enrollment succeeded); the login→link→enroll→challenge loop has been exercised for real against cloud. Remaining: disable public signups, password min-12, redirect URLs. NOTE: platform login itself was broken until `04ba1bf` (2026-08-05) — the login action was legacy-shaped and first-login `auth_user_id` linking existed nowhere; `modules/shared/auth/firstLogin.ts` is now the entire linking mechanism |
+| Bootstrap Super Admin sets password / accepts invite | ✅ | Done 2026-08-05: `reetmitra8@gmail.com` linked (`auth_user_id` set via first-login email linking), `last_login_at` stamped, `mfa_enrolled=true` — DB-verified |
 | Run demo migration against real DLMS data | ⏳ | Needs read-only `LEGACY_DATABASE_URL` + this cloud schema (now ready) |
 | Deploy the app | ⏸️ | AWS deferred; Vercel or localhost for the demo |
 
