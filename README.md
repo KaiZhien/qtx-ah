@@ -11,7 +11,7 @@ One repository, **four co-located systems** for QuantumTX's magnetic-mitohormesi
 
 **System 1 — the Operations Platform — is where current development happens and is ~75% of the codebase.** It is a five-module internal operations system (Engineering · Finance · Logistics · Manufacturing · Maintenance) for the physical therapy devices, plus Tasks, Approvals, Notifications, global Search and an Admin console. The original **DLMS** (Device Lifecycle Management System) it grew from still runs in production and lives under `dlms/app/legacy/`.
 
-Systems 2–4 form the **Alexandra Hospital (AH) clinical intelligence stack**: a reproducible ML pipeline over 1,716 AH patient records (2024) across six functional assessment blocks (VAS, TUG, 5×SST, Normal Gait Speed, Fast Gait Speed, SPPB), a FastAPI backend serving predictions and Claude-powered insights, and a clinician-facing dashboard — plus the RAISE multi-centre eldercare validation cohort (n=206, narrative-only; see [RAISE Dataset](#raise-dataset)). 
+Systems 2–4 form the **Alexandra Hospital (AH) clinical intelligence stack**: a reproducible ML pipeline over 1,716 AH patient records (2024) across six functional assessment blocks (VAS, TUG, 5×SST, Normal Gait Speed, Fast Gait Speed, SPPB), a FastAPI backend serving predictions and Claude-powered insights, and a clinician-facing dashboard — plus the RAISE multi-centre eldercare validation cohort (n=206, narrative-only; see [RAISE Dataset](#raise-dataset)).
 
 ---
 
